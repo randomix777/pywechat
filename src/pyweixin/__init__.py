@@ -55,6 +55,10 @@ from pyweixin.WeChatAuto import AutoReply,Collections,Call,Contacts,Files,Friend
 from pyweixin.WeChatTools import Tools,Navigator
 from pyweixin.WinSettings import SystemSettings
 from pyweixin.Config import GlobalConfig
+from pyweixin.reliability import MessageDirection,MessageEvent,MessageKind,MessageLedger,OperationQueueClosed,OperationQueueFull,UiOperationQueue,retry_call
+from pyweixin.agent import AgentCommand,AgentConfig,AgentStore,LocalAgent
+from pyweixin.cloud import CloudClient,CloudError,CloudResponse
+from pyweixin.cloud_server import CloudRequestHandler,CloudStore,create_server
 
 #Author:Hello-Mr-Crab
 #Contributor:Viper,Chanpoe,mrhan1993,nmhjklnm,clen1,guanjt3,Yjppj,SamCheng0717

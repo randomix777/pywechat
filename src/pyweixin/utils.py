@@ -158,12 +158,12 @@ def send_messages_to_friend(main_window:WindowSpecification,messages:list[str],s
         print('非正常好友,无法发送消息!')
         return 
     for message in messages:
-        if 0<len(message)<2000:
+        if 0<len(message)<=2000:
             edit_area.click_input()
             edit_area.set_text(message)
             time.sleep(send_delay)
             pyautogui.hotkey('alt','s',_pause=False)
-        elif len(message)>=2000:#字数超过2000字发送txt文件
+        elif len(message)>2000:#字数超过2000字发送txt文件
             SystemSettings.convert_long_text_to_txt(message)
             pyautogui.hotkey('ctrl','v',_pause=False)
             time.sleep(send_delay)
@@ -509,6 +509,132 @@ def parse_chat_history(friend:str,myName:str,details_with_name:list[str])->tuple
     return contents,senders,timestamps,message_types
 
 
+def _history_timestamp(text:str)->str:
+    match=Regex_Patterns.Chathistory_Timestamp_pattern.search(text)
+    return match.group(0) if match else ''
+
+
+def _align_group_details(details_with_name:list[tuple],details_without_name:list[tuple])->list[tuple[tuple,tuple|None]]:
+    with_name=list(details_with_name or [])
+    without_name=list(details_without_name or [])
+    if not with_name:
+        return []
+    has_timestamps=any(_history_timestamp(str(item[0])) for item in with_name+without_name)
+    if has_timestamps:
+        remaining=list(without_name)
+        used=set()
+        aligned=[]
+        for item in with_name:
+            timestamp=_history_timestamp(str(item[0]))
+            class_name=item[1] if len(item)>1 else ''
+            match_index=None
+            for candidate_index,candidate in enumerate(remaining):
+                if candidate_index in used:
+                    continue
+                candidate_timestamp=_history_timestamp(str(candidate[0]))
+                candidate_class=candidate[1] if len(candidate)>1 else ''
+                if timestamp and candidate_timestamp==timestamp and candidate_class==class_name:
+                    match_index=candidate_index
+                    break
+            matched=None
+            if match_index is not None:
+                used.add(match_index)
+                matched=remaining[match_index]
+            aligned.append((item,matched))
+        return aligned
+    best_offset=0
+    best_matches=0
+    for offset in range(-len(without_name),len(with_name)+1):
+        matches=0
+        for index,item in enumerate(with_name):
+            candidate_index=index-offset
+            if candidate_index<0 or candidate_index>=len(without_name):
+                continue
+            candidate=without_name[candidate_index]
+            full_text=timestamp_pattern_sub(str(item[0]))
+            content_text=timestamp_pattern_sub(str(candidate[0]))
+            if content_text and (full_text==content_text or full_text.endswith(content_text)):
+                matches+=1
+        if matches>best_matches or (matches==best_matches and matches>0 and abs(offset)<abs(best_offset)):
+            best_offset=offset
+            best_matches=matches
+    aligned=[]
+    used=set()
+    for index,item in enumerate(with_name):
+        candidate_index=index-best_offset
+        matched=None
+        if 0<=candidate_index<len(without_name) and candidate_index not in used:
+            candidate=without_name[candidate_index]
+            full_text=timestamp_pattern_sub(str(item[0]))
+            content_text=timestamp_pattern_sub(str(candidate[0]))
+            if content_text and (full_text==content_text or full_text.endswith(content_text)):
+                matched=candidate
+                used.add(candidate_index)
+        if matched is None:
+            for candidate_index,candidate in enumerate(without_name):
+                if candidate_index in used:
+                    continue
+                if str(item[0]).strip()==str(candidate[0]).strip():
+                    matched=candidate
+                    used.add(candidate_index)
+                    break
+        aligned.append((item,matched))
+    return aligned
+
+
+def _group_message_type(class_name:str,content:str)->str:
+    image_label=Special_Labels.Image
+    video_label=Special_Labels.Video
+    file_label=Special_Labels.File
+    link_label=Special_Labels.Link
+    miniprogram_label=Special_Labels.MiniProgram
+    channels_label=Special_Labels.Channels
+    redpacket_label=Special_Labels.RedPacket
+    transfer_label=Special_Labels.Transfer
+    videoCall_label=Special_Labels.VideoCall
+    voiceCall_label=Special_Labels.VoiceCall
+    chat_history_label=Special_Labels.ChatHistory
+    emoji_label=Special_Labels.Emoji
+    if class_name=='mmui::ChatPersonalCardItemView':
+        return '好友名片'
+    if class_name=='mmui::ChatTextItemView':
+        return '文本'
+    if class_name=='mmui::ChatBubbleReferItemView':
+        if content.startswith(video_label):return '视频'
+        if content.startswith(image_label):return '图片'
+        if content.startswith(emoji_label):return '动画表情'
+        if video_label in content:return '链接'
+        if image_label in content:return '链接'
+        return '其他'
+    if class_name=='mmui::ChatBubbleItemView':
+        if content.startswith(file_label):return '文件'
+        if content.startswith(link_label):return '链接'
+        if content.startswith(miniprogram_label):return '小程序'
+        if content.startswith(channels_label):return '视频号'
+        if content.endswith(redpacket_label):return '微信红包'
+        if content.endswith(transfer_label):return '微信转账'
+        if content.startswith(chat_history_label):return '聊天记录'
+        if content.startswith(voiceCall_label):return '语音通话'
+        if content.startswith(videoCall_label):return '视频通话'
+    return '其他'
+
+
+def timestamp_pattern_sub(text:str)->str:
+    return Regex_Patterns.Chathistory_Timestamp_pattern.sub('',text).strip()
+
+
+def _split_group_detail(item:tuple,matched:tuple|None)->tuple[str,str|None]:
+    text=str(item[0])
+    content_text=str(matched[0]) if matched is not None else text
+    content=timestamp_pattern_sub(content_text)
+    if matched is None:
+        return content,None
+    full_text=timestamp_pattern_sub(text)
+    if content and full_text.endswith(content):
+        return content,full_text[:-len(content)].strip() or None
+    return content,None
+
+
 def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_without_name:list[tuple[str,str]]=[],groupMembers:list[str]=[])->tuple[list,list,list,list]:
     '''群聊内的聊天记录解析
     Args:
@@ -522,87 +648,39 @@ def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_with
     contents=[]
     message_types=[]
     timestamps=[]
-    image_label=Special_Labels.Image
-    video_label=Special_Labels.Video
-    file_label=Special_Labels.File
-    link_label=Special_Labels.Link
-    miniprogram_label=Special_Labels.MiniProgram
-    channels_label=Special_Labels.Channels
-    redpacket_label=Special_Labels.RedPacket
-    transfer_label=Special_Labels.Transfer
-    videoCall_label=Special_Labels.VideoCall
-    voiceCall_label=Special_Labels.VoiceCall
-    chat_history_label=Special_Labels.ChatHistory
-    emoji_label=Special_Labels.Emoji
-    timestamp_pattern=Regex_Patterns.Chathistory_Timestamp_pattern
-    if groupMembers and not details_without_name:
-        for text,class_name,chat_history in details_with_name:
-            timestamp=timestamp_pattern.search(text).group(0) if timestamp_pattern.search(text) else '红包或转账(无法获取时间戳)'
-            if timestamp=='红包或转账(无法获取时间戳)':
+    if groupMembers:
+        for item in details_with_name or []:
+            text,class_name=item[0],item[1]
+            timestamp=_history_timestamp(text) or '红包或转账(无法获取时间戳)'
+            content=timestamp_pattern_sub(text)
+            sender=None
+            for group_member in sorted(groupMembers,key=lambda value:len(value),reverse=True):
+                if re.search(rf'^{re.escape(group_member)}(?:\s|$)',content):
+                    sender=group_member
+                    content=content[len(group_member):].strip()
+                    break
+            if sender is None:
                 sender='红包或转账(无法获取发送人)'
-                content=text.strip()
-            else:
-                for groupMember in groupMembers:
-                    search_result=re.search(rf'^({re.escape(groupMember)})\s',text)
-                    if search_result is not None:
-                        sender=search_result.group(1)
-                        content=timestamp_pattern.sub('',text).replace(sender,'').strip()
-            if class_name=='mmui::ChatTextItemView':
-                message_type='文本'
-            if class_name=='mmui::ChatPersonalCardItemView':
-                message_type='好友名片'
-            if class_name=='mmui::ChatBubbleReferItemView':
-                if content.startswith(image_label):message_type='图片'
-                if content.startswith(video_label):message_type='视频'
-                if content.startswith(emoji_label):message_type='动画表情'
-            if class_name=='mmui::ChatBubbleItemView':
-                if content.startswith(file_label):message_type='文件'
-                if content.startswith(link_label):message_type='链接'
-                if content.startswith(miniprogram_label):message_type='小程序'
-                if content.startswith(channels_label):message_type='视频号'
-                if content.endswith(redpacket_label):message_type='微信红包'
-                if content.endswith(transfer_label):message_type='微信转账'
-                if content.startswith(chat_history_label):message_type='聊天记录'
-                if content.startswith(voiceCall_label):message_type='语音通话'
-                if content.startswith(videoCall_label):message_type='视频通话'
-            message_types.append(message_type)
+            message_type=_group_message_type(class_name,content)
+            if len(item)>2 and item[2]:
+                content=item[2]
             senders.append(sender)
-            if chat_history!=[]:content=chat_history
             contents.append(content)
             timestamps.append(timestamp)
-    if not groupMembers and details_without_name:
-        for detail_with_name,detail_without_name in zip(details_with_name,details_without_name):
-            text_with_name=detail_with_name[0]
-            text_without_name=detail_without_name[0]
-            class_name=detail_with_name[1]
-            chat_history=detail_with_name[2]
-            timestamp=timestamp_pattern.search(text_without_name).group(0) if timestamp_pattern.search(text_without_name) else '红包或转账(无法获取时间戳)'
-            content=timestamp_pattern.sub('',text_without_name)
-            if timestamp=='红包或转账(无法获取时间戳)':
-                sender='红包或转账(无法获取发送人)'
-            else:
-                sender=text_with_name.replace(text_without_name,'').strip()
-                sender=timestamp_pattern.sub('',sender).replace(content,'')
-            if class_name=='mmui::ChatTextItemView':
-                message_type='文本'
-            if class_name=='mmui::ChatBubbleReferItemView':
-                if video_label in content:message_type='链接'
-                if image_label in content:message_type='链接'
-            if class_name=='mmui::ChatBubbleItemView':
-                if content.startswith(file_label):message_type='文件'
-                if content.startswith(link_label):message_type='链接'
-                if content.startswith(miniprogram_label):message_type='小程序'
-                if content.startswith(channels_label):message_type='视频号'
-                if content.endswith(redpacket_label):message_type='微信红包'
-                if content.endswith(transfer_label):message_type='微信转账'
-                if content.startswith(chat_history_label):message_type='聊天记录'
-                if content.startswith(voiceCall_label):message_type='语音通话'
-                if content.startswith(videoCall_label):message_type='视频通话'
             message_types.append(message_type)
-            senders.append(sender)
-            if chat_history!=[]:content=chat_history
-            contents.append(content)
-            timestamps.append(timestamp)
+        return contents,senders,timestamps,message_types
+    aligned=_align_group_details(details_with_name,details_without_name)
+    for item,matched in aligned:
+        text,class_name=item[0],item[1]
+        timestamp=_history_timestamp(str(matched[0] if matched is not None else text)) or '红包或转账(无法获取时间戳)'
+        content,sender=_split_group_detail(item,matched)
+        message_type=_group_message_type(class_name,content)
+        if len(item)>2 and item[2]:
+            content=item[2]
+        senders.append(sender)
+        contents.append(content)
+        timestamps.append(timestamp)
+        message_types.append(message_type)
     return contents,senders,timestamps,message_types
 
 def parse_messages(friend:str,myName:str,details_with_name:list[tuple[str,str]])->tuple[list,list,list]:
@@ -667,75 +745,25 @@ def parse_group_messages(details_with_name:list[tuple[str]],details_without_name
     senders=[]
     contents=[]
     message_types=[]
-    image_label=Special_Labels.Image
-    video_label=Special_Labels.Video
-    file_label=Special_Labels.File
-    link_label=Special_Labels.Link
-    miniprogram_label=Special_Labels.MiniProgram
-    channels_label=Special_Labels.Channels
-    redpacket_label=Special_Labels.RedPacket
-    transfer_label=Special_Labels.Transfer
-    videoCall_label=Special_Labels.VideoCall
-    voiceCall_label=Special_Labels.VoiceCall
-    chat_history_label=Special_Labels.ChatHistory
-    emoji_label=Special_Labels.Emoji
-    if groupMembers and not details_without_name:
-        for text,class_name in details_with_name:
-            sender='红包或转账(无法获取发送人)'
-            for groupMember in groupMembers:
-                search_result=re.search(rf'^({re.escape(groupMember)})',text)
-                if search_result is not None:
-                    sender=groupMember
-            content=re.sub(rf'^{sender}\s','',text)
-            if class_name=='mmui::ChatPersonalCardItemView':
-                message_type='好友名片'
-            if class_name=='mmui::ChatTextItemView':
-                message_type='文本'
-            if class_name=='mmui::ChatBubbleReferItemView':
-                if content.startswith(image_label):message_type='图片'
-                if content.startswith(video_label):message_type='视频'
-                if content.startswith(emoji_label):message_type='动画表情'
-            if class_name=='mmui::ChatBubbleItemView':
-                if content.startswith(file_label):message_type='文件'
-                if content.startswith(link_label):message_type='链接'
-                if content.startswith(miniprogram_label):message_type='小程序'
-                if content.startswith(channels_label):message_type='视频号'
-                if content.endswith(redpacket_label):message_type='微信红包'
-                if content.endswith(transfer_label):message_type='微信转账'
-                if content.startswith(chat_history_label):message_type='聊天记录'
-                if content.startswith(voiceCall_label):message_type='语音通话'
-                if content.startswith(videoCall_label):message_type='视频通话'
-            message_types.append(message_type)
-            senders.append(sender)
+    if groupMembers:
+        for text,class_name in details_with_name or []:
+            content=str(text)
+            sender=None
+            for group_member in sorted(groupMembers,key=lambda value:len(value),reverse=True):
+                if re.search(rf'^{re.escape(group_member)}(?:\s|$)',content):
+                    sender=group_member
+                    content=content[len(group_member):].strip()
+                    break
+            senders.append(sender or '红包或转账(无法获取发送人)')
             contents.append(content)
-    if not groupMembers and details_without_name:
-        for detail_with_name,detail_without_name in zip(details_with_name,details_without_name):
-            text_with_name=detail_with_name[0]
-            content=detail_without_name[0]
-            class_name=detail_with_name[1]
-            sender=text_with_name.replace(content,'').strip()
-            if sender=='':sender='红包或转账(无法获取发送人)'
-            if class_name=='mmui::ChatPersonalCardItemView':
-                message_type='好友名片'
-            if class_name=='mmui::ChatTextItemView':
-                message_type='文本'
-            if class_name=='mmui::ChatBubbleReferItemView':
-                if content.startswith(image_label):message_type='图片'
-                if content.startswith(video_label):message_type='视频'
-                if content.startswith(emoji_label):message_type='动画表情'
-            if class_name=='mmui::ChatBubbleItemView':
-                if content.startswith(file_label):message_type='文件'
-                if content.startswith(link_label):message_type='链接'
-                if content.startswith(miniprogram_label):message_type='小程序'
-                if content.startswith(channels_label):message_type='视频号'
-                if content.endswith(redpacket_label):message_type='微信红包'
-                if content.endswith(transfer_label):message_type='微信转账'
-                if content.startswith(chat_history_label):message_type='聊天记录'
-                if content.startswith(voiceCall_label):message_type='语音通话'
-                if content.startswith(videoCall_label):message_type='视频通话'
-            message_types.append(message_type)
-            senders.append(sender)
-            contents.append(content)
+            message_types.append(_group_message_type(class_name,content))
+        return contents,senders,message_types
+    for item,matched in _align_group_details(details_with_name,details_without_name):
+        class_name=item[1]
+        content,sender=_split_group_detail(item,matched)
+        senders.append(sender or '红包或转账(无法获取发送人)')
+        contents.append(content)
+        message_types.append(_group_message_type(class_name,content))
     return contents,senders,message_types
 
 def traverse_chat_history(chat_history_window:WindowSpecification,select:bool,number:int,
@@ -795,30 +823,42 @@ save_detail:bool=False,target_folder:str=None)->list[tuple[str,str,list[str]]]:
     if select:
         latest_message=Tools.select_chatHistoryList(chat_history_window)
         if latest_message is None:raise ValueError(f'该聊天只有系统消息,无法在聊天记录界面中选中任何消息!')
-    while recorded_num<number:
+    try:
+        chat_history_list.set_focus()
+    except Exception:
+        pass
+    idle_rounds=0
+    last_runtime_id=None
+    while recorded_num<number and idle_rounds<3:
         selected=[item for item in chat_history_list.children() if item.has_keyboard_focus()]
-        if selected:
-            #同一个runtime_id挨着重复出现就说明到底部了无法继续下滑
-            runtime_ids.append(selected[0].element_info.runtime_id)
-            if len(runtime_ids)>2 and runtime_ids[-1]==runtime_ids[-2]:
-                break
-        if selected and selected[0].class_name()!='mmui::ChatItemView':
-            chat_history=[]
-            recorded_num+=1
-            if selected[0].class_name()=='mmui::ChatBubbleReferItemView':
-                if video_label in selected[0].window_text() and select and save_detail:
-                    pyautogui.press('enter')
-                    media_count+=1
-                if image_label in selected[0].window_text() and select and save_detail:
-                    pyautogui.press('enter')
-                    media_count+=1
-            if selected[0].class_name()=='mmui::ChatBubbleItemView':
-                if file_label in selected[0].window_text() and select and save_detail:
-                    pyautogui.press('enter')
-                # if chat_history_label in selected[0].window_text() and file_label not in selected[0].window_text() and link_label not in selected[0].window_text():
-                    # chat_history=traverse_record_detail(selected[0])
-            details.append((selected[0].window_text(),selected[0].class_name(),chat_history)) 
-        pyautogui.press('down',presses=1,_pause=False)
+        if not selected:
+            idle_rounds+=1
+        else:
+            try:
+                current_runtime_id=selected[0].element_info.runtime_id
+            except Exception:
+                current_runtime_id=id(selected[0])
+            if current_runtime_id==last_runtime_id:
+                idle_rounds+=1
+            else:
+                idle_rounds=0
+            last_runtime_id=current_runtime_id
+            if selected[0].class_name()!='mmui::ChatItemView':
+                chat_history=[]
+                recorded_num+=1
+                if selected[0].class_name()=='mmui::ChatBubbleReferItemView':
+                    if video_label in selected[0].window_text() and select and save_detail:
+                        pyautogui.press('enter')
+                        media_count+=1
+                    if image_label in selected[0].window_text() and select and save_detail:
+                        pyautogui.press('enter')
+                        media_count+=1
+                if selected[0].class_name()=='mmui::ChatBubbleItemView':
+                    if file_label in selected[0].window_text() and select and save_detail:
+                        pyautogui.press('enter')
+                details.append((selected[0].window_text(),selected[0].class_name(),chat_history))
+        if idle_rounds<3:
+            pyautogui.press('down',presses=1,_pause=False)
     savable_item_count=file_count+media_count
     if select and save_detail and savable_item_count!=0 and target_folder is not None:
         save_button=chat_history_window.child_window(**Buttons.SaveButton)
@@ -850,15 +890,30 @@ def traverse_message(main_window:WindowSpecification,select:bool,number:int)->li
             details.append((last_item.window_text(),last_item.class_name()))
             recorded_num+=1
     if not select:Tools.activate_chatList(chatList)
-    while recorded_num<number:
+    try:
+        chatList.set_focus()
+    except Exception:
+        pass
+    idle_rounds=0
+    last_runtime_id=None
+    while recorded_num<number and idle_rounds<3:
         selected=[item for item in chatList.children() if item.has_keyboard_focus()]
-        if selected and selected[0].class_name() not in SystemInfo:
-            runtime_ids.append(selected[0].element_info.runtime_id)
-            if len(runtime_ids)>2 and runtime_ids[-1]==runtime_ids[-2]:
-                break       
+        if not selected:
+            idle_rounds+=1
+        elif selected[0].class_name() not in SystemInfo:
+            try:
+                current_runtime_id=selected[0].element_info.runtime_id
+            except Exception:
+                current_runtime_id=id(selected[0])
+            if current_runtime_id==last_runtime_id:
+                idle_rounds+=1
+            else:
+                idle_rounds=0
+            last_runtime_id=current_runtime_id
             details.append((selected[0].window_text(),selected[0].class_name()))
             recorded_num+=1
-        pyautogui.press('up',presses=1,_pause=False)
+        if idle_rounds<3:
+            pyautogui.press('up',presses=1,_pause=False)
     if select:pyautogui.press('esc')
     chatList.type_keys('{END}')
     return details

@@ -85,6 +85,7 @@ from .Uielements import (Main_window,SideBar,Buttons,TabItems,
 Edits,Texts,Lists,Panes,Windows,CheckBoxes,MenuItems,Groups,Customs,ListItems)#导入的是自动判断语言与版本后的实例化对象,如果自行使用需要导入xxx_Control
 from .Uielements import Regex_Patterns,Special_Labels
 from .Uielements import MousePos
+from .reliability import MessageDirection,MessageEvent,MessageKind,MessageLedger
 #######################################################################################
 desktop=Desktop(backend='uia')#pywinauto的windows桌面对象(WindowSpecification)实例化
 pyautogui.FAILSAFE=False#防止鼠标在屏幕边缘处造成的误触
@@ -115,7 +116,7 @@ class AutoReply():
         duration=Tools.match_duration(duration)#将's','min','h'转换为秒
         #不按照指定的时间格式输入,需要提前中断退出
         if duration is None:raise TimeNotCorrectError
-        if save_file and target_folder is None:
+        if (save_file or save_media) and target_folder is None:
             target_folder=os.path.join(os.getcwd(),f'{dialog_window.window_text()}_auto_reply_to_friend聊天文件保存')
             print(f'未传入文件夹路径,文件,图片,群昵称截图将分别保存到{target_folder}内的Files,Images,Alias文件夹下\n')
             os.makedirs(target_folder,exist_ok=True)
@@ -123,7 +124,7 @@ class AutoReply():
             file_folder=os.path.join(target_folder,'Files')
             os.makedirs(file_folder,exist_ok=True)
         if save_media:
-            media_folder=os.path.join(target_folder,'Media')
+            media_folder=os.path.join(target_folder,'Images')
             os.makedirs(media_folder,exist_ok=True)
         files=[]
         texts=[]
@@ -145,46 +146,64 @@ class AutoReply():
         chatList=dialog_window.child_window(**Lists.FriendChatList)#聊天界面内存储所有信息的容器
         input_edit=dialog_window.child_window(**Edits.InputEdit)
         Tools.activate_chatList(chatList)
-        if chatList.children(control_type='ListItem'):
-            initial_message=chatList.children(control_type='ListItem')[-1]#刚打开聊天界面时的最后一条消息的listitem
-            initial_runtime_id=initial_message.element_info.runtime_id    
+        def get_item_key(item,position):
+            try:
+                runtime_id=item.element_info.runtime_id
+            except Exception:
+                runtime_id=None
+            if runtime_id is None:
+                return (None,position,item.class_name(),item.window_text())
+            return (runtime_id,item.class_name())
+        def get_message_items():
+            return chatList.children(control_type='ListItem')
+        try:
+            initial_items=get_message_items()
+            initial_keys={get_item_key(item,position) for position,item in enumerate(initial_items)}
+        except Exception:
+            if close_dialog_window:dialog_window.close()
+            raise
         end_timestamp=time.time()+duration#根据秒数计算截止时间
         SystemSettings.open_listening_mode(volume=False)
-        while time.time()<end_timestamp:
-            if chatList.children(control_type='ListItem'):
-                newMessage=chatList.children(control_type='ListItem')[-1]
-                runtime_id=newMessage.element_info.runtime_id
-                if runtime_id!=initial_runtime_id: 
-                    total+=1
-                    if newMessage.class_name()=='mmui::ChatTextItemView':
-                        texts.append(newMessage.window_text())
-                        dialog_window.restore()
-                        is_my_bubble=Tools.is_my_bubble(newMessage)
-                        if not is_my_bubble:
-                            reply_content=callback(newMessage.window_text(),contexts)
-                            if reply_content is not None:
-                                input_edit.click_input()
-                                input_edit.set_text(reply_content)
-                                pyautogui.hotkey('alt','s')
-                    if newMessage.class_name()=='mmui::ChatBubbleItemView' and newMessage.window_text()[:2]==link_label:
-                        link_count+=1 
-                    if newMessage.class_name()=='mmui::ChatBubbleReferItemView' and newMessage.window_text()==image_labal:
-                        image_count+=1      
-                    if newMessage.class_name()=='mmui::ChatBubbleReferItemView' and video_label in newMessage.window_text():
-                        video_count+=1
-                    if newMessage.class_name()=='mmui::ChatBubbleItemView' and file_label in newMessage.window_text():
-                        filename=file_pattern.search(newMessage.window_text()).group(1)
-                        filepath=os.path.join(chatfile_folder,timestamp,filename)
-                        files.append(filepath)
-                    initial_runtime_id=runtime_id
-        media_count=image_count+video_count
-        SystemSettings.close_listening_mode()
-        if close_dialog_window:dialog_window.close()
-        #最后结束时再批量复制到target_folder,不在循环里逐个复制是考虑到若文件过大(几百mb)没有自动下载完成移动不了
-        if save_file and files:SystemSettings.copy_files(files,file_folder)#文件复制粘贴到target_folder/Files内
-        if save_media and media_count:Messages.save_media(friend=friend,number=media_count,target_folder=target_folder)#保存图片到target_folder/Images内
-        details={'新消息总数':total,'文本数量':len(texts),'文件数量':len(files),'图片数量':image_count,'视频数量':video_count,'链接数量':link_count,'文本内容':texts}
-        return details
+        try:
+            try:
+                while time.time()<end_timestamp:
+                    items=get_message_items()
+                    new_items=[item for position,item in enumerate(items) if get_item_key(item,position) not in initial_keys]
+                    for newMessage in new_items:
+                        total+=1
+                        if newMessage.class_name()=='mmui::ChatTextItemView':
+                            texts.append(newMessage.window_text())
+                            dialog_window.restore()
+                            is_my_bubble=Tools.is_my_bubble(newMessage)
+                            if not is_my_bubble:
+                                reply_content=callback(newMessage.window_text(),contexts)
+                                if reply_content is not None:
+                                    input_edit.click_input()
+                                    input_edit.set_text(reply_content)
+                                    pyautogui.hotkey('alt','s')
+                        if newMessage.class_name()=='mmui::ChatBubbleItemView' and link_label in newMessage.window_text():
+                            link_count+=1
+                        if newMessage.class_name()=='mmui::ChatBubbleReferItemView' and newMessage.window_text()==image_labal:
+                            image_count+=1
+                        if newMessage.class_name()=='mmui::ChatBubbleReferItemView' and video_label in newMessage.window_text():
+                            video_count+=1
+                        if newMessage.class_name()=='mmui::ChatBubbleItemView' and file_label in newMessage.window_text():
+                            match=file_pattern.search(newMessage.window_text())
+                            if match:
+                                filename=match.group(1)
+                                filepath=os.path.join(chatfile_folder,timestamp,filename)
+                                files.append(filepath)
+                    if new_items:
+                        initial_keys={get_item_key(item,position) for position,item in enumerate(items)}
+            finally:
+                SystemSettings.close_listening_mode()
+            media_count=image_count+video_count
+            if save_file and files:SystemSettings.copy_files(files,file_folder)
+            if save_media and media_count:Messages.save_media(friend=friend,number=media_count,target_folder=media_folder)
+            details={'新消息总数':total,'文本数量':len(texts),'文件数量':len(files),'图片数量':image_count,'视频数量':video_count,'链接数量':link_count,'文本内容':texts}
+            return details
+        finally:
+            if close_dialog_window:dialog_window.close()
     
     @staticmethod
     def auto_reply_messages(callback:Callable[[str,str],str],duration:str,chatOnly:bool=False,maxPages:int=1,never_reply:list=[],scroll_delay:float=0.5,is_maximize:bool=None,close_weixin:bool=None)->dict:
@@ -351,30 +370,29 @@ class AutoReply():
         if scorllable:sessionList.type_keys('{HOME}')
         new_message_dict=sacn_for_new_messages(sessionList) if has_newMessage else {}
         end_timestamp=time.time()+duration
-        SystemSettings.open_listening_mode()#开个不息屏,不然时间长息屏了就难办了
-        #轮询自动回复，只干两件事儿，一边在会话列表查找新消息逐个回复，一边盯着当前聊天界面回复
-        while time.time()<end_timestamp:
-            if new_message_dict:#如果有新消息就挨个回复
-                for sender,num in new_message_dict.items():reply_other_chat(sender)
-                new_message_dict.clear()#回复完清空记录
-            #盯着当前聊天界面
-            initial_runtime_id=reply_current_chat(initial_runtime_id)
-            full_desc=weixinButton.element_info.element.GetCurrentPropertyValue(30159)
-            if re.search(r'\d+',full_desc) is not None:
-                newMessage_num=int(re.search(r'\d+',full_desc).group(0))
-            else:
-                newMessage_num=0
-            has_newMessage=newMessage_num-initial_newMessage_num#这个是关键，得判断用不用扫描，如果没变化不用扫描
-            if has_newMessage:
-                new_message_dict=sacn_for_new_messages(sessionList)
-                initial_newMessage_num=newMessage_num
-        SystemSettings.close_listening_mode()#最后把不息屏关掉
-        #回复明细
+        SystemSettings.open_listening_mode(volume=False)#开个不息屏,不然时间长息屏了就难办了
+        try:
+            while time.time()<end_timestamp:
+                if new_message_dict:#如果有新消息就挨个回复
+                    for sender,num in new_message_dict.items():reply_other_chat(sender)
+                    new_message_dict.clear()#回复完清空记录
+                initial_runtime_id=reply_current_chat(initial_runtime_id)
+                full_desc=weixinButton.element_info.element.GetCurrentPropertyValue(30159)
+                if re.search(r'\d+',full_desc) is not None:
+                    newMessage_num=int(re.search(r'\d+',full_desc).group(0))
+                else:
+                    newMessage_num=0
+                has_newMessage=newMessage_num-initial_newMessage_num
+                if has_newMessage:
+                    new_message_dict=sacn_for_new_messages(sessionList)
+                    initial_newMessage_num=newMessage_num
+        finally:
+            SystemSettings.close_listening_mode()
+            if close_weixin:main_window.close()
         responded_friends=list(dict.fromkeys(responded_friends))
         responded_groups=list(dict.fromkeys(responded_groups))
         unresponded_groups=list(dict.fromkeys(unresponded_groups))
         responded_detail={'好友':responded_friends,'群聊':responded_groups,'未回复群聊':unresponded_groups}
-        if close_weixin:main_window.close()
         return responded_detail
     
 class Call():
@@ -2264,7 +2282,7 @@ class Files():
         #发送消息逻辑
         def send_messages(messages):
             for message in messages:
-                if 0<len(message)<2000:
+                if 0<len(message)<=2000:
                     SystemSettings.copy_text_to_clipboard(message)
                     pyautogui.hotkey('ctrl','v',_pause=False)
                     time.sleep(send_delay)
@@ -2378,7 +2396,7 @@ class Files():
         #消息发送逻辑
         def send_messages(messages):
             for message in messages:
-                if 0<len(message)<2000:
+                if 0<len(message)<=2000:
                     SystemSettings.copy_text_to_clipboard(message)
                     pyautogui.hotkey('ctrl','v',_pause=False)
                     time.sleep(send_delay)
@@ -3390,7 +3408,7 @@ class Messages():
         if at_members:
             At(main_window,at_members)
         for message in messages:
-            if 0<len(message)<2000:
+            if 0<len(message)<=2000:
                 edit_area.click_input()
                 SystemSettings.copy_text_to_clipboard(message)#不要直接set_text,直接set_text相当于默认clear了
                 pyautogui.hotkey('ctrl','v',_pause=False)
@@ -3586,7 +3604,7 @@ class Messages():
             if clear:
                edit_area.set_text('')
             for message in Chats.get(friend):
-                if 0<len(message)<2000:
+                if 0<len(message)<=2000:
                     edit_area.set_text(message)
                     time.sleep(send_delay)
                     pyautogui.hotkey('alt','s',_pause=False)
@@ -3606,6 +3624,12 @@ class Messages():
             close_weixin=GlobalConfig.close_weixin
         if clear is None:
             clear=GlobalConfig.clear
+        if len(friends)!=len(messages):
+            raise ValueError('friends与messages长度必须一致')
+        if len(set(friends))!=len(friends):
+            raise ValueError('friends不能包含重复项')
+        if any(not isinstance(message,(list,tuple)) or not message for message in messages):
+            raise ValueError('messages中的每一项必须是非空消息列表')
         Chats=dict(zip(friends,messages))
         main_window=Navigator.open_weixin(is_maximize=is_maximize)
         edit_area=main_window.child_window(**Edits.CurrentChatEdit)
@@ -3613,7 +3637,7 @@ class Messages():
             search_edits=main_window.descendants(**Main_window.Search)
             search_edit=search_edits[1] if len(search_edits)==2 else search_edits[0]
             search_edit.click_input()
-            search_edits.set_text(friend)
+            search_edit.set_text(friend)
             search_results=main_window.child_window(title='',control_type='List')
             search_results.wait(wait_for='ready',timeout=1)
             friend_button=Tools.get_search_result(friend=friend,search_result=search_results)
@@ -3692,7 +3716,7 @@ class Messages():
     #     if len(message)==0:
     #         main_window.close()
     #         raise ValueError
-    #     if 0<len(message)<2000:
+    #     if 0<len(message)<=2000:
     #         edit_area.set_text(message)
     #         time.sleep(send_delay)
     #         pyautogui.hotkey('alt','s',_pause=False)
@@ -3994,7 +4018,7 @@ class Messages():
             chat_history_window.close()
             return [],[],[]
         win32gui.SendMessage(chat_history_window.handle,win32con.WM_SYSCOMMAND,win32con.SC_MAXIMIZE,0)
-        details_with_name=traverse_chat_history(chat_history_window,select=True,number=number,save_detail=save_detail,target_folder=target_folder)
+        details_with_name=traverse_chat_history(chat_history_window,select=save_detail,number=number,save_detail=save_detail,target_folder=target_folder)
         if not is_group_chat:
             contents,senders,timestamps,message_types=parse_chat_history(friend,myName,details_with_name)
         if is_group_chat:
@@ -4264,7 +4288,7 @@ class Monitor():
     '''监听消息的一些方法'''          
 
     @staticmethod
-    def listen_on_chat(dialog_window:WindowSpecification,duration:str,groupMembers:list=[],save_file:bool=False,save_media:bool=False,target_folder:str=None,close_dialog_window:bool=True)->dict:
+    def listen_on_chat(dialog_window:WindowSpecification,duration:str,groupMembers:list=[],save_file:bool=False,save_media:bool=False,target_folder:str=None,close_dialog_window:bool=True,account_id:str='default',event_ledger:MessageLedger=None,return_events:bool=False,window_generation:str=None,stop_event=None,sequence_start:int=0)->dict:
         '''
         该方法用来在指定时间内监听会话窗口内的新消息(可以配合多线程使用,一次监听多个会话内的消息)
         Args:
@@ -4275,6 +4299,11 @@ class Monitor():
             save_media:是否保存图片,注意不要在多线程中设置为True,针对单个好友可以设置为True,默认为False
             target_folder:文件或图片视频的保存文件夹
             close_dialog_window:是否关闭dialog_window,默认关闭
+            account_id:消息所属账号标识
+            event_ledger:可选的消息去重账本
+            return_events:是否在返回结果中包含结构化消息事件
+            window_generation:当前聊天窗口代次,用于跨轮询去重
+
         涉及到键鼠操作的选项须为False,无论是主界面还是单独聊天窗口都可以最小化到状态栏,但千万不要关闭！
         Examples:
             多线程使用示例:
@@ -4306,11 +4335,16 @@ class Monitor():
                     contents.append(content)
             if is_group and groupMembers:
                 for text in texts:
-                    for groupMember in groupMembers:
-                        search_result=re.search(rf'^({groupMember})\s',text)
+                    sender=None
+                    for groupMember in sorted(groupMembers,key=lambda value:len(value),reverse=True):
+                        search_result=re.search(rf'^({re.escape(groupMember)})\s',text)
                         if search_result is not None:
                             sender=search_result.group(1)
-                    content=re.sub(rf'^{sender}\s','',text)
+                            break
+                    if sender is None:
+                        content=text
+                    else:
+                        content=re.sub(rf'^{re.escape(sender)}\s','',text)
                     senders.append(sender)
                     contents.append(content)
             if is_group and not groupMembers:
@@ -4339,6 +4373,7 @@ class Monitor():
         image_count=0
         files=[]
         texts=[]
+        message_records=[] if return_events or event_ledger is not None else None
         visibile_items=[]
         memberEvents=[]
         link_label=Special_Labels.Link
@@ -4352,42 +4387,103 @@ class Monitor():
         chatfile_folder=Tools.where_chatfiles_folder()
         chatList=dialog_window.child_window(**Lists.FriendChatList)#聊天界面内存储所有信息的容器
         timestamp_pattern=Regex_Patterns.Message_Timestamp_pattern#系统消息的时间戳
-        if chatList.children(control_type='CheckBox'):
-            visibile_items=chatList.children(control_type='CheckBox')
-            initial_runtimeids=[item.element_info.runtime_id for item in visibile_items]
-        if not chatList.children(control_type='CheckBox'):initial_runtimeids=[]
+        def get_visible_items():
+            checkbox_items=chatList.children(control_type='CheckBox')
+            return checkbox_items if checkbox_items else chatList.children(control_type='ListItem')
+        def get_item_key(item,position):
+            try:
+                runtime_id=item.element_info.runtime_id
+            except Exception:
+                runtime_id=None
+            if runtime_id is None:
+                return (None,position,item.class_name(),item.window_text())
+            return (runtime_id,item.class_name())
+        def get_runtime_id(item):
+            try:
+                return item.element_info.runtime_id
+            except Exception:
+                return None
+        try:
+            visibile_items=get_visible_items()
+            initial_keys={get_item_key(item,position) for position,item in enumerate(visibile_items)}
+        except Exception:
+            if close_dialog_window:dialog_window.close()
+            raise
         end_timestamp=time.time()+duration#根据秒数计算截止时间
         SystemSettings.open_listening_mode(volume=False)
-        while time.time()<end_timestamp:
-            visibile_items=chatList.children(control_type='CheckBox')
-            newItems=[item for item in visibile_items if item.element_info.runtime_id not in initial_runtimeids]
-            if newItems: 
-                #改为列表轮询
-                for item in newItems:
-                    texts.append(item.window_text())
-                    if item.class_name()=='mmui::ChatItemView' and not timestamp_pattern.search(item.window_text()):
-                        memberEvents.append(item.window_text())
-                    if item.class_name()=='mmui::ChatBubbleItemView' and link_label in item.window_text():
-                        link_count+=1
-                    if item.class_name()=='mmui::ChatBubbleReferItemView' and image_labal in item.window_text():
-                        image_count+=1
-                    if item.class_name()=='mmui::ChatBubbleReferItemView' and video_label in item.window_text():
-                        video_count+=1#视频需要下载直接右键复制不行,需要先点击,如果时间长,要等半天，不太方便
-                    if item.class_name()=='mmui::ChatBubbleItemView' and file_label in item.window_text():
-                        filename=file_pattern.search(item.window_text()).group(1)
-                        filepath=os.path.join(chatfile_folder,timestamp,filename)
-                        files.append(filepath)
-                total+=len(newItems)
-                initial_runtimeids=[item.element_info.runtime_id for item in visibile_items]
-        media_count=image_count+video_count
-        SystemSettings.close_listening_mode()
-        contents,senders=extract_info(texts)
-        #最后结束时再批量复制到target_folder,不在循环里逐个复制是考虑到若文件过大(几百mb)没有自动下载完成移动不了
-        if save_file and files:SystemSettings.copy_files(files,file_folder)#文件复制粘贴到target_folder/Files内
-        if save_media and media_count:Messages.save_media(friend=friend,number=media_count,target_folder=target_folder)#保存图片到target_folder/Images内
-        details={'新消息总数':total,'文本数量':len(texts),'文件数量':len(files),'图片数量':image_count,'视频数量':video_count,'链接数量':link_count,'文本内容':contents,'消息发送人':senders,'出入群通知':memberEvents}
-        if close_dialog_window:dialog_window.close()
-        return details
+        try:
+            try:
+                while time.time()<end_timestamp and not (stop_event is not None and stop_event.is_set()):
+                    visibile_items=get_visible_items()
+                    newItems=[item for position,item in enumerate(visibile_items) if get_item_key(item,position) not in initial_keys]
+                    if newItems:
+                        for item in newItems:
+                            raw_text=item.window_text()
+                            class_name=item.class_name()
+                            texts.append(raw_text)
+                            if message_records is not None:
+                                try:
+                                    bubble_state=Tools.is_my_bubble(item)
+                                except Exception:
+                                    bubble_state=None
+                                message_records.append((raw_text,class_name,get_runtime_id(item),bubble_state,time.time()))
+                            if class_name=='mmui::ChatItemView' and not timestamp_pattern.search(raw_text):
+                                memberEvents.append(item.window_text())
+                            if class_name=='mmui::ChatBubbleItemView' and link_label in raw_text:
+                                link_count+=1
+                            if class_name=='mmui::ChatBubbleReferItemView' and image_labal in raw_text:
+                                image_count+=1
+                            if class_name=='mmui::ChatBubbleReferItemView' and video_label in raw_text:
+                                video_count+=1
+                            if class_name=='mmui::ChatBubbleItemView' and file_label in raw_text:
+                                match=file_pattern.search(raw_text)
+                                if match:
+                                    filename=match.group(1)
+                                    filepath=os.path.join(chatfile_folder,timestamp,filename)
+                                    files.append(filepath)
+                        total+=len(newItems)
+                        initial_keys={get_item_key(item,position) for position,item in enumerate(visibile_items)}
+            finally:
+                SystemSettings.close_listening_mode()
+            media_count=image_count+video_count
+            contents,senders=extract_info(texts)
+            events=[]
+            if message_records is not None:
+                for sequence,(raw_text,class_name,runtime_id,bubble_state,observed_at) in enumerate(message_records):
+                    content=contents[sequence] if sequence<len(contents) else raw_text
+                    sender=senders[sequence] if sequence<len(senders) else None
+                    if class_name=='mmui::ChatItemView':
+                        direction=MessageDirection.SYSTEM
+                    elif bubble_state is True:
+                        direction=MessageDirection.OUTGOING
+                    elif bubble_state is False:
+                        direction=MessageDirection.INCOMING
+                    else:
+                        direction=MessageDirection.UNKNOWN
+                    if class_name=='mmui::ChatTextItemView':
+                        kind=MessageKind.TEXT
+                    elif image_labal in content:
+                        kind=MessageKind.IMAGE
+                    elif video_label in content:
+                        kind=MessageKind.VIDEO
+                    elif file_label in content:
+                        kind=MessageKind.FILE
+                    elif link_label in content:
+                        kind=MessageKind.LINK
+                    else:
+                        kind=MessageKind.OTHER
+                    event=MessageEvent(chat_id=friend,account_id=account_id,sender=sender,content=content,direction=direction,kind=kind,observed_at=observed_at,sequence=sequence_start+sequence,runtime_id=runtime_id,window_generation=window_generation,metadata={'class_name':class_name,'raw_text':raw_text,'position':sequence,'bubble_state':bubble_state})
+                    events.append(event)
+            if save_file and files:SystemSettings.copy_files(files,file_folder)
+            if save_media and media_count:Messages.save_media(friend=friend,number=media_count,target_folder=media_folder)
+            if event_ledger is not None:
+                events=event_ledger.filter(events)
+            details={'新消息总数':total,'文本数量':len(texts),'文件数量':len(files),'图片数量':image_count,'视频数量':video_count,'链接数量':link_count,'文本内容':contents,'消息发送人':senders,'出入群通知':memberEvents}
+            if return_events:
+                details['消息事件']=[event.to_dict() for event in events]
+            return details
+        finally:
+            if close_dialog_window:dialog_window.close()
 
     @staticmethod
     def listen_on_newMemberJoin(dialog_window:WindowSpecification,duration:str,close_dialog_window:bool=True)->list[str]:
@@ -4422,24 +4518,36 @@ class Monitor():
         is_group=Tools.is_group_chat(dialog_window)
         chatList=dialog_window.child_window(**Lists.FriendChatList)#聊天界面内存储所有信息的容器
         Tools.activate_chatList(chatList)
-        if chatList.children(control_type='ListItem'):
-            initial_message=chatList.children(control_type='ListItem')[-1]#刚打开聊天界面时的最后一条消息的listitem
-            initial_runtime_id=initial_message.element_info.runtime_id
-        if not chatList.children(control_type='ListItem'):
-            initial_runtime_id=0
+        def get_item_key(item,position):
+            try:
+                runtime_id=item.element_info.runtime_id
+            except Exception:
+                runtime_id=None
+            if runtime_id is None:
+                return (None,position,item.class_name(),item.window_text())
+            return (runtime_id,item.class_name())
+        try:
+            initial_items=chatList.children(control_type='ListItem')
+            initial_keys={get_item_key(item,position) for position,item in enumerate(initial_items)}
+        except Exception:
+            if close_dialog_window:dialog_window.close()
+            raise
         timestamp_pattern=Regex_Patterns.Message_Timestamp_pattern#系统消息的时间戳
         end_timestamp=time.time()+duration#根据秒数计算截止时间
         SystemSettings.open_listening_mode(volume=False)
-        while time.time()<end_timestamp:
-            if chatList.children(control_type='ListItem') and is_group:
-                newMessage=chatList.children(control_type='ListItem')[-1]
-                runtime_id=newMessage.element_info.runtime_id
-                if runtime_id!=initial_runtime_id: 
-                    if newMessage.class_name()=='mmui::ChatItemView' and not timestamp_pattern.search(newMessage.window_text()):
-                        details.append(newMessage.window_text())
-                    initial_runtime_id=runtime_id
-        SystemSettings.close_listening_mode()
-        if close_dialog_window:dialog_window.close()
+        try:
+            while time.time()<end_timestamp:
+                items=chatList.children(control_type='ListItem')
+                new_items=[item for position,item in enumerate(items) if get_item_key(item,position) not in initial_keys]
+                if is_group:
+                    for item in new_items:
+                        if item.class_name()=='mmui::ChatItemView' and not timestamp_pattern.search(item.window_text()):
+                            details.append(item.window_text())
+                if new_items:
+                    initial_keys={get_item_key(item,position) for position,item in enumerate(items)}
+        finally:
+            SystemSettings.close_listening_mode()
+            if close_dialog_window:dialog_window.close()
         return details
 
     @staticmethod
@@ -4517,22 +4625,22 @@ class Monitor():
             new_message_dict=sacn_for_new_messages(sessionList)
             newMessageDict.update(new_message_dict)
         end_timestamp=time.time()+duration
-        SystemSettings.open_listening_mode()#开个不息屏,不然时间长息屏了就难办了
-        #轮询监听会话列表
-        while time.time()<end_timestamp:
-            full_desc=weixinButton.element_info.element.GetCurrentPropertyValue(30159)
-            if re.search(r'\d+',full_desc) is not None:
-                newMessage_num=int(re.search(r'\d+',full_desc).group(0))
-            else:
-                newMessage_num=0
-            #新消息增量
-            has_newMessage=newMessage_num-initial_newMessage_num#这个是关键，得判断用不用扫描，如果没变化不用扫描
-            if has_newMessage:
-                new_message_dict=sacn_for_new_messages(sessionList)
-                initial_newMessage_num=newMessage_num
-                newMessageDict.update(new_message_dict)
-        SystemSettings.close_listening_mode()#最后把不息屏关掉
-        if close_weixin:main_window.close()
+        SystemSettings.open_listening_mode(volume=False)#开个不息屏,不然时间长息屏了就难办了
+        try:
+            while time.time()<end_timestamp:
+                full_desc=weixinButton.element_info.element.GetCurrentPropertyValue(30159)
+                if re.search(r'\d+',full_desc) is not None:
+                    newMessage_num=int(re.search(r'\d+',full_desc).group(0))
+                else:
+                    newMessage_num=0
+                has_newMessage=newMessage_num-initial_newMessage_num
+                if has_newMessage:
+                    new_message_dict=sacn_for_new_messages(sessionList)
+                    initial_newMessage_num=newMessage_num
+                    newMessageDict.update(new_message_dict)
+        finally:
+            SystemSettings.close_listening_mode()
+            if close_weixin:main_window.close()
         return newMessageDict
 
     @staticmethod
@@ -4612,24 +4720,24 @@ class Monitor():
             new_message_dict=sacn_for_new_messages(sessionList)
             newMessageDict.update(new_message_dict)
         end_timestamp=time.time()+duration
-        SystemSettings.open_listening_mode()#开个不息屏,不然时间长息屏了就难办了
-        #轮询监听会话列表
-        while time.time()<end_timestamp:
-            full_desc=weixinButton.element_info.element.GetCurrentPropertyValue(30159)
-            if re.search(r'\d+',full_desc) is not None:
-                newMessage_num=int(re.search(r'\d+',full_desc).group(0))
-            else:
-                newMessage_num=0
-            #新消息增量
-            has_newMessage=newMessage_num-initial_newMessage_num#这个是关键，得判断用不用扫描，如果没变化不用扫描
-            if has_newMessage:
-                new_message_dict=sacn_for_new_messages(sessionList)
-                initial_newMessage_num=newMessage_num
-                newMessageDict.update(new_message_dict)
-        for friend,num in newMessageDict.items():
-            newMessageDetail[friend]=Messages.pull_messages(friend=friend,number=num,myName=myName,search_pages=maxPages+1,close_weixin=False)
-        SystemSettings.close_listening_mode()#最后把不息屏关掉
-        if close_weixin:main_window.close()
+        SystemSettings.open_listening_mode(volume=False)#开个不息屏,不然时间长息屏了就难办了
+        try:
+            while time.time()<end_timestamp:
+                full_desc=weixinButton.element_info.element.GetCurrentPropertyValue(30159)
+                if re.search(r'\d+',full_desc) is not None:
+                    newMessage_num=int(re.search(r'\d+',full_desc).group(0))
+                else:
+                    newMessage_num=0
+                has_newMessage=newMessage_num-initial_newMessage_num
+                if has_newMessage:
+                    new_message_dict=sacn_for_new_messages(sessionList)
+                    initial_newMessage_num=newMessage_num
+                    newMessageDict.update(new_message_dict)
+            for friend,num in newMessageDict.items():
+                newMessageDetail[friend]=Messages.pull_messages(friend=friend,number=num,myName=myName,search_pages=maxPages+1,close_weixin=False)
+        finally:
+            SystemSettings.close_listening_mode()
+            if close_weixin:main_window.close()
         return newMessageDetail
 
 class Settings():

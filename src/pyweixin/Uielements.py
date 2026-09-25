@@ -617,7 +617,7 @@ class SideBar_Control():
             if version.parse(self.Version)>=version.parse('4.1.12'):
                 self.MiniProgram={'title':'小程序','control_type':'Button','found_index':0}#主界面左侧的小程序按钮
         if self.language=='English':
-            self.Weixin={'title':'Weixin','control_type':'Button','class_name':"mmui::XTabBarItem"}#主界面左侧的微信按钮
+            self.Weixin={'control_type':'Button','class_name':"mmui::XTabBarItem",'found_index':0}#主界面左侧的微信按钮
             self.Contacts={'title':'Contacts','control_type':'Button'}#主界面左侧的通讯录按钮
             self.Collections={'title':'Favorites','control_type':'Button','class_name':"mmui::XTabBarItem"}#主界面左侧的收藏按钮
             self.Moments={'title':'Moments','control_type':'Button','found_index':0}#主界面左侧的朋友圈按钮

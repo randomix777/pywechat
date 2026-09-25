@@ -763,9 +763,25 @@ class Navigator():
             window_size=GlobalConfig.window_size
         if not Tools.is_weixin_running():
             raise NotStartError
-        hwnd=win32gui.FindWindow('Qt51514QWindowIcon','微信')
-        if hwnd==0:hwnd=win32gui.FindWindow('Qt51514QWindowIcon','Weixin')
-        main_window=desktop.window(handle=hwnd)
+        hwnd=0
+        main_window=None
+        for window_title in ('WeChat','微信','Weixin'):
+            for window_class in ('Qt51514QWindowIcon','mmui::MainWindow'):
+                candidate_hwnd=win32gui.FindWindow(window_class,window_title)
+                if not candidate_hwnd:
+                    continue
+                try:
+                    candidate_window=desktop.window(handle=candidate_hwnd)
+                    if candidate_window.class_name()=='mmui::MainWindow':
+                        hwnd=candidate_hwnd
+                        main_window=candidate_window
+                        break
+                except Exception:
+                    pass
+            if main_window is not None:
+                break
+        if main_window is None:
+            raise NotFoundError
         if main_window.class_name()=='mmui::LoginWindow':
             raise NotLoginError
         if main_window.class_name()=='mmui::MainWindow':
@@ -882,7 +898,7 @@ class Navigator():
                     if friend_button is not None:
                         if not is_last:
                             friend_button.click_input()
-                            is_find=current_chat.exists(timeout=0.1)  
+                            is_find=current_chat.exists(timeout=1)
                         break
                     else:
                         session_list.type_keys("{PGDN}")
@@ -1327,27 +1343,15 @@ class Navigator():
                 friend:搜索的内容,好友或群聊的备注,公众号服务号名称等
                 search_result:微信主界面搜索内容后的结果列表,即Uielements内的Lists.SearchResult
             '''
-            texts=[listitem.window_text() for listitem in search_result.children(control_type="ListItem")]
-            listitems=search_result.children(control_type='ListItem')
-            #正常好友群聊服务号公众号的class_name是mmui::SearchContentCellView
-            if contact_label.intersection(texts):#交集
-                listitems=[listitem for listitem in listitems if listitem.class_name()=="mmui::SearchContentCellView"]
-                listitems=[listitem for listitem in listitems if listitem.window_text()==friend]
-                if listitems:
-                    return listitems[0],True
-            
-            if not_contact_label.intersection(texts):#交集
-                listitems=[listitem for listitem in listitems if listitem.class_name()=="mmui::SearchContentCellView"]
-                listitems=[listitem for listitem in listitems if listitem.window_text()==friend]
-                if listitems:
-                    return listitems[0],False
-                
-            if xtable_label.intersection(texts):#功能比如文件传输助手,微信支付的class_name是mmui::XTableCell
-                listitems=search_result.children(control_type='ListItem',class_name="mmui::XTableCell")
-                listitems=[listitem for listitem in listitems if listitem.window_text()==friend]
-                if listitems:
-                    return listitems[0],True
-            return None   
+            exact_items=[item for item in search_result.children(control_type='ListItem') if item.window_text()==friend]
+            contact_items=[item for item in exact_items if item.class_name()=='mmui::SearchContentCellView']
+            if contact_items:
+                return contact_items[0],True
+            table_items=[item for item in exact_items if item.class_name()=='mmui::XTableCell']
+            if table_items:
+                return table_items[0],True
+            return None
+
 
         if is_maximize is None:
             is_maximize=GlobalConfig.is_maximize
@@ -1387,7 +1391,22 @@ class Navigator():
                     selected_items[0].double_click_input()
                 # else: 主界面已经显示该好友(session_list 没有 selected 项),
                 # 跳过 double_click 直接 fall through 到 move_window_to_center
-            dialog_window=Tools.move_window_to_center(Window={'class_name':'mmui::ChatSingleWindow','title':f'{friend}'})
+            dialog_handle=0
+            normalized_friend=friend.replace('\ufe0f','')
+            for _ in range(30):
+                dialog_candidates=[window for window in desktop.windows() if window.class_name()=='mmui::ChatSingleWindow']
+                exact_candidates=[window for window in dialog_candidates if window.window_text().replace('\ufe0f','')==normalized_friend]
+                if exact_candidates:
+                    dialog_handle=exact_candidates[0].handle
+                    break
+                if len(dialog_candidates)==1:
+                    dialog_handle=dialog_candidates[0].handle
+                    break
+                time.sleep(0.1)
+            if not dialog_handle:
+                main_window.close()
+                raise NoSuchFriendError
+            dialog_window=Tools.move_window_to_center(Window_handle=dialog_handle)
             if select:Tools.select_chatList(dialog_window)
             if window_minimize:
                 win32gui.SendMessage(dialog_window.handle, win32con.WM_SYSCOMMAND, win32con.SC_MINIMIZE, 0)
@@ -1458,8 +1477,7 @@ class Navigator():
             close_weixin=GlobalConfig.close_weixin
         if search_pages is None:
             search_pages=GlobalConfig.search_pages
-        #增加窗口名称,避免出现打开多个聊天窗口时出现ElementAmbigousError
-        ChatHistoryWindow=Independent_window.ChatHistoryWindow
+        ChatHistoryWindow={'control_type':'Window','class_name':'mmui::SearchMsgUniqueChatWindow','found_index':0}
         main_window=Navigator.open_dialog_window(friend=friend,is_maximize=is_maximize,search_pages=search_pages)
         chat_history_button=main_window.child_window(**Buttons.ChatHistoryButton)
         if not chat_history_button.exists(timeout=0.2):
@@ -1481,7 +1499,7 @@ class Navigator():
                     title_re=rf'"{friend}"的'#4.1.12“”换成了""
                 else:
                     title_re=rf'“{friend}”的'#4.1.12“”换成了""
-            if GlobalConfig.language=='English':title_re=rf'Chat History for "{friend}"'
+            if GlobalConfig.language=='English':title_re=rf'(?:Chat history of|Chat History for) "{friend}"'
             if GlobalConfig.language=='繁體中文':title_re=rf'「{friend}」的'
         ChatHistoryWindow['title_re']=title_re
         ChatHistoryWindow['found_index']=0

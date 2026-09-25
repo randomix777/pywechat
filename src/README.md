@@ -272,6 +272,45 @@ Navigator.search_official_account(name='微信')
 
 #### 其他使用方法可见代码中详细的文档注释以及pyweixin操作手册.docx
 
+### 可靠性扩展
+
+`pyweixin.reliability` 提供结构化消息事件、带 TTL 的去重账本、串行 UI 操作队列和有限重试工具：
+
+```python
+from pyweixin import MessageEvent, MessageLedger, UiOperationQueue
+
+ledger = MessageLedger(ttl_seconds=900)
+event = MessageEvent(chat_id='chat', content='hello', stable_id='message-1')
+if ledger.accept(event):
+    print(event.to_dict())
+
+with UiOperationQueue(max_pending=100) as queue:
+    future = queue.submit(print, 'ui operation')
+    future.result()
+```
+
+对于 UI 自动化，无法仅凭运行时控件 ID 保证消息业务唯一性；接入层应优先提供 `stable_id`，使用 `sequence` 时必须由调用方提供跨轮询持久序号，并对无法识别的重复文本保留人工对账能力。
+
+### 本地 Agent 与云端控制层
+
+本地 Agent 负责历史补读、实时监听、SQLite 事件账本和串行发送；云端只通过出站 HTTPS 接收健康状态、事件和命令。云端远程地址必须使用 HTTPS。
+
+```bash
+python -m pyweixin.agent_cli --group "Family 家" --history 50 --listen 30s --db agent.db --once
+```
+
+不配置 `--cloud-url` 时，Agent 完全在本地运行；配置后使用 `CloudClient` 对接心跳、事件上传、命令拉取和命令确认接口。历史补读默认对每个 `--db` 只执行一次；需要重新导入时使用新的数据库文件。
+
+本地参考云端服务：
+
+```bash
+python -m pyweixin.cloud_server --host 127.0.0.1 --port 8787 --token change-me --db cloud.db
+```
+
+多 Agent 部署时可用 `PYWEIXIN_AGENT_TOKENS` 环境变量提供 JSON 对象（例如 `{"agent-1":"..."}`），服务端会按 `X-Agent-Id` 校验独立 token；生产环境仍应放在 HTTPS 反向代理和密钥管理系统之后。
+
+参考服务默认只监听本机，生产环境应放到 HTTPS 反向代理和独立数据库之后。
+
 ### Pywechat(3.9+微信)
 
 #### WechatTools🌪️

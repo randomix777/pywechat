@@ -12,3 +12,8 @@ _patch_*.py
 _quote_*.txt
 __pycache__/
 *.pyc
+!tests/
+!tests/test_*.py
+*.db
+*.db-shm
+*.db-wal
