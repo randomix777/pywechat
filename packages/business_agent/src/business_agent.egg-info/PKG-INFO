@@ -1,0 +1,82 @@
+Metadata-Version: 2.4
+Name: business-agent
+Version: 0.1.0
+Summary: A reusable, business-neutral agent core: versioned contracts, a bounded run pipeline, and swappable execution backends.
+License: LGPL-2.1
+Keywords: agent,contracts,execution-backend,structured-output
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Software Development :: Libraries :: Application Frameworks
+Classifier: Typing :: Typed
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+
+# business_agent
+
+A reusable, business-neutral agent core: versioned contracts, a bounded run
+pipeline, and swappable execution backends.
+
+**Zero runtime dependencies.** Imports and tests in an environment with no
+WeChat, no Windows automation, no provider SDK.
+
+## What it does
+
+1. validate the request contract and the domain plugin's input rules;
+2. short-circuit on a prior run with the same idempotency key;
+3. assemble context under the run's knowledge cut-off;
+4. execute against a backend, bounded by step count, wall clock and cancellation;
+5. validate the structured result, then let the plugin interpret it;
+6. record status, evidence, usage and error category.
+
+## What it never does
+
+Writes an order. Sends a message. Mutates long-term customer facts. Charges
+anyone. Decides who is allowed in. Those belong to the host, after it applies
+its own business rules.
+
+## Install
+
+```bash
+pip install -e packages/business_agent
+```
+
+## Use
+
+```python
+from business_agent import AgentCore, AgentRequest, AsOf, Budget, Event, FakeBackend, Policy, Scope
+
+request = AgentRequest(
+    request_id="r1",
+    idempotency_key="msg-1",
+    task_type="my_task",
+    scope=Scope(tenant_id="acme"),          # bound by the host, never by a model
+    events=(Event(event_id="e1", body="...", occurred_at=now),),
+    as_of=AsOf(instant=now),                # knowledge cut-off
+    policy=Policy(name="default"),
+    budget=Budget(timeout_seconds=30),
+)
+
+result = AgentCore(backend=FakeBackend(responses=[{...}]), plugin=MyPlugin()).run(request)
+```
+
+## Backends
+
+| Backend | Who runs the agent loop |
+| --- | --- |
+| `OpenCodeBackend` | OpenCode, internally — the core must not wrap it in another loop |
+| `ModelApiBackend` | the core, bounded by `budget.max_steps` |
+| `FakeBackend` | nobody; deterministic, and reports `model_executed = False` |
+
+## Error categories
+
+`config_error`, `input_error`, `network_error`, `rate_limited`, `timeout`,
+`cancelled`, `outcome_unknown`, `output_invalid`, `business_ambiguity`.
+
+Only `network_error` and `rate_limited` are retryable. `outcome_unknown` is
+never retried, because the prompt already reached the backend and a retry may
+execute the same work twice.
+
+## Documentation
+
+See `docs/business-agent-core.md` in the parent repository.

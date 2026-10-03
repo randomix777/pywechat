@@ -1,0 +1,65 @@
+Metadata-Version: 2.4
+Name: support-triage-agent
+Version: 0.1.0
+Summary: Example: a second business domain reusing business_agent, with no WeChat dependency.
+License: LGPL-2.1
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: business-agent>=0.1.0
+
+# support_triage
+
+A second business domain on the same [`business_agent`](../business_agent) core.
+
+It exists to answer one question honestly: *is the core actually reusable, or is
+it a WeChat agent with the serial numbers filed off?*
+
+So it shares nothing with the order domain except the core:
+
+| | order_agent | support_triage |
+| --- | --- | --- |
+| input | a customer order message | any inbound support message |
+| output | intent + items + evidence | category + urgency + reply suggestion |
+| policy | record automatically? | escalate or answer? |
+
+It imports no WeChat, no Windows automation, no order database, no product login
+and no billing module.
+
+## Run
+
+```bash
+pip install -e packages/support_triage
+support-triage --text "我要退款"
+
+# or without installing
+PYTHONPATH=packages/business_agent/src:packages/support_triage/src \
+  python -m support_triage --text "我的订单还没到" --json
+```
+
+```text
+输入：我要退款
+状态：needs_review（需要您确认）
+分类：refund　紧急度：urgent
+回复建议：已收到您的退款诉求，正在为您核实。
+  · 需要关注：needs_human — routed to a human by policy
+```
+
+## Policy
+
+A refund dispute is never auto-answered, no matter how confident a model sounds.
+Neither is an ungrounded citation: if the evidence quote does not appear in the
+message, the result is escalated rather than applied.
+
+## Swapping in a real model
+
+The default backend is deterministic so the example runs with no credentials.
+For a real run:
+
+```python
+from business_agent import AgentCore, ModelApiBackend
+from support_triage import SupportTriagePlugin, triage
+
+backend = ModelApiBackend(base_url=..., api_key=..., model=...)
+result = triage("我的订单还没到", backend=backend)
+result.usage.model_executed   # True
+```

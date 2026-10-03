@@ -309,7 +309,7 @@ python -m pyweixin.cloud_server --host 127.0.0.1 --port 8787 --token change-me -
 
 多 Agent 部署时可用 `PYWEIXIN_AGENT_TOKENS` 环境变量提供 JSON 对象（例如 `{"agent-1":"..."}`），服务端会按 `X-Agent-Id` 校验独立 token；生产环境仍应放在 HTTPS 反向代理和密钥管理系统之后。
 
-参考服务默认只监听本机，生产环境应放到 HTTPS 反向代理和独立数据库之后。
+参考服务默认只监听本机，生产环境应放到 HTTPS 反向代理和独立数据库之后。启动后访问 `http://127.0.0.1:8787/console`，输入 token 即可查看 Agent、事件和命令队列；可用 `PYWEIXIN_CONSOLE_TOKEN` 为控制台单独设置访问令牌。
 
 ### Pywechat(3.9+微信)
 

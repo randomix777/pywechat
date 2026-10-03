@@ -265,6 +265,7 @@ class UiOperationQueue:
         self._close_complete = Event()
         self._thread = Thread(target=self._run, name=thread_name, daemon=True)
         self._closed = False
+        self._running = False
         self._thread.start()
 
     @property
@@ -279,6 +280,18 @@ class UiOperationQueue:
     @property
     def alive(self) -> bool:
         return self._thread.is_alive()
+
+    @property
+    def busy(self) -> bool:
+        """当前**正在执行**某个操作。
+
+        和 :attr:`pending` 不一样：``pending`` 只数排队的，正在跑的那一个
+        已经出队了。读历史一次可能跑几分钟，这段时间里别的线程
+        （比如每几秒查一次微信状态的监视器）必须知道**别去碰微信窗口** ——
+        两个线程同时驱动同一个窗口，读出来的是残缺甚至空的结果。
+        """
+        with self._state_lock:
+            return self._running or not self._queue.empty()
 
     def submit(self, operation: Callable[..., T], *args: Any, **kwargs: Any) -> Future:
         if not callable(operation):
@@ -319,6 +332,8 @@ class UiOperationQueue:
                 try:
                     if not future.set_running_or_notify_cancel():
                         continue
+                    with self._state_lock:
+                        self._running = True
                     try:
                         result = operation(*args, **kwargs)
                     except BaseException as exc:
@@ -329,6 +344,8 @@ class UiOperationQueue:
                     if not future.done():
                         future.set_exception(exc)
                 finally:
+                    with self._state_lock:
+                        self._running = False
                     self._queue.task_done()
         except BaseException as exc:
             self._fail_pending(exc)

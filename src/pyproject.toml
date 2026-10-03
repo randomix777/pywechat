@@ -33,7 +33,12 @@ dependencies=[
     "pillow>=10.4.0",
     "sounddevice>=0.5.1",
     "soundfile>=0.13.1",
-    "packaging>=23.2"
+    "packaging>=23.2",
+    # Windows has no system IANA time zone database, so `zoneinfo` cannot
+    # resolve `Asia/Shanghai` & co. without it. The gateway counts the daily
+    # free quota in the operator's configured time zone; without this package
+    # that silently degrades to UTC.
+    "tzdata>=2024.1; sys_platform == 'win32'"
 ]
 
 

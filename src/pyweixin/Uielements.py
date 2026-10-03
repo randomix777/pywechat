@@ -814,11 +814,10 @@ class Regex_Pattern():
             self.Contain_Images_pattern=re.compile(r'\s包含(\d+)张图片\s')#朋友圈包含\d+张图片
             self.Chafile_Timestamp_pattern=re.compile(r'(\d{4}年\d{1,2}月\d{1,2}日|\d{1,2}月\d{1,2}日|昨天|星期\w|\d{1,2}:\d{2})')#微信聊天文件时间戳
             self.Snsdetail_Timestamp_pattern=re.compile(r'\s(\d{4}年\d{1,2}月\d{1,2}日\s\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{1,2}:\d{2}|昨天\s\d{1,2}:\d{2}|星期\w\s\d{1,2}:\d{2}|\d{1,2}:\d{2})\s')#微信好友朋友圈主页内的时间戳,注意使用findall()[-1]获取不要直接search因为朋友群文本内容内可能也有类似的,但无论如何真正的时间戳永远是最后被匹配到,所以[-1]
-            self.Chathistory_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}年\d{1,2}月\d{1,2}日\s\d{2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{2}:\d{2}|\d{2}:\d{2}|昨天\s\d{2}:\d{2}|星期\w\s\d{2}:\d{2})$')#聊天记录界面内的时间戳
+            self.Chathistory_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}年\d{1,2}月\d{1,2}日\s\d{1,2}:\d{2}|\d{4}-\d{1,2}-\d{1,2}\s\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{1,2}:\d{2}|\d{1,2}:\d{2}|昨天\s\d{1,2}:\d{2}|星期\w\s\d{1,2}:\d{2})$')#聊天记录界面内的时间戳
             self.Session_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}/\d{1,2}/\d{1,2}|\d{1,2}/\d{1,2}|\d{2}:\d{2}|昨天 \d{2}:\d{2}|星期\w)$')#主界面左侧会话列表内的时间戳
             self.File_pattern=re.compile(r'文件\n(.*)\n')#微信聊天窗口发送的聊天文件卡片上的内容(有两个换行符)
-            self.Message_Timestamp_pattern=re.compile(r'(\d{4}年\d{1,2}月\d{1,2}日\s星期\w\s\d{2}:\d{2}|\d{1,2}月\d{1,2}日\s星期\w\s\d{2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{2}:\d{2}|昨天\s\d{2}:\d{2}|星期\w\s\d{2}:\d{2}|\d{2}:\d{2})')#聊天界面内的时间戳
-            self.newMessage_pattern=re.compile(r'\n\[(\d+)条\]')#微信主页左侧会话列表内带有新消息提示的好友
+            self.Message_Timestamp_pattern=re.compile(r'(\d{4}年\d{1,2}月\d{1,2}日\s星期\w\s\d{2}:\d{2}|\d{1,2}月\d{1,2}日\s星期\w\s\d{2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{2}:\d{2}|昨天\s\d{2}:\d{2}|星期\w\s\d{2}:\d{2}|\d{2}:\d{2})')#聊天界面内的时间戳            self.newMessage_pattern=re.compile(r'\n\[(\d+)条\]')#微信主页左侧会话列表内带有新消息提示的好友
         if self.language=='English':
             self.Audio_pattern=re.compile(r'(?<=Audio)\d+"sec(.*)$')#语音转文字后的文本内容
             self.Fav_Timestamp_pattern=re.compile(r'(Today|Yesterday|Wednesday|Tuesday|Monday|Thursday|Friday|Saturday|Sunday|\d+/\d+|\d+-\d+-\d+)$')#收藏界面中右侧列表内项目的时间戳,注意使用findall()[-1]获取不要直接search
@@ -826,7 +825,10 @@ class Regex_Pattern():
             self.Contain_Images_pattern=re.compile(r'\sContain\s(\d+)\simage\(s\)\s')#朋友圈包含\d+张图片
             self.Chafile_Timestamp_pattern=re.compile(r'(\d{4}-\d{1,2}-\d{1,2}|Yesterday|\w+day|\d{1,2}:\d{2})')#微信聊天文件界面内文件右下角的时间戳
             self.Snsdetail_Timestamp_pattern=re.compile(r'\s(\d{4}-\d{1,2}-\d{1,2}\s\d{1,2}:\d{2}|Yesterday\s\d{1,2}:\d{2}|\d{1,2}:\d{2})\s')#微信好友朋友圈主页内的时间戳
-            self.Chathistory_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}-\d{1,2}-\d{1,2}\s\d{2}:\d{2})$')#聊天记录界面内的时间戳
+            # 日和小时都允许一位数：微信在英文界面下会渲染成 "2026-9-25 9:07"。
+            # 原来要求两位，导致时间戳没被剥掉，直接混进消息正文 ——
+            # 那样解析出来的 evidence 会永远对不上原文。
+            self.Chathistory_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}-\d{1,2}-\d{1,2}\s\d{1,2}:\d{2})$')#聊天记录界面内的时间戳
             self.Session_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}/\d{1,2}/\d{1,2}|\d{1,2}/\d{1,2}|\d{2}:\d{2}|Yesterday \d{2}:\d{2}|\w+day)$')#主界面左侧会话列表内的时间戳
             self.File_pattern=re.compile(r'File\n(.*)\n')#微信聊天窗口发送的聊天文件卡片上的内容(有两个换行符)
             self.Message_Timestamp_pattern=re.compile(r'(\d{4}-\d{1,2}-\d{1,2}\s\d{2}:\d{2}|\d{1,2}/\d{1,2}\s\d{2}:\d{2}|Yesterday\s\d{2}:\d{2}|\w+day\s\d{2}:\d{2}|\d{2}:\d{2})')#聊天界面内的时间戳
@@ -838,7 +840,7 @@ class Regex_Pattern():
             self.Contain_Images_pattern=re.compile(r'\s包含\s(\d+)\s張圖片\s')#朋友圈包含\d+张图片
             self.Chafile_Timestamp_pattern=re.compile(r'(\d{4}年\d{1,2}月\d{1,2}日|\d{1,2}月\d{1,2}日|昨天|星期\w|\d{1,2}:\d{2})')#微信聊天文件时间戳
             self.Snsdetail_Timestamp_pattern=re.compile(r'\s\d{4}年\d{1,2}月\d{1,2}日\s\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{1,2}:\d{2}|昨天\s\d{1,2}:\d{2}|星期\w\s\d{1,2}:\d{2}|\d{1,2}:\d{2}\s')#微信好友朋友圈主页内的时间戳,注意使用findall()[-1]获取不要直接search因为朋友群文本内容内可能也有类似的,但无论如何真正的时间戳永远是最后被匹配到,所以[-1]
-            self.Chathistory_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}年\d{1,2}月\d{1,2}日\s\d{2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{2}:\d{2}|\d{2}:\d{2}|昨天\s\d{2}:\d{2}|星期\w\s\d{2}:\d{2})$')#聊天记录界面内的时间戳
+            self.Chathistory_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}年\d{1,2}月\d{1,2}日\s\d{1,2}:\d{2}|\d{4}-\d{1,2}-\d{1,2}\s\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{1,2}:\d{2}|\d{1,2}:\d{2}|昨天\s\d{1,2}:\d{2}|星期\w\s\d{1,2}:\d{2})$')#聊天记录界面内的时间戳
             self.Session_Timestamp_pattern=re.compile(r'(?<=\s)(\d{4}/\d{1,2}/\d{1,2}|\d{1,2}/\d{1,2}|\d{2}:\d{2}|昨天 \d{2}:\d{2}|星期\w)$')#主界面左侧会话列表内的时间戳
             self.File_pattern=re.compile(r'檔案\n(.*)\n')#微信聊天窗口发送的聊天文件卡片上的内容(有两个换行符)
             self.Message_Timestamp_pattern=re.compile(r'(\d{4}年\d{1,2}月\d{1,2}日\s星期\w\s\d{2}:\d{2}|\d{1,2}月\d{1,2}日\s星期\w\s\d{2}:\d{2}|\d{1,2}月\d{1,2}日\s\d{2}:\d{2}|昨天\s\d{2}:\d{2}|星期\w\s\d{2}:\d{2}|\d{2}:\d{2})')#聊天界面内的时间戳

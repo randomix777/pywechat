@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "business-agent"
+version = "0.1.0"
+description = "A reusable, business-neutral agent core: versioned contracts, a bounded run pipeline, and swappable execution backends."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "LGPL-2.1" }
+keywords = ["agent", "contracts", "execution-backend", "structured-output"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+
+# No runtime dependencies on purpose: the core must install and import in an
+# environment that has no WeChat, no Windows automation and no provider SDK.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+business_agent = ["py.typed"]

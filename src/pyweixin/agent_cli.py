@@ -12,10 +12,10 @@ from .cloud import CloudClient
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pyweixin-agent")
-    parser.add_argument("--group", required=True)
-    parser.add_argument("--db", default="agent.db")
-    parser.add_argument("--account-id", default="default")
-    parser.add_argument("--agent-id", default="default")
+    parser.add_argument("--group", default=os.environ.get("PYWEIXIN_GROUP", ""))
+    parser.add_argument("--db", default=os.environ.get("PYWEIXIN_AGENT_DB", "agent.db"))
+    parser.add_argument("--account-id", default=os.environ.get("PYWEIXIN_ACCOUNT_ID", "default"))
+    parser.add_argument("--agent-id", default=os.environ.get("PYWEIXIN_AGENT_ID", "default"))
     parser.add_argument("--history", type=int, default=50)
     parser.add_argument("--listen", default="30s")
     parser.add_argument("--poll-interval", type=float, default=5.0)
@@ -23,13 +23,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--background", action="store_true")
     parser.add_argument("--no-history", action="store_true")
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--cloud-url", default="")
+    parser.add_argument("--cloud-url", default=os.environ.get("PYWEIXIN_CLOUD_URL", ""))
     parser.add_argument("--device-token", default=os.environ.get("PYWEIXIN_DEVICE_TOKEN", ""))
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not args.group:
+        build_parser().error("--group or PYWEIXIN_GROUP is required")
     config = AgentConfig(
         group=args.group,
         db_path=args.db,

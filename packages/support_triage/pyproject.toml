@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "support-triage-agent"
+version = "0.1.0"
+description = "Example: a second business domain reusing business_agent, with no WeChat dependency."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "LGPL-2.1" }
+dependencies = ["business-agent>=0.1.0"]
+
+[project.scripts]
+support-triage = "support_triage:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,52 @@
+{
+  "_comment": "运营配置的模型允许列表。别名由运营命名，客户只看得到它。",
+  "_how_free_is_decided": "只有这里能决定对客户是否免费。模型名带 free、上游价格为 0、或包含在订阅里，都不构成免费。",
+  "_upstream": "provider_id / model_id 由服务端解析和管理，不会下发给客户端。",
+  "_billing_basis": "实际扣费只认结构化字段：pricing_class / cost_units_per_job / daily_free_limit / max_concurrent_per_tenant / requests_per_minute / policy_version。charge_note 是展示文案；它写的次数与 cost_units_per_job 冲突时以策略为准。",
+  "_two_numbers": "cost_units_per_job = 每条任务扣多少『分析额度』（收费模型用，免费模型恒为 0）；daily_free_limit = 每天免费分析『次数』上限。两者单位不同，不要混用。",
+  "_free_quota_timezone": "每日免费额度按这个 IANA 时区重置。Windows 上必须安装 tzdata，否则会（并告警地）回落到 UTC。",
+  "_failover_to": "保留字段，本产品不实现自动换模型。上游失败时任务失败并保留待处理，不会偷偷改用收费模型。",
+  "models": [
+    {
+      "alias": "free-standard",
+      "provider_id": "opencode-go",
+      "model_id": "qwen3.6-plus",
+      "pricing_class": "free",
+      "daily_free_limit": 50,
+      "free_quota_timezone": "Asia/Shanghai",
+      "is_default": true,
+      "enabled": true,
+      "summary": "适合日常订单",
+      "capabilities": ["order_parse"],
+      "max_input_tokens": 120000,
+      "max_output_tokens": 4000,
+      "max_task_seconds": 300,
+      "max_concurrent_per_tenant": 2,
+      "requests_per_minute": 20,
+      "cost_units_per_job": 0,
+      "policy_version": "1",
+      "charge_note": "",
+      "failover_to": ""
+    },
+    {
+      "alias": "paid-deep",
+      "provider_id": "opencode-go",
+      "model_id": "qwen3.6-plus",
+      "pricing_class": "metered",
+      "daily_free_limit": 0,
+      "is_default": false,
+      "enabled": true,
+      "summary": "分析较慢，适合疑难订单",
+      "capabilities": ["order_parse"],
+      "max_input_tokens": 200000,
+      "max_output_tokens": 8000,
+      "max_task_seconds": 600,
+      "max_concurrent_per_tenant": 1,
+      "requests_per_minute": 10,
+      "cost_units_per_job": 1,
+      "policy_version": "1",
+      "charge_note": "该模型会消耗分析额度，每分析一条消息扣 1 次额度",
+      "failover_to": ""
+    }
+  ]
+}

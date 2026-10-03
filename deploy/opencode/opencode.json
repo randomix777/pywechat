@@ -1,0 +1,67 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "share": "disabled",
+  "autoupdate": false,
+  "default_agent": "order-parse",
+
+  "permission": {
+    "*": "deny"
+  },
+
+  "disabled_providers": [
+    "local",
+    "local-llm"
+  ],
+
+  "experimental": {
+    "policies": [
+      {
+        "action": "provider.use",
+        "resource": "*",
+        "effect": "deny"
+      },
+      {
+        "action": "provider.use",
+        "resource": "PLACEHOLDER_PROVIDER",
+        "effect": "allow"
+      }
+    ]
+  },
+
+  "agent": {
+    "order-parse": {
+      "description": "商家群消息订单解析：只读输入，输出固定 JSON，不使用任何工具。",
+      "mode": "primary",
+      "model": "PLACEHOLDER_PROVIDER/PLACEHOLDER_MODEL",
+      "temperature": 0,
+      "steps": 2,
+      "permission": {
+        "*": "deny",
+        "read": "deny",
+        "edit": "deny",
+        "glob": "deny",
+        "grep": "deny",
+        "list": "deny",
+        "bash": "deny",
+        "task": "deny",
+        "skill": "deny",
+        "lsp": "deny",
+        "todowrite": "deny",
+        "question": "deny",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "external_directory": "deny",
+        "doom_loop": "deny"
+      }
+    },
+
+    "build": { "disable": true },
+    "plan": { "disable": true },
+    "general": { "disable": true },
+    "explore": { "disable": true },
+    "title": { "disable": true },
+    "summary": { "disable": true },
+    "compaction": { "disable": true }
+  }
+}

@@ -1,4 +1,5 @@
 import http.client
+import json
 import os
 import sys
 import tempfile
@@ -31,7 +32,11 @@ class AgentTests(unittest.TestCase):
         contents, senders, timestamps, message_types = parse_group_chat_history(with_name, without_name, [])
         self.assertEqual(contents[0], "【pyweixin 端到端测试】这是一条自动化测试消息，请忽略。")
         self.assertEqual(contents[1], "他们回来没有阿？")
-        self.assertIsNone(senders[0])
+        # 微信在聊天记录列表里不暴露昵称，切不出发送人。这里曾经断言 is None ——
+        # 那是把缺陷当成了期望值：真机读到的 20 条消息发送人全是 None，无从归属
+        # 客户。现在四个分支统一回落到同一个占位符。
+        self.assertEqual(senders[0], "红包或转账(无法获取发送人)")
+        self.assertTrue(all(senders))
         self.assertEqual(timestamps[0], "2026-9-25 11:47")
         self.assertEqual(message_types[0], "文本")
 
@@ -165,6 +170,37 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(store.event_count(), 2)
             agent.close()
             store.close()
+
+    def test_history_event_preserves_media_kind_for_review_queue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store=AgentStore(Path(directory)/"agent.db")
+            agent=LocalAgent(AgentConfig(group="chat",history_limit=0,listen_duration="0s"),store=store)
+            self.assertEqual(agent._history_event({"消息内容":"[图片]","消息类型":"图片"}).kind.value,"image")
+            self.assertEqual(agent._history_event({"消息内容":"[语音]","消息类型":"语音"}).kind.value,"voice")
+            agent.close();store.close()
+
+    def test_business_event_outbox_retries_independently_and_survives_restart(self):
+        class Cloud:
+            def __init__(self):self.business_calls=0;self.event_calls=0
+            def send_events(self,events):self.event_calls+=1
+            def send_business_events(self,events):
+                self.business_calls+=1
+                if self.business_calls==1:raise OSError("temporary business API outage")
+            def fetch_commands(self):return []
+            def heartbeat(self,health):return None
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"agent.db";store=AgentStore(path);cloud=Cloud()
+            config=AgentConfig(group="chat",db_path=str(path),history_limit=0,listen_duration="0s")
+            agent=LocalAgent(config,store=store,cloud=cloud);event=MessageEvent("chat","hello",stable_id="stable-1")
+            agent._record_event(event);agent._publish([event])
+            self.assertEqual(store.pending_business_upload_count(),1)
+            with store._lock,store._connection:store._connection.execute("UPDATE business_uploads SET next_attempt_at=0")
+            store.close()
+            resumed=AgentStore(path);agent.store=resumed;agent._publish([])
+            self.assertEqual(cloud.event_calls,1)
+            self.assertEqual(cloud.business_calls,2)
+            self.assertEqual(resumed.pending_business_upload_count(),0)
+            agent.close();resumed.close()
 
     def test_local_agent_does_not_send_after_stop_requested(self):
         sent = []
@@ -432,6 +468,65 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(cloud.acks[-1], ("cloud-1", {"state": "completed"}))
             agent.close()
             store.close()
+
+    def test_console_page_and_state_require_console_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server, store = create_server("127.0.0.1", 0, "secret", str(Path(directory) / "cloud.db"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            try:
+                connection.request("GET", "/console")
+                response = connection.getresponse()
+                body = response.read()
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"pyweixin", body)
+                connection.request("GET", "/api/v1/console/state")
+                self.assertEqual(connection.getresponse().status, 401)
+                connection.request("GET", "/api/v1/console/state", headers={"Authorization": "Bearer secret"})
+                response = connection.getresponse()
+                state = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertIn("health", state)
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                store.close()
+                thread.join(timeout=2)
+
+    def test_console_enqueues_command_for_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server, store = create_server("127.0.0.1", 0, "secret", str(Path(directory) / "cloud.db"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            try:
+                payload = json.dumps(
+                    {
+                        "agent_id": "agent-1",
+                        "action": "send_text",
+                        "target": "chat",
+                        "payload": {"text": "from-console"},
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/v1/console/commands",
+                    body=payload,
+                    headers={"Authorization": "Bearer secret", "Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                result = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertTrue(result["created"])
+                self.assertEqual(store.list_command_history("agent-1")[0]["payload"], {"text": "from-console"})
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                store.close()
+                thread.join(timeout=2)
 
     def test_local_cloud_reference_server_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:

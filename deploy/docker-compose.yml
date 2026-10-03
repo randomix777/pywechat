@@ -1,0 +1,114 @@
+# Product gateway + OpenCode execution backend.
+#
+# Two application services, one persistent SQLite volume, no Redis, no message
+# broker, no Kubernetes. The job queue is a table in the gateway database.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Before first start: copy deploy/gateway.env.example to deploy/gateway.env and
+# fill in the secrets. Never commit the filled-in file.
+
+name: pyweixin-gateway
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: pyweixin-gateway:1.0.0
+    restart: unless-stopped
+    env_file:
+      - ./gateway.env
+    environment:
+      # Loopback inside the container: the gateway never listens on a public
+      # interface directly. TLS is terminated by the reverse proxy below.
+      PYWEIXIN_GATEWAY_HOST: "0.0.0.0"
+      PYWEIXIN_GATEWAY_PORT: "8080"
+      PYWEIXIN_PRODUCT_DB: "/data/product.db"
+      PYWEIXIN_OPENCODE_URL: "http://opencode:4096"
+      PYWEIXIN_SECURE_COOKIES: "1"
+    volumes:
+      - gateway-data:/data
+    depends_on:
+      opencode:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status==200 else 1)"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    networks:
+      - internal
+
+  opencode:
+    image: ghcr.io/anomalyco/opencode:1.18.32
+    restart: unless-stopped
+    # Container-internal only. `ports:` is intentionally absent so OpenCode is
+    # never reachable from the host or the public internet.
+    environment:
+      # Server auth is OFF unless OPENCODE_SERVER_PASSWORD is non-empty.
+      # The gateway refuses to start its adapter without one.
+      OPENCODE_SERVER_PASSWORD: "${OPENCODE_SERVER_PASSWORD:?set OPENCODE_SERVER_PASSWORD}"
+      OPENCODE_SERVER_USERNAME: "${OPENCODE_SERVER_USERNAME:-opencode}"
+      # Upstream model credential. Exists only inside this container.
+      # Replace with the single provider the pilot is authorised to use.
+      OPENCODE_API_KEY: "${OPENCODE_MODEL_API_KEY:?set OPENCODE_MODEL_API_KEY}"
+      # Keep all OpenCode state on the data volume so it can be backed up and
+      # so session cleanup can be verified on disk.
+      OPENCODE_DB: "/data/opencode/opencode.db"
+      XDG_DATA_HOME: "/data/opencode"
+      XDG_CONFIG_HOME: "/config"
+    volumes:
+      - ./opencode/opencode.json:/config/opencode.json:ro
+      - ./opencode/agents:/config/agents:ro
+      - opencode-data:/data/opencode
+    working_dir: /workspace
+    # The agent only ever answers text. No source tree, no customer directory,
+    # and deliberately no /var/run/docker.sock.
+    read_only: false
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    healthcheck:
+      # Basic auth is required; the health endpoint itself needs credentials.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request,os,base64,sys; r=urllib.request.Request('http://127.0.0.1:4096/global/health'); r.add_header('Authorization','Basic '+base64.b64encode((os.environ.get('OPENCODE_SERVER_USERNAME','opencode')+':'+os.environ['OPENCODE_SERVER_PASSWORD']).encode()).decode()); sys.exit(0 if urllib.request.urlopen(r,timeout=5).status==200 else 1)\""]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    networks:
+      - internal
+
+  proxy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    # Only the proxy is published. The gateway and OpenCode stay internal.
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - gateway
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  gateway-data:
+  opencode-data:
+  caddy-data:
+  caddy-config:

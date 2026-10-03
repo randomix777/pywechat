@@ -57,6 +57,7 @@ import os
 import re
 import time
 import json
+import logging
 import pyautogui
 import win32clipboard
 import win32gui,win32con
@@ -65,6 +66,8 @@ from warnings import warn
 from pywinauto import WindowSpecification
 from pywinauto.controls.uia_controls import ListItemWrapper,ListViewWrapper#TypeHint要用到
 from typing import Callable
+
+LOGGER=logging.getLogger(__name__)
 from packaging import version#字符串版本比较,4.1.9>4.1.8>4.1.7
 #####################################################################################
 #内部依赖
@@ -3975,10 +3978,10 @@ class Messages():
     
     @staticmethod
     def dump_chat_history(friend:str,number:int,groupMembers:list=[],search_content:str=None,is_json:bool=False,save_detail:bool=False,
-    target_folder:str=None,search_pages:int=None,is_maximize:bool=None,close_weixin:bool=None)->list[dict]:
+    target_folder:str=None,search_pages:int=None,is_maximize:bool=None,close_weixin:bool=None,on_progress=None,cancelled=None)->list[dict]:
         '''
         该方法用来获取一定数量的聊天记录
-        Args:  
+        Args:
             friend:好友名称
             number:获取的消息数量
             groupMembers:friend对应的群成员列表(可提前通过Contacts.get_groupMembers_info导出保存至本地),如果friend是群聊且传入了该参数则直接解析发送人(无需遍历二次)
@@ -3989,6 +3992,8 @@ class Messages():
             search_pages:打开好友聊天窗口时在会话列表中查找好友时滚动列表的次数,默认为5,一次可查询5-12人,为0时,直接从顶部搜索栏搜索好友信息
             is_maximize:微信界面是否全屏，默认不全屏
             close_weixin:任务结束后是否关闭微信，默认关闭
+            on_progress:每读到一条回调一次 ``(已读条数)``。读全部历史时进度按条数推进
+            cancelled:无参可调用,返回 True 时立即收工(对应界面上的「取消」)
         Returns:
             chat_history:[{'消息发送人':xxx,'消息内容':yyy,'消息类型':xxx,'消息发送时间':yyy}....]
         '''
@@ -4016,9 +4021,12 @@ class Messages():
         if not chat_history_list.exists(timeout=1):
             warn(message=f"你与{friend}的聊天记录为空,无法获取聊天记录!",category=NoChatHistoryWarning)
             chat_history_window.close()
-            return [],[],[]
+            # 必须返回"消息字典的列表"这一种形状。原来这里返回 3 个空列表的元组，
+            # 调用方 list() 之后拿到 [[], [], []]，下游按字典取字段直接
+            # AttributeError —— 只有真机上打开一个**没有聊天记录**的会话才会走到。
+            return []
         win32gui.SendMessage(chat_history_window.handle,win32con.WM_SYSCOMMAND,win32con.SC_MAXIMIZE,0)
-        details_with_name=traverse_chat_history(chat_history_window,select=save_detail,number=number,save_detail=save_detail,target_folder=target_folder)
+        details_with_name=traverse_chat_history(chat_history_window,select=save_detail,number=number,save_detail=save_detail,target_folder=target_folder,on_progress=on_progress,cancelled=cancelled)
         if not is_group_chat:
             contents,senders,timestamps,message_types=parse_chat_history(friend,myName,details_with_name)
         if is_group_chat:
@@ -4035,6 +4043,9 @@ class Messages():
                 f.write(chat_history_json)
         if is_json:
             chat_history=json.dumps(chat_history,ensure_ascii=False,indent=2)
+        # 排障要的是"这次读到了多少、在哪一步没读够"，**不是消息内容**。
+        # 日志可能被商户转发，也可能落在别人能翻到的目录，内容一律不记。
+        LOGGER.info('读取会话「%s」：目标 %d 条，实际 %d 条',friend,number,len(chat_history))
         return chat_history
 
     @staticmethod

@@ -83,6 +83,13 @@ class CloudClient:
     def send_events(self, events: list[Mapping[str, Any]]) -> CloudResponse:
         return self._request("POST", "/api/v1/agent/events", {"events": [dict(event) for event in events]})
 
+    def send_business_events(self, events: list[Mapping[str, Any]]) -> CloudResponse:
+        """Upload cached collection events into the tenant-bound business inbox."""
+        response=self._request("POST", "/api/v1/agent/business-events", {"events": [dict(event) for event in events]})
+        if int(response.data.get("rejected",0)):
+            raise CloudError(f"business ingress rejected {response.data['rejected']} event(s); check device group authorization")
+        return response
+
     def fetch_commands(self, limit: int = 20) -> list[dict[str, Any]]:
         response = self._request("GET", f"/api/v1/agent/commands?limit={max(1, min(limit, 100))}")
         commands = response.data.get("commands", [])

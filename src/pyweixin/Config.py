@@ -176,13 +176,40 @@ class globalConfig:
 
     @property
     def language(self):
-        '''微信当前语言'''
+        '''微信当前语言。
+
+        检测失败时返回默认的简体中文，但**不把这个猜测缓存下来**：微信关着
+        启动、之后才打开的话，语言会一直停在默认值上，而界面文案选择器全
+        是按语言建的 —— 读会话就会找不到列表。以前把猜测缓存住了，进程
+        生命周期内再也纠正不回来。
+        '''
         if self._language is None:
             self._language=self._language_detector()
             if self._language is None:
-                warn("语言检测失败，使用默认 '简体中文'", LanguageDetectionFailedWarning)
-                self._language='简体中文'
+                warn("语言检测失败，使用默认 '简体中文'；微信打开后会自动重新检测",
+                     LanguageDetectionFailedWarning)
+                return '简体中文'   # 缓存里仍然留 None，下次还会重试
         return self._language
+
+    @property
+    def language_detected(self)->bool:
+        '''当前语言是**真检测出来的**，还是兜底猜的。'''
+        if self._language is None:
+            self._language_detector()   # 试一次
+        return self._language is not None
+
+    def refresh_language(self)->str|None:
+        '''重新检测语言。**真的变了**才返回新值，否则返回 None。
+
+        供「微信从关到开」的场景用：开始时没检测到，等窗口出现后补一次。
+        '''
+        detected=self._language_detector()
+        if not detected:
+            return None
+        if detected==self._language:
+            return None          # 没变：不是"变化"，调用方不必重建
+        self._language=detected
+        return detected
 
     @language.setter
     def language(self, value):

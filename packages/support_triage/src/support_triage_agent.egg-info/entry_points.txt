@@ -1,0 +1,2 @@
+[console_scripts]
+support-triage = support_triage:main

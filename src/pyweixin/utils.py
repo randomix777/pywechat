@@ -1,6 +1,7 @@
 import re
 import os
 import time
+import logging
 import emoji
 import win32gui
 import pyautogui
@@ -13,6 +14,8 @@ from .WeChatTools import Navigator,Tools
 from .WinSettings import SystemSettings
 from .Uielements import MousePos
 from .Uielements import Main_window,SideBar,Buttons,Edits,Lists,Windows,Texts,MenuItems,Special_Labels,Regex_Patterns
+
+LOGGER=logging.getLogger(__name__)
 #######################################################################################
 pyautogui.FAILSAFE=False#防止鼠标在屏幕边缘处造成的误触
 desktop=Desktop(backend='uia')#windows桌面WindowSpecification示例
@@ -620,7 +623,20 @@ def _group_message_type(class_name:str,content:str)->str:
 
 
 def timestamp_pattern_sub(text:str)->str:
-    return Regex_Patterns.Chathistory_Timestamp_pattern.sub('',text).strip()
+    """剥掉聊天记录行尾的时间戳。
+
+    反复剥离而不是只做一次：``2026-9-25 11:47`` 里，``\\d{1,2}:\\d{2}`` 这个
+    分支会先命中 ``11:47``，剩下来的 ``2026-9-25`` 就漏进正文了 —— 那会让
+    解析出来的证据永远对不上客户原话。
+    """
+    previous = None
+    current = str(text)
+    for _ in range(3):
+        stripped = Regex_Patterns.Chathistory_Timestamp_pattern.sub('', current).strip()
+        if stripped == current or stripped == previous:
+            break
+        previous, current = current, stripped
+    return current
 
 
 def _split_group_detail(item:tuple,matched:tuple|None)->tuple[str,str|None]:
@@ -677,7 +693,7 @@ def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_with
         message_type=_group_message_type(class_name,content)
         if len(item)>2 and item[2]:
             content=item[2]
-        senders.append(sender)
+        senders.append(sender or '红包或转账(无法获取发送人)')
         contents.append(content)
         timestamps.append(timestamp)
         message_types.append(message_type)
@@ -767,7 +783,7 @@ def parse_group_messages(details_with_name:list[tuple[str]],details_without_name
     return contents,senders,message_types
 
 def traverse_chat_history(chat_history_window:WindowSpecification,select:bool,number:int,
-save_detail:bool=False,target_folder:str=None)->list[tuple[str,str,list[str]]]:
+save_detail:bool=False,target_folder:str=None,on_progress=None,cancelled=None)->list[tuple[str,str,list[str]]]:
     '''该函数用于遍历聊天记录列表获取指定数量聊天记录,并在选中状态下保存图片视频与文件
     Args:
         chat_history_window:聊天记录窗口
@@ -775,6 +791,9 @@ save_detail:bool=False,target_folder:str=None)->list[tuple[str,str,list[str]]]:
         save_detail:是否保存图片、视频、文件
         target_folder:保存图片、视频、文件的文件夹
         number:指定数量条聊天记录
+        on_progress:每读到一条回调一次 ``(已读条数)``。读全部历史时进度必须按条数
+            推进 —— 只按会话数推进的话,选一个群读几万条,进度条会一直卡在 0/1。
+        cancelled:无参可调用,返回 True 时立即收工(对应界面上的「取消」)
     Returns:
         details:[(ui文本,ui类名,[转发的聊天记录])]*number
     '''
@@ -810,26 +829,80 @@ save_detail:bool=False,target_folder:str=None)->list[tuple[str,str,list[str]]]:
     #     return chat_history#把转发的聊天记录文本列表返回
     file_count=0
     media_count=0
-    recorded_num=0
     details=[]
-    runtime_ids=[]
-    image_label=Special_Labels.Image
-    video_label=Special_Labels.Video
-    file_label=Special_Labels.File
-    # link_label=Special_Labels.Link
-    # chat_history_label=Special_Labels.ChatHistory
-    # multiselect_item=chat_history_window.child_window(**MenuItems.SelectMenuItem)
     chat_history_list=chat_history_window.child_window(**Lists.ChatHistoryList)
     if select:
         latest_message=Tools.select_chatHistoryList(chat_history_window)
         if latest_message is None:raise ValueError(f'该聊天只有系统消息,无法在聊天记录界面中选中任何消息!')
-    try:
-        chat_history_list.set_focus()
-    except Exception:
-        pass
+
+    # 遍历靠键盘驱动：靠 has_keyboard_focus() 找当前项，靠 pyautogui 按方向键
+    # 往下走。**焦点没拿到就一条都读不到** —— 下面连续三轮找不到有焦点的项
+    # 就收工返回空列表。
+    #
+    # 焦点是会时好时坏的（窗口刚最大化还没稳定、有别的窗口抢焦点、微信自己
+    # 在弹东西），于是同一个群有时读到 7 条、有时读到 0 条。
+    #
+    # 下面这个重试针对的是"读不到"这个**症状**：列表里明明有消息，却因为
+    # 没拿到焦点而返回空。重新对焦再试一次，不行才认。
+    for attempt in range(TRAVERSE_FOCUS_RETRIES+1):
+        try:
+            chat_history_list.set_focus()
+        except Exception:
+            pass
+        details=_traverse_once(chat_history_list,select,number,save_detail,target_folder,
+                              on_progress,cancelled,file_count,media_count)
+        if details:
+            break
+        # 一条都没读到：先看看列表是不是真的空。
+        try:
+            visible=len(chat_history_list.children())
+        except Exception:
+            visible=0
+        LOGGER.info('读取聊天记录：第 %d 轮读到 0 条，列表可见 %d 项',attempt+1,visible)
+        if visible==0:
+            # 列表确实没有内容 —— 真的空，重试也没用。
+            LOGGER.info('读取聊天记录：列表本身是空的，不是焦点问题')
+            break
+        if attempt<TRAVERSE_FOCUS_RETRIES:
+            LOGGER.info('读取聊天记录：列表有 %d 项但拿不到焦点，重新对焦后重试',visible)
+    savable_item_count=file_count+media_count
+    if select and save_detail and savable_item_count!=0 and target_folder is not None:
+        save_button=chat_history_window.child_window(**Buttons.SaveButton)
+        save_button.click_input()
+        NativeChooseFolder(target_folder)
+    if select and savable_item_count==0:pyautogui.press('esc')#没有可保存的东西直接取消选中
+    return details
+
+
+#: 焦点没拿到时的重试次数。两次足够，又不至于让商户干等。
+TRAVERSE_FOCUS_RETRIES = 2
+
+
+def _traverse_once(chat_history_list,select,number,save_detail,target_folder,
+                   on_progress,cancelled,file_count,media_count)->list[tuple[str,str,list[str]]]:
+    """走一遍聊天记录列表。拿不到焦点就返回空列表，由调用方决定要不要重来。"""
+    details=[]
+    recorded_num=0
     idle_rounds=0
     last_runtime_id=None
+    video_label=Special_Labels.Video
+    file_label=Special_Labels.File
+    # 每遍都**从头**开始，不依赖上一遍结束时停在哪。
+    #
+    # 原来复位放在遍历末尾：失败会被静默吞掉，而且下一遍的起点取决于
+    # 上一遍的结束位置。同一个列表被遍历两遍，实测拿到过 **34 条和 33 条**
+    # 两个不同结果 —— 第二遍少一条。两次遍历服务于同一件事，结果却不一致，
+    # 后面解析用的是第一遍，第二遍是兜底；两者对不上就是隐患。
+    #
+    # 放在开头：不管之前发生过什么，这一遍的起点都是确定的。
+    try:
+        chat_history_list.set_focus()
+        chat_history_list.type_keys('{HOME}')
+    except Exception:
+        LOGGER.debug('复位到列表开头失败，照常遍历',exc_info=True)
     while recorded_num<number and idle_rounds<3:
+        if cancelled is not None and cancelled():
+            break
         selected=[item for item in chat_history_list.children() if item.has_keyboard_focus()]
         if not selected:
             idle_rounds+=1
@@ -850,22 +923,15 @@ save_detail:bool=False,target_folder:str=None)->list[tuple[str,str,list[str]]]:
                     if video_label in selected[0].window_text() and select and save_detail:
                         pyautogui.press('enter')
                         media_count+=1
-                    if image_label in selected[0].window_text() and select and save_detail:
-                        pyautogui.press('enter')
-                        media_count+=1
                 if selected[0].class_name()=='mmui::ChatBubbleItemView':
                     if file_label in selected[0].window_text() and select and save_detail:
                         pyautogui.press('enter')
                 details.append((selected[0].window_text(),selected[0].class_name(),chat_history))
+            if on_progress is not None:
+                on_progress(recorded_num)
         if idle_rounds<3:
             pyautogui.press('down',presses=1,_pause=False)
-    savable_item_count=file_count+media_count
-    if select and save_detail and savable_item_count!=0 and target_folder is not None:
-        save_button=chat_history_window.child_window(**Buttons.SaveButton)
-        save_button.click_input()
-        NativeChooseFolder(target_folder)
-    if select and savable_item_count==0:pyautogui.press('esc')#没有可保存的东西直接取消选中
-    chat_history_list.type_keys('{HOME}')
+    LOGGER.info('遍历聊天记录结束：读到 %d 条（目标 %d 条）',len(details),number)
     return details
 
 def traverse_message(main_window:WindowSpecification,select:bool,number:int)->list[tuple[str,str]]:

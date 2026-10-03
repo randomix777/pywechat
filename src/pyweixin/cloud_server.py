@@ -7,12 +7,16 @@ import os
 import sqlite3
 import threading
 import time
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
+from uuid import uuid4
 
 from .agent import AgentCommand
+from .console import CONSOLE_HTML
+from .orders import OpenAICompatibleParser, OrderStore
 
 
 class CloudStore:
@@ -96,6 +100,75 @@ class CloudStore:
                 )
                 inserted += cursor.rowcount
         return inserted
+
+    def list_agents(self, limit: int = 100) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 500))
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT agent_id, last_health, updated_at FROM agents ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "agent_id": row["agent_id"],
+                "health": json.loads(row["last_health"]),
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def recent_events(self, agent_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 200))
+        with self._lock:
+            if agent_id:
+                rows = self._connection.execute(
+                    "SELECT agent_id, event_id, payload, created_at FROM events WHERE agent_id = ? ORDER BY id DESC LIMIT ?",
+                    (agent_id, limit),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT agent_id, event_id, payload, created_at FROM events ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [
+            {
+                "agent_id": row["agent_id"],
+                "event_id": row["event_id"],
+                "payload": json.loads(row["payload"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def list_command_history(self, agent_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 200))
+        with self._lock:
+            if agent_id:
+                rows = self._connection.execute(
+                    "SELECT command_id, agent_id, action, target, payload, max_attempts, retryable, status, result, created_at, updated_at FROM commands WHERE agent_id = ? ORDER BY created_at DESC, command_id DESC LIMIT ?",
+                    (agent_id, limit),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT command_id, agent_id, action, target, payload, max_attempts, retryable, status, result, created_at, updated_at FROM commands ORDER BY created_at DESC, command_id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [
+            {
+                "command_id": row["command_id"],
+                "agent_id": row["agent_id"],
+                "action": row["action"],
+                "target": row["target"],
+                "payload": json.loads(row["payload"]),
+                "max_attempts": int(row["max_attempts"]),
+                "retryable": bool(row["retryable"]),
+                "status": row["status"],
+                "result": json.loads(row["result"]) if row["result"] else None,
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
 
     def enqueue(self, agent_id: str, command: AgentCommand) -> bool:
         now = time.time()
@@ -182,8 +255,10 @@ class CloudStore:
 class CloudRequestHandler(BaseHTTPRequestHandler):
     store: CloudStore
     auth_token: str
+    console_token: str = ""
     agent_tokens: Mapping[str, str] | None = None
     max_body_size: int = 2 * 1024 * 1024
+    order_store: OrderStore | None = None
 
     def log_message(self, format, *args):
         del format, args
@@ -196,8 +271,56 @@ class CloudRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_html(self, status: int, html: str) -> None:
+        body = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _console_authorized(self) -> bool:
+        if not self.console_token:
+            return False
+        authorization = self.headers.get("Authorization", "")
+        try:
+            return hmac.compare_digest(authorization, f"Bearer {self.console_token}")
+        except TypeError:
+            return False
+
+    def _console_state(self, agent_id: str = "") -> dict[str, Any]:
+        return {
+            "server_time": time.time(),
+            "health": self.store.health(),
+            "agents": self.store.list_agents(),
+            "events": self.store.recent_events(agent_id),
+            "commands": self.store.list_command_history(agent_id),
+        }
+
+    def _merchant(self) -> dict[str, str] | None:
+        if self.order_store is None:
+            return None
+        authorization = self.headers.get("Authorization", "")
+        if not authorization.startswith("Bearer "):
+            return None
+        return self.order_store.authenticate(authorization[7:])
+
+    def _device_merchant(self) -> dict[str,str] | None:
+        if self.order_store is None:return None
+        value=self.headers.get("Authorization","")
+        if not value.startswith("Bearer "):return None
+        identity=self.order_store.authenticate(value[7:])
+        return identity if identity and identity.get("role")=="device" else None
+
+    def _merchant_result(self, result: Mapping[str, Any]) -> None:
+        self._send_json(200, result)
+
     def _authorized(self) -> bool:
         authorization = self.headers.get("Authorization", "")
+        if self.order_store is not None and authorization.startswith("Bearer "):
+            bound=self.order_store.authenticate(authorization[7:])
+            if bound and bound.get("role")=="device":return True
         if self.agent_tokens:
             agent_id = self._agent_id()
             expected_token = self.agent_tokens.get(agent_id, "")
@@ -229,6 +352,40 @@ class CloudRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path in {"/", "/console"}:
+            self._send_html(200, CONSOLE_HTML)
+            return
+        if parsed.path == "/api/v1/console/state":
+            if not self._console_authorized():
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            query = parse_qs(parsed.query)
+            agent_id = query.get("agent_id", [""])[0].strip()
+            self._send_json(200, self._console_state(agent_id))
+            return
+        if parsed.path.startswith("/api/v1/business/"):
+            identity = self._merchant()
+            if not identity or identity["role"] == "device":
+                self._send_json(401, {"error": "merchant authentication required"}); return
+            tenant = identity["merchant_id"]
+            store = self.order_store
+            if parsed.path == "/api/v1/business/dashboard":
+                self._send_json(200, store.dashboard(tenant)); return
+            if parsed.path == "/api/v1/business/orders":
+                status = parse_qs(parsed.query).get("status", [""])[0]
+                self._send_json(200, {"orders": [store.order_detail(tenant,o["id"]) for o in store.list_orders(tenant,status)]}); return
+            if parsed.path == "/api/v1/business/customers":
+                rows=store.db.execute("SELECT * FROM customers WHERE merchant_id=? ORDER BY name",(tenant,)).fetchall();self._send_json(200,{"customers":[dict(r) for r in rows]});return
+            if parsed.path == "/api/v1/business/products":
+                rows=store.db.execute("SELECT * FROM products WHERE merchant_id=? ORDER BY name",(tenant,)).fetchall();self._send_json(200,{"products":[dict(r) for r in rows]});return
+            if parsed.path == "/api/v1/business/imports":
+                rows=store.db.execute("SELECT * FROM imports WHERE merchant_id=? ORDER BY created_at DESC",(tenant,)).fetchall();self._send_json(200,{"imports":[dict(r) for r in rows]});return
+            if parsed.path == "/api/v1/business/export":
+                orders=store.list_orders(tenant,"confirmed");lines=["order_id,customer,status,SKU,product,quantity,unit,unit_price,amount"]
+                for order in orders:
+                    for item in store.order_detail(tenant,order["id"])["items"]: lines.append(",".join(str(v) for v in [order["id"],order["customer_name"],order["status"],item["sku"],item["product_name"],item["quantity"],item["unit"],item["unit_price_cents"]/100,item["quantity"]*item["unit_price_cents"]/100]))
+                body=("\ufeff"+"\n".join(lines)).encode("utf-8");self.send_response(200);self.send_header("Content-Type","text/csv; charset=utf-8");self.send_header("Content-Disposition","attachment; filename=orders.csv");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body);return
+            self._send_json(404,{"error":"not found"});return
         if parsed.path == "/healthz":
             self._send_json(200, {"ok": True, **self.store.health()})
             return
@@ -250,7 +407,115 @@ class CloudRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"error": "not found"})
 
+    def _enqueue_console_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        agent_id = str(payload.get("agent_id", "")).strip()
+        action = str(payload.get("action", "")).strip()
+        target = str(payload.get("target", "")).strip()
+        command_payload = payload.get("payload", {})
+        if not agent_id or not action or not target:
+            raise ValueError("agent_id, action and target are required")
+        if not isinstance(command_payload, Mapping):
+            raise ValueError("payload must be an object")
+        if action not in {"send_text", "send_messages", "noop"}:
+            raise ValueError("unsupported console action")
+        if action == "send_text" and not str(command_payload.get("text", "")).strip():
+            raise ValueError("send_text requires text")
+        if action == "send_messages" and (
+            not isinstance(command_payload.get("messages"), list) or not command_payload["messages"]
+        ):
+            raise ValueError("send_messages requires a non-empty list")
+        try:
+            max_attempts = int(payload.get("max_attempts", 3))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_attempts must be an integer") from exc
+        if not 1 <= max_attempts <= 10:
+            raise ValueError("max_attempts must be between 1 and 10")
+        command_id = str(payload.get("command_id", "")).strip() or f"console-{uuid4().hex}"
+        command = AgentCommand(
+            command_id=command_id,
+            action=action,
+            target=target,
+            payload=command_payload,
+            max_attempts=max_attempts,
+            retryable=bool(payload.get("retryable", False)),
+        )
+        created = self.store.enqueue(agent_id, command)
+        return {"command_id": command.command_id, "agent_id": agent_id, "created": created}
+
     def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/v1/agent/business-events":
+            identity=self._device_merchant()
+            if not identity:self._send_json(401,{"error":"bound device token required"});return
+            try:
+                agent_id=self._agent_id();payload=self._read_json();events=payload.get("events",[])
+                if not agent_id or not isinstance(events,list):raise ValueError("X-Agent-Id and events list are required")
+                result=self.order_store.ingest_agent_events(identity["merchant_id"],identity["id"],agent_id,events);self._send_json(200,result)
+            except ValueError as exc:self._send_json(400,{"error":str(exc)})
+            return
+        if parsed.path.startswith("/api/v1/business/"):
+            if parsed.path == "/api/v1/business/register":
+                try:
+                    if self.order_store is None: raise ValueError("business database is not enabled; set PYWEIXIN_BUSINESS_DB")
+                    payload=self._read_json()
+                    result=self.order_store.create_merchant(str(payload.get("name","示例商家")),plan="trial",max_users=5,max_groups=3,ai_quota=0)
+                    self._send_json(201,result)
+                except (ValueError,KeyError) as exc:self._send_json(400,{"error":str(exc)})
+                except Exception as exc:self._send_json(500,{"error":str(exc)})
+                return
+            if parsed.path == "/api/v1/business/devices":
+                identity=self._merchant()
+                if not identity or identity["role"]=="device":self._send_json(401,{"error":"merchant authentication required"});return
+                try:
+                    payload=self._read_json();device=self.order_store.create_device(identity["merchant_id"],str(payload.get("name","本地采集器")))
+                    for group in payload.get("groups",[]):self.order_store.bind_device_group(identity["merchant_id"],device["device_id"],str(group),str(payload.get("account_id","default")))
+                    self._send_json(201,device)
+                except Exception as exc:self._send_json(400,{"error":str(exc)})
+                return
+            identity=self._merchant()
+            if not identity or identity["role"] == "device": self._send_json(401,{"error":"merchant authentication required"});return
+            tenant=identity["merchant_id"]
+            store=self.order_store
+            try:
+                payload=self._read_json()
+                if parsed.path == "/api/v1/business/customers":
+                    cid=store.add_customer(tenant,str(payload["name"]),str(payload["alias"]),str(payload.get("group","demo-group")),str(payload.get("address","")));self._send_json(200,{"customer_id":cid});return
+                if parsed.path == "/api/v1/business/products":
+                    pid=store.add_product(tenant,str(payload["sku"]),str(payload["name"]),str(payload["unit"]),int(payload["price_cents"]),payload.get("aliases",[]));self._send_json(200,{"product_id":pid});return
+                if parsed.path == "/api/v1/business/imports":
+                    messages=payload.get("messages",[])
+                    if not isinstance(messages,list):raise ValueError("messages must be a list")
+                    result=store.add_import(tenant,str(payload.get("group","demo-group")),messages,str(payload.get("source") or uuid4().hex),str(payload.get("source_type","demo")),str(payload.get("known_gap","")));self._send_json(200,result);return
+                if parsed.path == "/api/v1/business/parse":
+                    result=store.parse_import(tenant,str(payload.get("group","demo-group")),payload.get("import_id"));self._send_json(200,result);return
+                if parsed.path == "/api/v1/business/bind-customer":
+                    message_id=str(payload["message_id"]);store.bind_message_customer(tenant,message_id,str(payload["customer_id"]),identity["id"])
+                    msg=store.db.execute("SELECT group_id,import_id FROM messages WHERE merchant_id=? AND id=?",(tenant,message_id)).fetchone()
+                    parsed_result=store.parse_import(tenant,msg["group_id"],msg["import_id"])
+                    self._send_json(200,{"ok":True,"parse":parsed_result});return
+                if parsed.path == "/api/v1/business/resolve-message-match":
+                    message_id=str(payload["message_id"]);duplicate=payload.get("is_duplicate")
+                    if not isinstance(duplicate,bool):raise ValueError("is_duplicate must be a boolean")
+                    self._send_json(200,store.resolve_message_match(tenant,message_id,duplicate,identity["id"]));return
+                if parsed.path.endswith("/correct"):
+                    oid=unquote(parsed.path.split("/")[-2]);new_id=store.correct_order(tenant,oid,identity["id"],payload.get("customer_id"),payload.get("items"));self._send_json(200,{"order_id":new_id});return
+                if parsed.path.endswith("/confirm"):
+                    oid=unquote(parsed.path.split("/")[-2]);store.confirm(tenant,oid,identity["id"]);self._send_json(200,{"ok":True});return
+                self._send_json(404,{"error":"not found"})
+            except (ValueError,KeyError,PermissionError,sqlite3.IntegrityError) as exc:self._send_json(400,{"error":str(exc)})
+            except Exception:self._send_json(500,{"error":"internal server error"})
+            return
+        if parsed.path == "/api/v1/console/commands":
+            if not self._console_authorized():
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            try:
+                self._send_json(200, self._enqueue_console_command(self._read_json()))
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"error": str(exc)})
+            except Exception:
+                self._send_json(500, {"error": "internal server error"})
+            return
         if not self._authorized():
             self._send_json(401, {"error": "unauthorized"})
             return
@@ -258,6 +523,12 @@ class CloudRequestHandler(BaseHTTPRequestHandler):
         if not agent_id:
             self._send_json(400, {"error": "X-Agent-Id is required"})
             return
+        if parsed.path == "/api/v1/agent/business-events":
+            identity=self._merchant()
+            if not identity or identity.get("role")!="device":self._send_json(401,{"error":"bound device token required"});return
+            payload=self._read_json();events=payload.get("events",[])
+            if not isinstance(events,list):self._send_json(400,{"error":"events must be a list"});return
+            result=self.order_store.ingest_agent_events(identity["merchant_id"],identity["id"],agent_id,events);self._send_json(200,result);return
         parsed = urlparse(self.path)
         try:
             payload = self._read_json()
@@ -294,11 +565,20 @@ def create_server(
     token: str = "",
     db_path: str = "cloud.db",
     agent_tokens: Mapping[str, str] | None = None,
+    console_token: str | None = None,
+    business_db_path: str | None = None,
+    model_parser: OpenAICompatibleParser | None = None,
 ) -> tuple[ThreadingHTTPServer, CloudStore]:
     if not token and not agent_tokens:
         raise ValueError("token or agent_tokens is required")
     if host not in {"127.0.0.1", "localhost", "::1"} and not agent_tokens:
         raise ValueError("agent_tokens is required for non-loopback binds")
+    if model_parser is None:
+        model_url=os.environ.get("PYWEIXIN_MODEL_BASE_URL","");model_key=os.environ.get("PYWEIXIN_MODEL_API_KEY","");model_name=os.environ.get("PYWEIXIN_MODEL_NAME","")
+        configured=bool(model_url or model_key or model_name)
+        if configured and not all((model_url,model_key,model_name)):
+            raise ValueError("configure PYWEIXIN_MODEL_BASE_URL, PYWEIXIN_MODEL_API_KEY and PYWEIXIN_MODEL_NAME together; partial configuration is not allowed")
+        if configured:model_parser=OpenAICompatibleParser(model_url,model_key,model_name)
     store = CloudStore(db_path)
 
     class Handler(CloudRequestHandler):
@@ -306,8 +586,20 @@ def create_server(
 
     Handler.store = store
     Handler.auth_token = token
+    Handler.console_token = console_token if console_token is not None else token
     Handler.agent_tokens = dict(agent_tokens) if agent_tokens else None
-    return ThreadingHTTPServer((host, port), Handler), store
+    business_path = business_db_path or (":memory:" if db_path == ":memory:" else str(Path(db_path).with_name(Path(db_path).stem + "_business.db")))
+    class Server(ThreadingHTTPServer):
+        def server_close(self):
+            super().server_close()
+            if Handler.order_store is not None:
+                Handler.order_store.close()
+                Handler.order_store = None
+
+    server = Server((host, port), Handler)
+    # Existing device/console-only installs do not open an unused second database.
+    Handler.order_store = OrderStore(business_path,parser=model_parser) if business_db_path is not None else None
+    return server, store
 
 
 def _load_agent_tokens() -> dict[str, str]:
@@ -333,10 +625,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--token", default=os.environ.get("PYWEIXIN_CLOUD_TOKEN", ""))
+    parser.add_argument("--console-token", default=os.environ.get("PYWEIXIN_CONSOLE_TOKEN", ""))
     parser.add_argument("--db", default="cloud.db")
+    parser.add_argument("--business-db", default=os.environ.get("PYWEIXIN_BUSINESS_DB", ""))
     args = parser.parse_args(argv)
     agent_tokens = _load_agent_tokens()
-    server, store = create_server(args.host, args.port, args.token, args.db, agent_tokens=agent_tokens)
+    server, store = create_server(
+        args.host,
+        args.port,
+        args.token,
+        args.db,
+        agent_tokens=agent_tokens,
+        console_token=args.console_token or args.token,
+        business_db_path=args.business_db or None,
+    )
     print(f"cloud server listening on {args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()

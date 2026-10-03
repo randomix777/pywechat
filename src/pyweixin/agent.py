@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
-from .reliability import MessageEvent, UiOperationQueue
+from .reliability import MessageEvent, MessageKind, UiOperationQueue
 
 
 _UI_OPERATION_LOCK = threading.RLock()
@@ -139,6 +139,11 @@ class AgentStore:
                     updated_at REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS event_uploads_ready ON event_uploads(status, next_attempt_at, updated_at);
+                CREATE TABLE IF NOT EXISTS business_uploads (
+                    event_id TEXT PRIMARY KEY, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at REAL, last_error TEXT, updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS business_uploads_ready ON business_uploads(status,next_attempt_at,updated_at);
                 CREATE TABLE IF NOT EXISTS outbox (
                     command_id TEXT PRIMARY KEY,
                     action TEXT NOT NULL,
@@ -169,6 +174,7 @@ class AgentStore:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc).lower():
                         raise
+            self._connection.execute("INSERT OR IGNORE INTO business_uploads(event_id,status,attempts,next_attempt_at,updated_at) SELECT event_id,'pending',0,?,? FROM events",(self._clock(),self._clock()))
 
     def set_state(self, state: str, error: str | None = None) -> None:
         self.set_meta("state", state)
@@ -224,7 +230,24 @@ class AgentStore:
                     "INSERT OR IGNORE INTO event_uploads(event_id, status, attempts, next_attempt_at, last_error, updated_at) VALUES (?, 'pending', 0, ?, NULL, ?)",
                     (event.event_id, now, now),
                 )
+                self._connection.execute("INSERT OR IGNORE INTO business_uploads(event_id,status,attempts,next_attempt_at,updated_at) VALUES(?,'pending',0,?,?)",(event.event_id,now,now))
             return cursor.rowcount == 1
+
+    def claim_business_uploads(self,limit:int=100)->list[tuple[str,dict[str,Any]]]:
+        now=self._clock()
+        with self._lock,self._connection:
+            self._connection.execute("UPDATE business_uploads SET status='pending' WHERE status='processing'")
+            rows=self._connection.execute("SELECT e.event_id,e.payload FROM business_uploads b JOIN events e ON e.event_id=b.event_id WHERE b.status='pending' AND (b.next_attempt_at IS NULL OR b.next_attempt_at<=?) ORDER BY b.updated_at LIMIT ?",(now,max(1,limit))).fetchall()
+            for row in rows:self._connection.execute("UPDATE business_uploads SET status='processing',updated_at=? WHERE event_id=? AND status='pending'",(now,row['event_id']))
+        return [(str(r['event_id']),json.loads(r['payload'])) for r in rows]
+
+    def finish_business_upload(self,event_ids:list[str])->None:
+        now=self._clock()
+        with self._lock,self._connection:self._connection.executemany("UPDATE business_uploads SET status='uploaded',next_attempt_at=NULL,last_error=NULL,updated_at=? WHERE event_id=?",[(now,i) for i in event_ids])
+
+    def fail_business_upload(self,event_ids:list[str],error:str,retry_delay:float=5)->None:
+        now=self._clock()
+        with self._lock,self._connection:self._connection.executemany("UPDATE business_uploads SET status='pending',attempts=attempts+1,next_attempt_at=?,last_error=?,updated_at=? WHERE event_id=?",[(now+retry_delay,str(error)[:1000],now,i) for i in event_ids])
 
     def recent_events(self, limit: int = 100, chat_id: str | None = None) -> list[dict[str, Any]]:
         if limit < 1:
@@ -361,6 +384,11 @@ class AgentStore:
             row = self._connection.execute(
                 "SELECT COUNT(*) AS count FROM event_uploads WHERE status IN ('pending', 'processing')"
             ).fetchone()
+        return int(row["count"])
+
+    def pending_business_upload_count(self) -> int:
+        with self._lock:
+            row=self._connection.execute("SELECT COUNT(*) AS count FROM business_uploads WHERE status IN ('pending','processing')").fetchone()
         return int(row["count"])
 
     def failed_upload_count(self) -> int:
@@ -553,12 +581,154 @@ class AgentStore:
             ).fetchone()
         return int(row["count"])
 
+    # ------------------------------------------------- receipt outbox states
+    # The outbox gains three states that a *send* needs and a cloud command
+    # does not. They live in this table rather than in a second queue, so a
+    # receipt and a cloud command cannot compete for two different leases and
+    # two different retry budgets.
+
+    def mark_hold(self, command_id: str, reason: str) -> bool:
+        """Park a command until a precondition clears (paused, stale version).
+
+        Held commands are not errors and not attempts: the merchant paused, or
+        the order moved on. They go back to the queue unchanged once the
+        condition clears, so a pause never loses a receipt.
+        """
+        now = self._clock()
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE outbox SET status = 'held', last_error = ?, lease_until = NULL, lease_token = NULL, updated_at = ? WHERE command_id = ? AND status IN ('processing', 'queued', 'held')",
+                (str(reason)[:1000], now, command_id),
+            )
+            return cursor.rowcount == 1
+
+    def release_held(self, command_id: str | None = None) -> int:
+        """Return held commands to the queue, e.g. after the merchant un-pauses.
+
+        Prefer :meth:`held_commands` plus a per-command check when the state
+        could have changed while the receipt was held: releasing blindly can
+        send a receipt for a superseded order version.
+        """
+        now = self._clock()
+        with self._lock, self._connection:
+            if command_id is None:
+                cursor = self._connection.execute(
+                    "UPDATE outbox SET status = 'queued', last_error = NULL, next_attempt_at = ?, updated_at = ? WHERE status = 'held'",
+                    (now, now),
+                )
+            else:
+                cursor = self._connection.execute(
+                    "UPDATE outbox SET status = 'queued', last_error = NULL, next_attempt_at = ?, updated_at = ? WHERE command_id = ? AND status = 'held'",
+                    (now, now, command_id),
+                )
+            return cursor.rowcount
+
+    def held_commands(self) -> list[tuple[str, str, dict[str, Any]]]:
+        """``(command_id, target, payload)`` for every held command.
+
+        The product re-validates each one before releasing it, because a
+        receipt can be held for a long time and the world moves on.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT command_id, target, payload FROM outbox WHERE status = 'held' ORDER BY created_at"
+            ).fetchall()
+        result: list[tuple[str, str, dict[str, Any]]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                payload = {}
+            result.append((row["command_id"], row["target"], payload if isinstance(payload, dict) else {}))
+        return result
+
+    def held_reasons(self) -> list[tuple[str, str]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT command_id, last_error FROM outbox WHERE status = 'held' ORDER BY created_at"
+            ).fetchall()
+        return [(row["command_id"], str(row["last_error"] or "")) for row in rows]
+
+    def failed_command_count(self) -> int:
+        """Commands that exhausted their attempts and were not delivered."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM outbox WHERE status = 'failed'"
+            ).fetchone()
+        return int(row["count"] or 0)
+
+    def mark_unknown(self, command_id: str, lease_token: str, reason: str = "") -> bool:
+        """The send was attempted but its result could not be confirmed.
+
+        This is deliberately *not* a retryable failure. Re-sending a receipt we
+        cannot confirm would send the customer a second copy; the command waits
+        for :meth:`reconcile_unknown` to decide.
+        """
+        now = self._clock()
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE outbox SET status = 'sent_unknown', retryable = 0, last_error = ?, lease_until = NULL, lease_token = NULL, updated_at = ? WHERE command_id = ? AND status = 'processing' AND lease_token = ?",
+                (str(reason)[:1000], now, command_id, lease_token),
+            )
+            return cursor.rowcount == 1
+
+    def list_unknown(self) -> list[tuple[str, str, str]]:
+        """``(command_id, target, text)`` for every unconfirmed send."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT command_id, target, payload FROM outbox WHERE status = 'sent_unknown' ORDER BY created_at"
+            ).fetchall()
+        result: list[tuple[str, str, str]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                payload = {}
+            result.append((row["command_id"], row["target"], str(payload.get("text", ""))))
+        return result
+
+    def unknown_count(self) -> int:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM outbox WHERE status = 'sent_unknown'"
+            ).fetchone()
+        return int(row["count"])
+
+    def complete_unknown(self, command_id: str) -> bool:
+        """A verifier confirmed the message really did go out."""
+        now = self._clock()
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE outbox SET status = 'succeeded', last_error = NULL, updated_at = ? WHERE command_id = ? AND status = 'sent_unknown'",
+                (now, command_id),
+            )
+            return cursor.rowcount == 1
+
+    def requeue_unknown(self, command_id: str) -> bool:
+        """A verifier confirmed it did *not* go out, so sending is safe again."""
+        now = self._clock()
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE outbox SET status = 'queued', attempts = 0, last_error = NULL, next_attempt_at = ?, updated_at = ? WHERE command_id = ? AND status = 'sent_unknown'",
+                (now, now, command_id),
+            )
+            return cursor.rowcount == 1
+
+    def outbox_summary(self) -> dict[str, int]:
+        """Counts per outbox state, for the interface and for tests."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT status, COUNT(*) AS count FROM outbox GROUP BY status"
+            ).fetchall()
+        return {row["status"]: int(row["count"]) for row in rows}
+
     def health(self) -> dict[str, Any]:
         return {
             "state": self.get_state(),
             "state_error": self.get_meta("state_error", ""),
             "event_count": self.event_count(),
             "pending_uploads": self.pending_upload_count(),
+            "pending_business_uploads": self.pending_business_upload_count(),
             "failed_uploads": self.failed_upload_count(),
             "pending_commands": self.pending_count(),
             "database": self.path,
@@ -706,6 +876,15 @@ class LocalAgent:
     def _history_event(self, item: Mapping[str, Any], ordinal: int = 0) -> MessageEvent:
         content = str(item.get("消息内容", ""))
         sender = item.get("消息发送人")
+        raw_kind=str(item.get("消息类型","")).lower()
+        kind=MessageKind.TEXT
+        if any(x in raw_kind for x in ("图片","image")):kind=MessageKind.IMAGE
+        elif any(x in raw_kind for x in ("语音","voice","audio")):kind=MessageKind.VOICE
+        elif any(x in raw_kind for x in ("视频","video")):kind=MessageKind.VIDEO
+        elif any(x in raw_kind for x in ("文件","file")):kind=MessageKind.FILE
+        elif any(x in raw_kind for x in ("链接","link")):kind=MessageKind.LINK
+        elif any(x in raw_kind for x in ("引用","quote")):kind=MessageKind.QUOTE
+        elif raw_kind and not any(x in raw_kind for x in ("文本","text")):kind=MessageKind.OTHER
         raw = json.dumps(dict(item), ensure_ascii=False, sort_keys=True, default=str)
         stable_id = "history:" + hashlib.sha256(raw.encode("utf-8")).hexdigest() + f":{ordinal}"
         return MessageEvent(
@@ -715,6 +894,7 @@ class LocalAgent:
             account_id=self.config.account_id,
             sender=None if sender is None else str(sender),
             content=content,
+            kind=kind,
             metadata={"source": "history", "raw": dict(item)},
         )
 
@@ -723,18 +903,26 @@ class LocalAgent:
         if self.cloud is None:
             return
         pending = self.store.claim_event_uploads(lease_seconds=60)
-        if not pending:
-            return
-        try:
-            self.cloud.send_events([payload for _, payload, _ in pending])
-        except Exception as exc:
-            self._cloud_error = str(exc)
-            for event_id, _, token in pending:
-                self.store.mark_event_upload_failed(event_id, str(exc), retry_delay=5, lease_token=token)
-            self.store.set_state("degraded", str(exc))
-            return
-        for event_id, _, token in pending:
-            self.store.mark_event_uploaded(event_id, lease_token=token)
+        if pending:
+            try:
+                self.cloud.send_events([payload for _, payload, _ in pending])
+                for event_id, _, token in pending:
+                    self.store.mark_event_uploaded(event_id, lease_token=token)
+            except Exception as exc:
+                self._cloud_error = str(exc)
+                for event_id, _, token in pending:
+                    self.store.mark_event_upload_failed(event_id, str(exc), retry_delay=5, lease_token=token)
+                self.store.set_state("degraded", str(exc))
+        if hasattr(self.cloud, "send_business_events"):
+            business_pending=self.store.claim_business_uploads()
+            if business_pending:
+                try:
+                    self.cloud.send_business_events([payload for _, payload in business_pending])
+                    self.store.finish_business_upload([event_id for event_id,_ in business_pending])
+                except Exception as exc:
+                    self._cloud_error = str(exc)
+                    self.store.fail_business_upload([event_id for event_id,_ in business_pending],str(exc),retry_delay=5)
+                    self.store.set_state("degraded", str(exc))
 
     def _live_event(self, item: Mapping[str, Any]) -> MessageEvent:
         event = MessageEvent.from_dict(item)

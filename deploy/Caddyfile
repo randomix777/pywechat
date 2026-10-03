@@ -1,0 +1,36 @@
+# Caddy terminates TLS and forwards to the gateway. The gateway itself is only
+# reachable on the internal compose network.
+#
+# Replace gateway.example.com with the real hostname, and point DNS at this
+# host. Caddy obtains and renews the certificate automatically; certificates
+# live in the caddy-data volume and must be included in backups.
+
+gateway.example.com {
+	encode zstd gzip
+
+	# Order parsing bodies are capped at 256 KiB by the gateway; reject earlier
+	# so an oversized upload never occupies a worker.
+	request_body {
+		max_size 512KB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy gateway:8080 {
+		# The gateway reads the client address for login rate limiting.
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	log {
+		output stdout
+		format json
+		# Request URIs only. Never enable the body or header-dump variants:
+		# message text and tokens must not reach the access log.
+		level ERROR
+	}
+}
