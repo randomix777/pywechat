@@ -299,3 +299,70 @@ class EmptyReadHonestyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class NoDeadEndTests(unittest.TestCase):
+    """一条都没读到时，商户必须还有一条走得通的路。
+
+    ## 商户的原话
+
+        没有读取到新信息以后没有下一步
+
+    以前 0 条时把「下一步：智能整理」藏起来，只剩「开始读取」和「上一步」。
+    商户的反应是反复点读取 —— 而读不到多半不是他的操作问题，再点一百次
+    还是 0 条。**他其实是卡住了**：没有任何一条能走的路。
+
+    已读到的消息和订单一个字节都没少，所以他需要的是「去看已经有的东西」。
+
+    这一组盯的就是：**任何「读不到」的结局，都必须留一个出口**。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (Path(__file__).resolve().parent.parent
+                      / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+
+    def _render_block(self) -> str:
+        start = self.source.index("def _render_read_state")
+        end = self.source.index("def _show_empty_exit", start)
+        return self.source[start:end]
+
+    def test_there_is_a_dedicated_exit_button(self):
+        self.assertIn('"read_empty_exit"', self.source)
+        self.assertIn("先看看已经读到的内容", self.source)
+
+    def test_it_leads_somewhere_real(self):
+        self.assertIn("def _go_home_from_history", self.source)
+        start = self.source.index("def _go_home_from_history")
+        block = self.source[start:start + 700]
+        self.assertIn("WizardStep.DONE", block)
+
+    def test_it_walks_the_wizard_not_just_the_page(self):
+        """页面和向导状态必须一致，否则后续任何按 step 的判断都会读到过期值。"""
+        start = self.source.index("def _go_home_from_history")
+        self.assertIn("self.app.wizard._go(", self.source[start:start + 700])
+
+    def test_zero_messages_shows_it(self):
+        self.assertIn("_show_empty_exit(True)", self._render_block(),
+                      "读到 0 条时必须给出路")
+
+    def test_a_failed_or_unfinished_read_does_not_show_it(self):
+        """还没有结果时不显：还不知道读到没读到。
+
+        注意区分：这里找的是 **state 标签**里那个 ``result is None``，
+        不是上面进度文案里的同名分支。
+        """
+        block = self._render_block()
+        anchor = block.index("if state is not None and self._alive(state):")
+        idx = block.index("if result is None:", anchor)
+        self.assertIn("_show_empty_exit(False)", block[idx:idx + 400])
+
+    def test_reading_something_hides_it(self):
+        self.assertIn("_show_empty_exit(False)", self._render_block())
+
+    def test_the_message_says_nothing_was_lost(self):
+        """读不到多半不是操作问题，不能说成「你没弄好」。"""
+        self.assertIn("之前读到的一个都没丢", self._render_block())
+
+
+if __name__ == "__main__":
+    unittest.main()

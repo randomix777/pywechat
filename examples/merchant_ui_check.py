@@ -8,6 +8,7 @@ command 回调**，验证界面上真的能点得动、点了之后数据真的�
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 import argparse
 import json
 import shutil
@@ -920,6 +921,46 @@ def main(argv: list[str] | None = None) -> int:
                "已收起" if _bar2 is not None and not _bar2.winfo_ismapped() else "还在")
     except Exception:
         record("不限量时额度条收起来", False, "读不到")
+
+    # 读到 0 条时不能是死路。商户的原话：「没有读取到新信息以后没有下一步」。
+    # 以前 0 条时把「下一步」藏起来，只剩「开始读取」，商户只能反复点读取。
+    _empty_result = SimpleNamespace(
+        total_messages=0, cancelled=False, gaps=(), coverage=(),
+        headline=lambda: "没有读到消息",
+    )
+    window._show_step(WizardStep.HISTORY)
+    pump(window, 0.4)
+    window._last_read_result = _empty_result
+    window._render_read_state(_empty_result)
+    pump(window, 0.3)
+    _exit = window._widgets.get("read_empty_exit")
+    record("读到 0 条时有一条走得通的路",
+           _exit is not None and _exit.winfo_ismapped(),
+           "有出口" if _exit is not None and _exit.winfo_ismapped() else "还是死路")
+    _nxt = window._widgets.get("read_next")
+    record("读到 0 条时不给出「下一步：智能整理」",
+           _nxt is not None and not _nxt.winfo_ismapped(),
+           "已隐藏" if _nxt is not None and not _nxt.winfo_ismapped() else "还亮着")
+    _rs = window._widgets.get("read_state")
+    _rstext = ""
+    try:
+        _rstext = str(_rs.cget("text")) if _rs is not None and _rs.winfo_exists() else ""
+    except Exception:
+        pass
+    record("0 条时告诉商户之前读到的一个都没丢",
+           "没丢" in _rstext, _rstext or "(无)")
+
+    # 读到东西之后，那个出口要收起来，两个出口不能同时亮着
+    _ok_result = SimpleNamespace(
+        total_messages=7, cancelled=False, gaps=(), coverage=(),
+        headline=lambda: "实际读到 7 条",
+    )
+    window._render_read_state(_ok_result)
+    pump(window, 0.3)
+    record("读到消息后那个出口收起来",
+           _exit is not None and not _exit.winfo_ismapped(),
+           "已收起" if _exit is not None and not _exit.winfo_ismapped() else "还亮着")
+    window._last_read_result = None
 
     # 出问题时的出口。日志装了但商户找不到，等于没装。
     window._on_goto("done")      # 这个入口在首页上，先回到首页

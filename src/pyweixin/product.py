@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 LOGGER = logging.getLogger("pyweixin.product")
 
@@ -60,7 +60,6 @@ JOB_STATES = (
     JOB_OUTCOME_UNKNOWN,
     JOB_AWAITING_RECONCILE,
 )
-TERMINAL_JOB_STATES = (JOB_SUCCEEDED, JOB_FAILED, JOB_CANCELLED)
 #: States that keep a quota reservation held because the outcome is not settled.
 UNSETTLED_JOB_STATES = (JOB_QUEUED, JOB_RUNNING, JOB_OUTCOME_UNKNOWN, JOB_AWAITING_RECONCILE)
 

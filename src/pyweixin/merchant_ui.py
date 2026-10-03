@@ -378,6 +378,7 @@ class MerchantWindow:
                     "st_origin", "listen_merged"):
             self._widgets.pop(key, None)
         for key in ("read_start", "read_cancel", "read_next", "read_state",
+                    "read_empty_exit",
                     "read_mode", "ranged_box", "all_note",
                     "read_summary", "read_summary_tree",
                     "analyze_button", "quota_refresh", "model_refresh",
@@ -672,6 +673,18 @@ class MerchantWindow:
         self._widgets["read_next"] = ttk.Button(
             actions, text="下一步：智能整理", style="Big.TButton", command=self._go_next_from_history
         )
+        # 一条都没读到时的出口。
+        #
+        # 以前这种情况把「下一步」藏起来，只剩「开始读取」和「上一步」。
+        # 商户的反应是反复点读取 —— 而读不到多半不是他的操作问题，
+        # 再点一百次还是 0 条。他其实是**卡住了**：没有一条能走的路。
+        #
+        # 已读到的消息和订单一个都没丢，所以他需要的是"去看已经有的东西"
+        # 这条路，而不是再试一次。
+        self._widgets["read_empty_exit"] = ttk.Button(
+            actions, text="先看看已经读到的内容", style="Big.TButton",
+            command=self._go_home_from_history,
+        )
 
         note = ttk.Label(
             frame,
@@ -810,6 +823,9 @@ class MerchantWindow:
         if state is not None and self._alive(state):
             if result is None:
                 state.configure(text="", foreground="#7b8794")
+                # 读取还没出结果、或中途失败。这里**也**要有出路 ——
+                # 失败之后停在原地、什么都没得点的商户，只会以为程序死了。
+                self._show_empty_exit(False)
                 return
             if result.total_messages == 0:
                 # 「读到 0 条」和「读到 N 条但一条都没入库」是两回事。
@@ -834,11 +850,15 @@ class MerchantWindow:
                     )
                 else:
                     state.configure(
-                        text="这次没有读到任何消息。可以换个读法再试一次。",
+                        text="这次没有读到任何消息。可以换个读法再试一次，"
+                             "也可以先去看看已经读到的内容 —— 之前读到的一个都没丢。",
                         foreground="#a8590b",
                     )
+                # 0 条时不给「下一步：智能整理」（那确实是死路），
+                # 但**必须**给一条走得通的路，否则商户只能反复点「开始读取」。
                 if nxt is not None and self._alive(nxt):
                     nxt.pack_forget()
+                self._show_empty_exit(True)
                 return
             parts = [result.headline()]
             for gap in result.gaps:
@@ -852,6 +872,8 @@ class MerchantWindow:
                 nxt.pack(side="left", padx=(8, 0))
             else:
                 nxt.pack_forget()
+            # 读到东西了就去看新内容，那个出口该让位。
+            self._show_empty_exit(False)
 
         # 逐会话明细。没有结果时不摆这张空表 —— 空表头只是占地方。
         summary = self._widgets.get("read_summary")
@@ -876,6 +898,21 @@ class MerchantWindow:
             else:
                 summary.pack_forget()
 
+    def _show_empty_exit(self, show: bool) -> None:
+        """「先看看已经读到的内容」这个出口的显隐。
+
+        没读到东西时，它是商户**唯一**走得通的路。把它藏起来，等于让人卡在
+        这一屏只能反复点「开始读取」。
+        """
+        button = self._widgets.get("read_empty_exit")
+        if button is None or not self._alive(button):
+            return
+        if show:
+            button.pack(side="left", padx=(8, 0))
+        else:
+            button.pack_forget()
+
+
     def _go_next_from_history(self) -> None:
         """「下一步：智能整理」按钮。没读到消息时不放行 —— 那是个死路。"""
         result = self._last_read_result or self.app.wizard.history_result
@@ -886,6 +923,15 @@ class MerchantWindow:
         # wizard.step 还停在 history，之后任何依据 step 的判断（恢复、刷新）
         # 都会读到过期状态。
         self.app.wizard._go(WizardStep.ANALYZE)
+
+    def _go_home_from_history(self) -> None:
+        """一条都没读到时的去处：回首页看已经有的东西。
+
+        已读到的消息和订单**一个字节都没少**。商户卡在这里的真正原因不是
+        "没读到"，而是"没有任何一条能走的路"—— 所以给他一条走得通的。
+        """
+        # 同样走 wizard：页面和向导状态必须一致，理由同 :meth:`_go_next_from_history`。
+        self.app.wizard._go(WizardStep.DONE)
 
     # ------------------------------------------------- ④ 智能整理（额度同屏）
 
