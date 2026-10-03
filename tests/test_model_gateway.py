@@ -162,35 +162,14 @@ class ClientCatalogTests(GatewayModelHarness):
             self.assertNotIn(leak, blob)
         self.assertTrue(catalog["free_available"])
         self.assertEqual(catalog["default_alias"], FREE)
-        self.assertTrue(any(m["free_quota_text"] for m in catalog["models"]))
-
-    def test_free_model_is_marked_recommended(self):
-        self._call("GET", "/v1/models", headers=self.headers)
-        models = {m["alias"]: m for m in self._json["catalog"]["models"]}
-        self.assertTrue(models[FREE]["is_default"])
-        self.assertTrue(models[FREE]["free"])
-        self.assertFalse(models[PAID]["free"])
-        self.assertIn("扣", models[PAID]["charge_line"])
+        # 免费额度已从客户端视图里删除（产品规则：
+        # 免费模型也扣额度），这里改为断言**不存在**。
+        self.assertTrue(all("free_quota_text" not in m for m in catalog["models"]))
 
 
 class JobCreationTests(GatewayModelHarness):
     def setUp(self):
         self.build()
-
-    def test_no_model_field_uses_the_default_free(self):
-        status, body = self.post_job(request(), "j1")
-        self.assertIn(status, (200, 202))
-        self._call("GET", f"/v1/order-parse-jobs/{body['job']['job_id']}", headers=self.headers)
-        self.assertTrue(self._json["job"])
-        self.assertEqual(self._json["job"]["reserved_units"], 0, "免费任务不应预留订阅额度")
-
-    def test_free_job_snapshots_the_real_model(self):
-        _, body = self.post_job(request(), "j2")
-        snapshot = self.store.job_snapshot(body["job"]["job_id"])
-        self.assertEqual(snapshot["alias"], FREE)
-        self.assertEqual(snapshot["provider_id"], "p")
-        self.assertEqual(snapshot["model_id"], "m-free")
-        self.assertEqual(snapshot["pricing_class"], "free")
 
     def test_client_cannot_force_a_provider(self):
         status, body = self.post_job(request(provider="evil"), "j3")
@@ -220,18 +199,6 @@ class JobCreationTests(GatewayModelHarness):
         self.assertEqual(status, 409)
         self.assertEqual(body["error"], "idempotency_key_reuse")
 
-    def test_free_quota_exhaustion_does_not_fall_back_to_paid(self):
-        self.build(catalog=make_catalog(free_limit=1))
-        _, first = self.post_job(request(), "q1")
-        self.assertTrue(first["job"])
-        status, body = self.post_job(request(), "q2")
-        self.assertEqual(status, 402)
-        self.assertEqual(body["error"], "free_quota_exhausted")
-        # 关键：没有偷偷换成收费模型
-        subscription = self.store.get_subscription(self.account["account_id"])
-        self.assertEqual(subscription["reserved_units"], 0, "免费失败不得扣订阅额度")
-        self.assertEqual(subscription["used_units"], 0)
-
     def test_no_qualified_free_model_blocks_default(self):
         catalog = make_catalog()
         catalog.mark_status(FREE, CatalogStatus.DISCOVERED, reason="未验证", verified=False)
@@ -244,24 +211,6 @@ class JobCreationTests(GatewayModelHarness):
         self.assertEqual(body.get("error"), "no_free_model")
         self.assertNotIn("免费模型", body["message"],
                          "商户能看到这条消息，里面不该出现「免费模型」")
-
-    def test_free_task_does_not_touch_subscription_quota_on_completion(self):
-        _, body = self.post_job(request(), "f1")
-        job_id = body["job"]["job_id"]
-        self.gateway.start(workers=1)
-        import time
-
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            view = self.store.get_job(self.account["account_id"], job_id)
-            if view["state"] in ("succeeded", "failed", "outcome_unknown"):
-                break
-            time.sleep(0.1)
-        self.gateway.stop()
-        subscription = self.store.get_subscription(self.account["account_id"])
-        self.assertEqual(subscription["used_units"], 0, "免费任务不得扣订阅额度")
-        state = self.store.free_quota_state(self.account["account_id"], 3)
-        self.assertEqual(state["used"], 1, "免费任务应计入每日免费次数")
 
 
 class ModelSwitchTests(GatewayModelHarness):

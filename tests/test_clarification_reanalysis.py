@@ -517,15 +517,6 @@ class BillingSourceTests(unittest.TestCase):
         self.assertTrue(billing["policy_version"])
         self.assertTrue(billing["charge_line"])
 
-    def test_free_job_billing_says_free_and_zero(self):
-        response = self._submit("b2", self._payload())
-        billing = response.payload["billing"]
-        self.assertEqual(billing["pricing_class"], "free")
-        self.assertEqual(billing["cost_units_per_job"], 0)
-        self.assertEqual(billing["charged_units"], 0)
-        self.assertEqual(billing["free_daily_limit"], 5)
-        self.assertEqual(billing["free_remaining"], 4)
-
     def test_stale_pricing_version_is_refused_and_asks_for_reconfirmation(self):
         """策略在商户确认之后变了：必须重新确认，不能按新价悄悄扣。"""
         with self.assertRaises(Exception) as caught:
@@ -557,11 +548,6 @@ class BillingSourceTests(unittest.TestCase):
         self.assertEqual(
             self.store.get_subscription(self.account["account_id"])["reserved_units"], 0, "不得预留"
         )
-
-    def test_free_job_does_not_need_a_pricing_version(self):
-        """免费任务不扣订阅额度，不强制带版本。"""
-        self._submit("b-free-nov", self._payload(model="free-standard", pricing_version=""))
-        self.assertEqual(len(self.store.list_jobs(self.account["account_id"])), 1)
 
     def test_free_turned_paid_cannot_slip_through_without_a_version(self):
         """免费模型变成收费后，"没带版本"的老请求不能静默按收费继续。"""

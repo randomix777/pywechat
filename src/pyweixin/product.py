@@ -1492,9 +1492,12 @@ class ProductStore:
         now = self._clock()
         self._connection.execute(
             "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
-            " VALUES(?,?,?,'internal_retry',0,?,?,'',0)",
+            # day 一定要写当天。写空串的话，
+            # ``usage_for_account`` 按当天查就查不到，
+            # 平台自己花的钱就“不可见”了 —— 而它必须可见。
+            " VALUES(?,?,?,'internal_retry',0,?,?,?,0)",
             ("ul_" + secrets.token_hex(12), job_id, row["account_id"],
-             f"{note}（tokens={int(tokens)}）" if tokens else note, now),
+             f"{note}（tokens={int(tokens)}）" if tokens else note, now, self._day_key()),
         )
 
     # ------------------------------------------------------------------- jobs
@@ -1688,7 +1691,7 @@ class ProductStore:
         只有确实成功才结算额度；失败不扣钱，只释放预留。
         """
         now = self._clock()
-        with self._lock, self._connection:
+        with self._transaction():
             row = self._connection.execute(
                 "SELECT * FROM jobs WHERE id=?", (job_id,)
             ).fetchone()
@@ -1737,7 +1740,7 @@ class ProductStore:
         # jobs 表自带这几列（model_requested / model_reported / ...），
         # 所以不要临时塞进 snapshot 的 json 里 ——
         # 那会覆盖掉计费事实，而且查询的人叫不到这些字段。
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 "UPDATE jobs SET model_requested=?,model_reported=?,model_confirmed=?,"
                 "model_warning=?,request_evidence=? WHERE id=?",
@@ -1759,7 +1762,7 @@ class ProductStore:
         只记凡何时候、到了哪个状态、怎么回了。
         不记消息正文 —— 这里会落盘，而消息正文会被商户转发。
         """
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 # id 是 INTEGER PRIMARY KEY AUTOINCREMENT —— 自增，不要塞字符串，
                 # SQLite 会报 datatype mismatch。
@@ -1782,11 +1785,10 @@ class ProductStore:
             return self.job_view(row)
         if row["state"] != JOB_QUEUED:
             raise Conflict("这个任务已经开始了，无法取消", code="job_not_cancellable")
-        with self._lock, self._connection:
-            self._connection.execute(
-                "UPDATE jobs SET cancel_requested=1,updated_at=? WHERE id=?", (self._clock(), job_id)
-            )
-        self._log_event(job_id, JOB_CANCELLED, "商户申请取消")
+        # 排队中的任务还没到上游，直接取消并释放预留。
+        # 只设一个标记等 worker 回心才取消，会让商户很久才看到已取消。
+        # 重复取消必须是幂等的，不能报错。
+        self.finish_job(job_id, JOB_CANCELLED, error_code="cancelled", error_message="任务已取消")
         return self.get_job(account_id, job_id)
 
     def cancel_requested(self, job_id: str) -> bool:
@@ -1804,10 +1806,10 @@ class ProductStore:
         先放出预留，真正的结论让**对账**去得。
         """
         now = self._clock()
-        with self._lock, self._connection:
+        with self._transaction():
             rows = self._connection.execute(
-                "SELECT id,reserved_units,charged_units,upstream_session_id FROM jobs"
-                " WHERE state IN (?,?)",
+                "SELECT id,reserved_units,charged_units,upstream_session_id,deadline_at"
+                " FROM jobs WHERE state IN (?,?)",
                 (JOB_RUNNING, JOB_QUEUED),
             ).fetchall()
             expired = []
@@ -1826,6 +1828,54 @@ class ProductStore:
             for row in expired:
                 self._log_event(row["id"], JOB_FAILED, "超时无待结算")
         return {"expired": len(expired)}
+
+    def list_all_jobs(self, states: Sequence[str] = (), limit: int = 100) -> list[dict[str, Any]]:
+        """运营看的全平台任务列表。
+
+        **绝不包含消息正文**。运营看到“哪个账号、哪个模型、怎么结算”
+        就够排查了；看到客户写了什么没有价值，反而往外泄。
+
+        这里手工拼字段，而不是直接 ``SELECT *`` —— 后者会在新加列时悄悄把正文
+        带过去。所以这里显式列出允许的字段。
+        """
+        base = ("SELECT j.id,j.account_id,j.state,j.created_at,j.finished_at,"
+                "j.attempt,j.charged_units,j.reserved_units,j.error_code,"
+                "m.model_requested,m.model_reported,a.username"
+                " FROM jobs j"
+                " LEFT JOIN job_model_snapshot m ON m.job_id=j.id"
+                " LEFT JOIN accounts a ON a.id=j.account_id")
+        if states:
+            marks = ",".join("?" for _ in states)
+            rows = self._connection.execute(
+                f"{base} WHERE j.state IN ({marks}) ORDER BY j.created_at DESC LIMIT ?",
+                (*states, int(limit)),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                f"{base} ORDER BY j.created_at DESC LIMIT ?", (int(limit),)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def usage_for_account(self, account_id: str, day: str = "") -> dict[str, Any]:
+        """账号在某天的用量明细。
+
+        ``day`` 为空表示今天。只给这个账号 ——
+        看别人的用量没有意义，而且越权的风险太高。
+        """
+        key = str(day or "") or self._day_key()
+        rows = self._connection.execute(
+            "SELECT kind, COALESCE(SUM(units),0) AS units, COUNT(*) AS entries"
+            " FROM usage_ledger WHERE account_id=? AND day=? GROUP BY kind ORDER BY kind",
+            (account_id, key),
+        ).fetchall()
+        charged = self._connection.execute(
+            "SELECT COALESCE(SUM(charged_units),0) AS charged FROM usage_ledger"
+            " WHERE account_id=? AND day=? AND kind<>'internal_retry'",
+            (account_id, key),
+        ).fetchone()["charged"]
+        # 返回清单而不是字典：调用方只要拿这些行各自的 kind，
+        # 包装成 dict 反而让使用方得自己选字段。
+        return [dict(row) for row in rows]
 
     def operator_usage_summary(self) -> dict[str, Any]:
         """运营看的用量汇总。**分开说什么**。
@@ -1869,7 +1919,7 @@ class ProductStore:
         * **还没到上游** —— 退回 ``queued``，重新排队。这个定价承诺没发生过。
         """
         now = self._clock()
-        with self._lock, self._connection:
+        with self._transaction():
             held = self._connection.execute(
                 "SELECT id FROM jobs WHERE state=? AND upstream_session_id IS NOT NULL"
                 " AND upstream_session_id<>''",
@@ -1900,7 +1950,7 @@ class ProductStore:
         """
         now = self._clock()
         cutoff = now - float(older_than_seconds)
-        with self._lock, self._connection:
+        with self._transaction():
             authorizations = self._connection.execute(
                 "DELETE FROM device_authorizations WHERE expires_at < ?", (cutoff,)
             ).rowcount
@@ -2063,7 +2113,7 @@ class ProductStore:
     def save_catalog(self, catalog: Any) -> str:
         """持久化目录。凭据已经在进入这里之前被剔除。"""
         payload = json.dumps(catalog.to_dict(), ensure_ascii=False)
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 "INSERT OR REPLACE INTO model_catalog(version,payload,updated_at,last_success_at,fetched_ok)"
                 " VALUES(?,?,?,?,?)",
@@ -2087,7 +2137,7 @@ class ProductStore:
 
     def save_model_policies(self, policies: Sequence[Any]) -> None:
         now = utc_now()
-        with self._lock, self._connection:
+        with self._transaction():
             for policy in policies:
                 self._connection.execute(
                     "INSERT OR REPLACE INTO model_policy(alias,payload,updated_at) VALUES(?,?,?)",
@@ -2116,7 +2166,7 @@ class ProductStore:
         只有真的发过请求、拿回结果并检查过，才能置为通过。"已连接"和
         "目录里有"都不算数。
         """
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 "INSERT OR REPLACE INTO model_verification"
                 "(alias,backend,provider_id,model_id,prompt_version,passed,checks,verified_at)"
@@ -2169,7 +2219,7 @@ class ProductStore:
         之后无论网络重试多少次，都用这一份；换模型必须**新建**任务，
         否则同一笔工作会被记成两笔。
         """
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 "INSERT OR REPLACE INTO job_model_snapshot"
                 "(job_id,alias,provider_id,model_id,catalog_version,pricing_class,pricing_version,"

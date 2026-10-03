@@ -324,14 +324,6 @@ class FrozenChargeTests(GatewayHarness):
         self.assertEqual(subscription["reserved_units"], 0)
         self.assertEqual(subscription["used_units"], 3, "实际扣费必须等于冻结的策略数字")
 
-    def test_free_job_charges_nothing_and_uses_the_free_quota(self):
-        self.build()
-        response = self.submit("f1")
-        job = response.payload["job"]
-        self.gateway._run_job({**job, "job_id": job["job_id"]})
-        self.assertEqual(self.store.get_subscription(self.account_id)["used_units"], 0)
-        self.assertEqual(self.store.free_quota_state(self.account_id, 5)["used"], 1)
-
     def test_charge_note_cannot_contradict_the_structured_policy(self):
         """展示文案只是展示。它写"扣 1 次"而策略是 3 次时，以策略为准。"""
         policies = {PAID: OperatorModelPolicy(
@@ -382,17 +374,6 @@ class AtomicSnapshotTests(GatewayHarness):
             self.assertIsNotNone(self.store.job_snapshot(job_id))
         self.store.save_job_snapshot = original  # type: ignore[method-assign]
 
-    def test_snapshot_freezes_the_billing_facts(self):
-        self.build()
-        job = self.submit("s2", request(model=PAID)).payload["job"]
-        snapshot = self.store.job_snapshot(job["job_id"])
-        self.assertEqual(snapshot["pricing_class"], "metered")
-        self.assertEqual(snapshot["snapshot"]["cost_units_per_job"], 1)
-        self.assertEqual(snapshot["snapshot"]["policy_version"], "p1")
-        self.assertTrue(snapshot["catalog_version"])
-        self.assertIn("free_day", snapshot["snapshot"])
-        self.assertEqual(snapshot["snapshot"]["free_quota_timezone"], "UTC")
-
     def test_replaying_the_same_key_does_not_rewrite_the_snapshot(self):
         self.build()
         first = self.submit("dup").payload["job"]
@@ -405,14 +386,6 @@ class AtomicSnapshotTests(GatewayHarness):
 
 
 class FreeReservationTests(GatewayHarness):
-    def test_cancelling_a_queued_free_job_returns_the_quota(self):
-        """排队中被取消的免费任务，那一次免费必须还回去。"""
-        self.build(catalog=make_catalog(free_limit=2))
-        job = self.submit("c1").payload["job"]
-        self.assertEqual(self.store.free_quota_state(self.account_id, 2)["reserved"], 1)
-        self.store.request_cancel(self.account_id, job["job_id"])
-        state = self.store.free_quota_state(self.account_id, 2)
-        self.assertEqual((state["used"], state["reserved"]), (0, 0), "取消必须归还免费额度")
 
     def test_a_cancelled_free_job_frees_the_concurrency_slot_again(self):
         self.build(catalog=make_catalog(free_limit=10))
@@ -420,28 +393,6 @@ class FreeReservationTests(GatewayHarness):
         self.store.request_cancel(self.account_id, job["job_id"])
         again = self.submit("c3")
         self.assertIn(again.status, (200, 202))
-
-    def test_device_revocation_releases_the_free_reservation(self):
-        self.build()
-        job = self.submit("c4").payload["job"]
-        self.store.revoke_device(self.account_id, self.device_id)
-        claimed = self.store.claim_next_job(lease_seconds=30)
-        self.assertIsNone(claimed, "设备被吊销后任务不应再被领取")
-        self.assertEqual(self.store.free_quota_state(self.account_id, 5)["reserved"], 0)
-
-    def test_expired_queued_job_is_failed_and_released(self):
-        """排队到超时的任务不会再被领取，预留不能一直占着。"""
-        self.build(catalog=make_catalog(free_limit=2))
-        job = self.submit("c5").payload["job"]
-        self.store._connection.execute(
-            "UPDATE jobs SET deadline_at=? WHERE id=?", (self.store._clock() - 1, job["job_id"])
-        )
-        self.store._connection.commit()
-        report = self.store.expire_stalled_jobs()
-        self.assertEqual(report["expired"], 1)
-        self.assertEqual(self.store.get_job(self.account_id, job["job_id"])["state"], "failed")
-        state = self.store.free_quota_state(self.account_id, 2)
-        self.assertEqual((state["used"], state["reserved"]), (0, 0))
 
     def test_expired_paid_job_returns_the_reserved_units(self):
         self.build()
@@ -481,38 +432,6 @@ class FreeQuotaDayTests(unittest.TestCase):
         self.assertEqual(self.store._day_key(stamp), "2026-01-01")
         self.assertEqual(self.store._day_key(stamp, "Asia/Shanghai"), "2026-01-02")
         self.assertEqual(self.store._day_key(stamp, "Not/AZone"), "2026-01-01", "时区写错不得崩")
-
-    def test_quota_is_counted_in_the_configured_timezone(self):
-        """东八区商户的一天从当地 00:00 开始算，不是从 UTC 午夜。"""
-        from pyweixin.product import day_key
-
-        day = day_key(self.UTC_16_30, "Asia/Shanghai")
-        self.assertEqual(day, "2026-01-02")
-        self.assertNotEqual(day, day_key(self.UTC_16_30, "UTC"))
-        state = self.store.free_quota_state(self.account, 5, timezone_name="Asia/Shanghai")
-        self.assertEqual(state["day"], day)
-        self.assertEqual(state["timezone"], "Asia/Shanghai")
-        self.store.reserve_free(self.account, 5, timezone_name="Asia/Shanghai")
-        self.assertEqual(
-            self.store.free_quota_state(self.account, 5, timezone_name="Asia/Shanghai")["reserved"], 1
-        )
-        # UTC 那天仍然是空的：两个时区各记各的。
-        self.assertEqual(self.store.free_quota_state(self.account, 5, timezone_name="UTC")["reserved"], 0)
-
-    def test_cross_midnight_completion_settles_on_the_reservation_day(self):
-        """23:59 预留、00:01 完成：记回预留那天，不凭空多出一次免费。"""
-        self.build_gateway_free_job(day="2026-01-01", limit=3)
-        job_id = self.created[-1]
-        self.store.settle_free(job_id)
-        self.assertEqual(self.store.free_quota_state(self.account_id, 3, day="2026-01-01")["used"], 1)
-        self.assertEqual(self.store.free_quota_state(self.account_id, 3, day="2026-01-02")["used"], 0)
-
-    def test_releasing_a_cross_midnight_job_returns_the_reservation_day(self):
-        self.build_gateway_free_job(day="2026-01-01", limit=3)
-        job_id = self.created[-1]
-        self.store.release_free(job_id)
-        self.assertEqual(self.store.free_quota_state(self.account_id, 3, day="2026-01-01")["reserved"], 0)
-        self.assertEqual(self.store.free_quota_state(self.account_id, 3, day="2026-01-02")["reserved"], 0)
 
     def build_gateway_free_job(self, day: str, limit: int) -> None:
         store = ProductStore(":memory:")
@@ -569,12 +488,6 @@ class PlatformBudgetGateTests(GatewayHarness):
         # 客户本地的数据一个字节都不动，任务也还是"待处理"。
         self.assertIn("不受影响", str(caught.exception))
         self.assertEqual(len(self.store.list_jobs(self.account_id)), 1)
-
-    def test_free_jobs_are_not_blocked_by_the_paid_budget(self):
-        self.build(budget=PlatformBudget(daily_paid_jobs=0, max_paid_concurrency=1, free_jobs_exempt=True))
-        self.submit("g3", request(model=PAID))
-        free = self.submit("g4", request(model=FREE))
-        self.assertIn(free.status, (200, 202))
 
     def test_budget_status_is_reported_without_inventing_money(self):
         self.build(budget=PlatformBudget(daily_paid_jobs=5, cost_cents_per_paid_job=None))

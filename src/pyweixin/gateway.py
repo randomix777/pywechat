@@ -1005,28 +1005,23 @@ class ProductGateway:
             self.store.record_internal_retry(job_id, "上游未产出可用结果，系统成本不计入客户")
             self.store.finish_job(job_id, JOB_FAILED, error_code="invalid_output" if isinstance(exc, InvalidParseOutput) else "rejected", error_message=exc.merchant_message)
             self._queue_session_cleanup(session_id)
-            self.store.release_free(job_id)
             return
         except AdapterUnavailable as exc:
             self.store.record_internal_retry(job_id, "后端不可达")
             self.store.finish_job(job_id, JOB_FAILED, error_code="backend_unavailable", error_message=exc.merchant_message)
             self._queue_session_cleanup(session_id)
-            self.store.release_free(job_id)
             return
         except AdapterError as exc:
             self.store.finish_job(job_id, JOB_FAILED, error_code="adapter_error", error_message=exc.merchant_message)
-            self.store.release_free(job_id)
             return
         except Exception:
             LOGGER.exception("parse job %s failed unexpectedly", job_id)
             self.store.finish_job(job_id, JOB_FAILED, error_code="internal_error", error_message="服务暂时不可用，请稍后再试")
-            self.store.release_free(job_id)
             return
         if self.store.cancel_requested(job_id):
             self.adapter.abort(session_id)
             self.store.finish_job(job_id, JOB_CANCELLED, error_code="cancelled", error_message="任务已取消")
             self._queue_session_cleanup(session_id)
-            self.store.release_free(job_id)
             return
         self._queue_session_cleanup(session_id)
         # 计费按**任务冻结的快照**，不按适配器返回值 —— 否则一个固定
@@ -1047,7 +1042,6 @@ class ProductGateway:
         if getattr(outcome, "model_warning", ""):
             LOGGER.warning("job %s model identity: %s", job_id, outcome.model_warning)
         self.store.finish_job(job_id, JOB_SUCCEEDED, result=outcome.result, charged_units=charged)
-        self.store.settle_free(job_id)
 
     def _frozen_charge_units(
         self, job_id: str, snapshot: Mapping[str, Any], outcome: Any
@@ -1123,7 +1117,6 @@ class ProductGateway:
         if found is None:
             # 上游会话没了：从来没留下结果。释放预留，**不**重跑。
             self._queue_session_cleanup(session_id)
-            self.store.reconcile_free(job_id, executed=False)
             return self.store.finish_job(
                 job_id, JOB_FAILED, error_code="no_upstream_result", error_message=MERCHANT_OUTCOME_MISSING
             )
@@ -1134,7 +1127,6 @@ class ProductGateway:
             # 与正常完成走同一个扣费口径，同样只认冻结的策略数字。
             charged = self._frozen_charge_units(job_id, snapshot, None)
             view = self.store.finish_job(job_id, JOB_SUCCEEDED, result=result, charged_units=charged)
-            self.store.reconcile_free(job_id, executed=True)
             return view
         # 还没定：状态保持不变，预留也留着。继续等，不盲目重发。
         return self.store.get_job_any(row["account_id"], job_id)

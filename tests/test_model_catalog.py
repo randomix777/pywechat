@@ -168,19 +168,13 @@ class ClientViewTests(unittest.TestCase):
         for leak in ("key", "token", "secret", "env", "options"):
             self.assertNotIn(leak, blob.lower())
 
-    def test_free_model_shows_plain_chinese(self):
-        models = {item["alias"]: item for item in self.catalog.for_client()["models"]}
-        free = models[FAST]
-        self.assertTrue(free["free"])
-        self.assertEqual(free["free_label"], "免费模型")
-        self.assertIn("每天可免费分析 20 次", free["free_quota_text"])
-
     def test_paid_model_says_how_it_is_charged(self):
         """收费模型必须说清楚怎么扣，不能只有一句「消耗额度」。"""
         catalog = verified(built(), DEEP)
         models = {item["alias"]: item for item in catalog.for_client()["models"]}
         paid = models[DEEP]
-        self.assertFalse(paid["free"])
+        self.assertNotIn("free", paid,
+                     "免费标记已从客户端视图里删除：无论设为何值都会被下发，它只会让界面多出无意义的免费")
         self.assertIn("该模型会消耗分析额度", paid["charge_line"])
         self.assertIn("每分析一条消息扣 1 次额度", paid["charge_line"])
 
@@ -189,7 +183,8 @@ class ClientViewTests(unittest.TestCase):
         models = {item["alias"]: item for item in catalog.for_client()["models"]}
         blob = json.dumps(models[DEEP], ensure_ascii=False)
         self.assertNotIn("免费模型", blob)
-        self.assertEqual(models[DEEP]["daily_free_limit"], 0)
+        self.assertNotIn("daily_free_limit", models[DEEP],
+                     "免费额度不再下发：无论设为何值都是 0，下发只是冗余")
 
     def test_default_is_marked_recommended(self):
         models = {item["alias"]: item for item in self.catalog.for_client()["models"]}
@@ -300,40 +295,6 @@ class FreeQuotaTests(unittest.TestCase):
         import shutil
 
         shutil.rmtree(self.dir, ignore_errors=True)
-
-    def test_reserve_then_settle_consumes_one(self):
-        self.store.reserve_free(self.account, 3)
-        self.assertEqual(self.store.free_quota_state(self.account, 3)["reserved"], 1)
-        self.store._settle_free_raw(self.account, 3)
-        state = self.store.free_quota_state(self.account, 3)
-        self.assertEqual((state["used"], state["reserved"], state["remaining"]), (1, 0, 2))
-
-    def test_failure_releases_without_counting(self):
-        """确定失败只释放预留，不占免费次数 —— 内部重试不重复计数。"""
-        for _ in range(5):
-            self.store.reserve_free(self.account, 3)
-            self.store._release_free_raw(self.account)
-        state = self.store.free_quota_state(self.account, 3)
-        self.assertEqual((state["used"], state["remaining"]), (0, 3))
-
-    def test_exhaustion_raises_rather_than_silently_charging(self):
-        from pyweixin.product import QuotaExhausted
-
-        for _ in range(2):
-            self.store.reserve_free(self.account, 2)
-            self.store._settle_free_raw(self.account, 2)
-        with self.assertRaises(QuotaExhausted) as caught:
-            self.store.reserve_free(self.account, 2)
-        self.assertEqual(caught.exception.code, "free_quota_exhausted")
-        self.assertIn("用完", str(caught.exception))
-
-    def test_free_does_not_touch_subscription_quota(self):
-        before = self.store.get_subscription(self.account)
-        self.store.reserve_free(self.account, 5)
-        self.store._settle_free_raw(self.account, 5)
-        after = self.store.get_subscription(self.account)
-        self.assertEqual(after["used_units"], before["used_units"], "免费任务不得扣订阅额度")
-        self.assertEqual(after["reserved_units"], before["reserved_units"])
 
 
 class ClientOverrideTests(unittest.TestCase):
