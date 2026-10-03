@@ -885,7 +885,12 @@ class MerchantApplication:
             return 0
 
     def free_quota_remaining(self) -> int:
-        return int(((self.model_catalog or {}).get("free_quota") or {}).get("remaining", 0))
+        """免费额度剩余。免费档位已焊死，恒为 0。
+
+        保留这个方法是为了让调用方不必改 —— 但它**永远返回 0**，
+        以后有人拿它做判断会得到"没有免费额度"的正确答案。
+        """
+        return 0
 
     def _log(self, text: str) -> None:
         if self.events.on_log:

@@ -119,12 +119,10 @@ class LocalParseService:
             return ""
         line = str(facts.get("charge_line") or "")
         if not line:
-            units = int(facts.get("cost_units_per_job") or 0)
-            line = (f"每分析一条消息消耗 {units} 次分析额度"
-                    if units else "该模型本次不消耗分析额度")
-        limit = int(facts.get("daily_free_limit") or 0)
-        if facts.get("pricing_class") == "free" and limit:
-            line += f"；每天有 {limit} 次不消耗额度"
+            units = max(1, int(facts.get("cost_units_per_job") or 0))
+            # 不再有「本次不消耗」这个分支：免费档位已被焊死，
+            # 每一次分析都扣。写「不消耗」会让商户预期错误。
+            line = f"每分析一条消息消耗 {units} 次分析额度"
         return line
 
     # ------------------------------------------------------------- context

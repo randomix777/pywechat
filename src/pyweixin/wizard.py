@@ -453,7 +453,6 @@ class Wizard:
         self._analyzed_ids = ids
         # 汇总口径来自服务端：网关说扣了多少就是多少。
         charged_units = sum(int(fact.get("charged_units", 0)) for fact in billing)
-        free_tasks = sum(1 for fact in billing if fact.get("pricing_class") == "free")
         summary = {
             "processed": len(ids),
             "with_result": sum(1 for item in outcomes if item.get("order_id")),
@@ -461,10 +460,9 @@ class Wizard:
             "ignored": sum(1 for item in outcomes if item.get("outcome") == "ignored"),
             "already_analyzed": self.already_analyzed_count(),
             # submitted 是任务数，charged_units 是服务端判定的扣费量 —— 两者
-            # 不一定相等（免费任务扣 0），不能互相替代。
+            # 不一定相等，不能互相替代。
             "submitted_jobs": submitted,
             "charged_units": charged_units,
-            "free_jobs": free_tasks,
             "billing": billing,
             "billing_note": "扣费金额由云端账号按服务端策略计算，此处只做汇总。",
             "traces": [item["trace"] for item in outcomes],

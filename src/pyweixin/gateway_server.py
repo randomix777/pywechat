@@ -515,11 +515,14 @@ def main(argv: list[str] | None = None) -> int:
     LOGGER.info("execution backend ok=%s %s", report.get("ok"), report.get("version", report.get("error", "")))
     if not report.get("ok"):
         LOGGER.error("execution backend NOT ready: %s", json.dumps(report, ensure_ascii=False))
+    _default = gateway.catalog.default_entry()
     LOGGER.info(
-        "model catalog: %d entries, default=%s, free_available=%s",
+        # 不再打 free_available：免费档位已被焊死，它恒为 False，
+        # 打出来只会让人误以为还有什么发生了。
+        "model catalog: %d entries, default=%s, verified=%s",
         len(gateway.catalog),
-        gateway.catalog.default_entry().alias if gateway.catalog.default_entry() else "(无)",
-        bool(gateway.catalog.default_entry() and gateway.catalog.default_entry().policy.is_free),
+        _default.alias if _default is not None else "(无)",
+        bool(_default is not None and _default.verified_at),
     )
     LOGGER.info("platform budget: %s", json.dumps(gateway.platform_budget_status(), ensure_ascii=False))
 

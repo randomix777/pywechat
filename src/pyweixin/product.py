@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 LOGGER = logging.getLogger("pyweixin.product")
 
@@ -61,6 +61,9 @@ JOB_STATES = (
     JOB_AWAITING_RECONCILE,
 )
 #: States that keep a quota reservation held because the outcome is not settled.
+#: 已终止。第一次写入生效（见 :meth:`finish_job`），
+#: 后来的写入一律忽略 —— 否则会双计额度。
+TERMINAL_JOB_STATES = (JOB_SUCCEEDED, JOB_FAILED, JOB_CANCELLED)
 UNSETTLED_JOB_STATES = (JOB_QUEUED, JOB_RUNNING, JOB_OUTCOME_UNKNOWN, JOB_AWAITING_RECONCILE)
 
 # Ambiguous characters are excluded so a merchant can read the code off screen.
@@ -603,10 +606,15 @@ class ProductStore:
                     catalog_version TEXT NOT NULL DEFAULT '',
                     pricing_class TEXT NOT NULL DEFAULT 'metered',
                     pricing_version TEXT NOT NULL DEFAULT '',
+                    -- 下面三列是**免费档位的遗留**。
+                    --
+                    -- 免费路径已经焊死（见 ``OperatorModelPolicy.__post_init__``），
+                    -- 新写入的行这里一律是 0。但**不能删列**：库里已有历史行，
+                    -- 删列要么迁移、要么旧数据读不出来。这里保留只读，
+                    -- 等确认线上没有未结算的历史行之后再单独做迁移。
                     daily_free_limit INTEGER NOT NULL DEFAULT 0,
                     prompt_version TEXT NOT NULL DEFAULT '',
                     plugin_version TEXT NOT NULL DEFAULT '',
-                    -- 免费额度的结算/释放标记，保证恰好一次（并发与重启重试下不重复扣）。
                     free_settled INTEGER NOT NULL DEFAULT 0,
                     free_released INTEGER NOT NULL DEFAULT 0,
                     snapshot TEXT NOT NULL DEFAULT '{}'
@@ -1573,17 +1581,16 @@ class ProductStore:
                     now,
                 ),
             )
-            if not free:
-                self._connection.execute(
-                    "UPDATE subscriptions SET reserved_units=reserved_units+?,updated_at=? WHERE account_id=?",
-                    (charged, now, account_id),
-                )
-                self._connection.execute(
-                    "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
-                    " VALUES(?,?,?,'reserve',?,?,?,?,?)",
-                    ("ul_" + secrets.token_hex(12), job_id, account_id, charged,
-                     "创建解析任务预留", now, day, int(charged)),
-                )
+            self._connection.execute(
+                "UPDATE subscriptions SET reserved_units=reserved_units+?,updated_at=? WHERE account_id=?",
+                (charged, now, account_id),
+            )
+            self._connection.execute(
+                "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
+                " VALUES(?,?,?,'reserve',?,?,?,?,?)",
+                ("ul_" + secrets.token_hex(12), job_id, account_id, charged,
+                 "创建解析任务预留", now, self._day_key(), int(charged)),
+            )
             if snapshot:
                 # 与任务同一事务：不存在"任务已经在跑、快照还没写"的窗口。
                 self._insert_job_snapshot(job_id, snapshot)
@@ -1656,6 +1663,293 @@ class ProductStore:
                 "UPDATE jobs SET upstream_session_id=?,upstream_message_id=COALESCE(NULLIF(?,''),upstream_message_id),updated_at=? WHERE id=?",
                 (session_id, message_id, self._clock(), job_id),
             )
+
+    # -------------------------------------------------- reconstructed 2026-10-03
+
+    #: 以下方法是**重建**，不是原始实现。
+    #:
+    #: 一次去除免费路径时用行号切片过度，连带删掉了它们。
+    #: 当时文件未跟踪、磁盘也没副本，**没有任何东西可以恢复**。
+    #:
+    #: 这里是根据**测试的期望**反推的：每个方法顶都写清楚了它该
+    #: 返回什么、为什么。不这么做的话，下一个看这段代码的人
+    #: 会认为这里本来就是原版。正常应当核对真实需求后修正。
+    _reconstructed = True
+
+    def finish_job(self, job_id: str, state: str, result: Any = None,
+                   error_code: str = "", error_message: str = "",
+                   charged_units: int | None = None, tokens: int = 0) -> dict[str, Any]:
+        """写终态。**第一次写入生效**，后来的一律忽略。
+
+        为什么：任务可能被启动后的工作进程收到结果，
+        也可能同时被超时作废判定失败。两边都想写终态——
+        不得不定哪个算。不先到的那个算数，后来的只能并排不能双计。
+
+        只有确实成功才结算额度；失败不扣钱，只释放预留。
+        """
+        now = self._clock()
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT * FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFound("任务不存在", code="job_not_found")
+            if row["state"] in TERMINAL_JOB_STATES:
+                return self.job_view(row)          # 已经终止了，不覆盖
+            charged = int(charged_units or 0) if state == JOB_SUCCEEDED else 0
+            self._connection.execute(
+                "UPDATE jobs SET state=?,result_json=?,error_code=?,error_message=?,"
+                "charged_units=?,finished_at=?,updated_at=? WHERE id=?",
+                (state, json.dumps(result, ensure_ascii=False) if result is not None else None,
+                 error_code, error_message, int(row["charged_units"] or 0) + charged, now, now, job_id),
+            )
+            if charged:
+                self._connection.execute(
+                    "UPDATE subscriptions SET used_units=used_units+?,"
+                    "reserved_units=MAX(0,reserved_units-?),updated_at=? WHERE account_id=?",
+                    (charged, int(row["reserved_units"] or 0), now, row["account_id"]),
+                )
+                self._connection.execute(
+                    "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
+                    " VALUES(?,?,?,'settle',?,?,?,?,?)",
+                    ("ul_" + secrets.token_hex(12), job_id, row["account_id"], charged,
+                     "解析完成结算", now, self._day_key(), charged),
+                )
+            elif not result:
+                self._release_reservation(job_id, int(row["reserved_units"] or 0), error_code or "failed")
+            self._connection.execute(
+                "UPDATE jobs SET charged_units=? WHERE id=?", (int(row["charged_units"] or 0) + charged, job_id)
+            )
+        self._log_event(job_id, state, error_message or "完成")
+        row = self._connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return self.job_view(row)
+
+    def mark_model_execution(self, job_id: str, requested: str = "", reported: str = "",
+                            confirmed: bool = False, warning: str = "",
+                            evidence: Mapping[str, Any] | None = None) -> None:
+        """记下「请求的模型」和「上游自报的」。
+
+        两者分开记，是因为它们可能不一致。上游没回标识
+        就是「未能独立确认」，**不是「确认一致」**——
+        把这两种情况混为一谈，就会在账盘对不上的时候
+        发现自己被乕望的模型骗过。
+        """
+        # jobs 表自带这几列（model_requested / model_reported / ...），
+        # 所以不要临时塞进 snapshot 的 json 里 ——
+        # 那会覆盖掉计费事实，而且查询的人叫不到这些字段。
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE jobs SET model_requested=?,model_reported=?,model_confirmed=?,"
+                "model_warning=?,request_evidence=? WHERE id=?",
+                (str(requested or ""), str(reported or ""), 1 if confirmed else 0,
+                 str(warning or ""), json.dumps(dict(evidence or {}), ensure_ascii=False, default=str),
+                 job_id),
+            )
+
+    def rate_limit(self, scope: str, limit: int, window: float, code: str = "rate_limited") -> None:
+        """公开的限流入口，调用方只需要一个 scope。
+
+        实现就是 :meth:`_rate_limit` —— 两个名字指同一件事，私有那个是本项目自己在用的。
+        """
+        self._rate_limit(scope, limit, window, code)
+
+    def _log_event(self, job_id: str, state: str, detail: str = "") -> None:
+        """写一条任务事件。
+
+        只记凡何时候、到了哪个状态、怎么回了。
+        不记消息正文 —— 这里会落盘，而消息正文会被商户转发。
+        """
+        with self._lock, self._connection:
+            self._connection.execute(
+                # id 是 INTEGER PRIMARY KEY AUTOINCREMENT —— 自增，不要塞字符串，
+                # SQLite 会报 datatype mismatch。
+                "INSERT INTO job_events(job_id,at,state,detail) VALUES(?,?,?,?)",
+                (job_id, float(self._clock()), str(state), str(detail)),
+            )
+
+    def request_cancel(self, account_id: str, job_id: str) -> dict[str, Any]:
+        """请求取消任务。
+
+        **只能取消还在排队的**。已经开始跑的把它拒绝掉——
+        上游已经收到了请求，中途放手等于白花钱。
+        """
+        row = self._connection.execute(
+            "SELECT * FROM jobs WHERE id=? AND account_id=?", (job_id, account_id)
+        ).fetchone()
+        if row is None:
+            raise NotFound("任务不存在", code="job_not_found")
+        if row["state"] == JOB_CANCELLED:
+            return self.job_view(row)
+        if row["state"] != JOB_QUEUED:
+            raise Conflict("这个任务已经开始了，无法取消", code="job_not_cancellable")
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE jobs SET cancel_requested=1,updated_at=? WHERE id=?", (self._clock(), job_id)
+            )
+        self._log_event(job_id, JOB_CANCELLED, "商户申请取消")
+        return self.get_job(account_id, job_id)
+
+    def cancel_requested(self, job_id: str) -> bool:
+        """工作进程轮询时看“有没有被请求取消”。"""
+        row = self._connection.execute(
+            "SELECT cancel_requested FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        return bool(row["cancel_requested"]) if row is not None else False
+
+    def expire_stalled_jobs(self) -> dict[str, int]:
+        """把卡住的任务判定失败，并释放预留额度。
+
+        超时不等于失败———上游可能已经运行了。但一分钟输出到了
+        还没结算，继续占着商户的额度比快点放手更慢。
+        先放出预留，真正的结论让**对账**去得。
+        """
+        now = self._clock()
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                "SELECT id,reserved_units,charged_units,upstream_session_id FROM jobs"
+                " WHERE state IN (?,?)",
+                (JOB_RUNNING, JOB_QUEUED),
+            ).fetchall()
+            expired = []
+            for row in rows:
+                deadline = row["deadline_at"]
+                if deadline is None or float(deadline) > now:
+                    continue
+                expired.append(row)
+                self._connection.execute(
+                    "UPDATE jobs SET state=?,error_code=?,error_message=?,finished_at=?,updated_at=? WHERE id=?",
+                    (JOB_FAILED, "stalled", "任务超时，结果未知", now, now, row["id"]),
+                )
+                if int(row["charged_units"] or 0) > 0:
+                    continue          # 已结算，额度不能变动
+                self._release_reservation(row["id"], int(row["reserved_units"] or 0), "stalled")
+            for row in expired:
+                self._log_event(row["id"], JOB_FAILED, "超时无待结算")
+        return {"expired": len(expired)}
+
+    def operator_usage_summary(self) -> dict[str, Any]:
+        """运营看的用量汇总。**分开说什么**。
+
+        * ``customer_charged_units`` —— 真正从商户额度里扣掉的
+        * ``internal_retry_entries`` —— 内部重试，**平台自己承担，不算商户的**
+        * ``held_reservations`` —— 还占着、结果未定的那部分额度
+
+        把这三个混在一起报上去，就会看不出平台自己付了多少。
+        """
+        row = self._connection.execute(
+            "SELECT COALESCE(SUM(charged_units),0) AS charged FROM usage_ledger"
+            " WHERE kind<>'internal_retry'"
+        ).fetchone()
+        retries = self._connection.execute(
+            "SELECT COUNT(*) AS count FROM usage_ledger WHERE kind='internal_retry'"
+        ).fetchone()["count"]
+        held = self._connection.execute(
+            "SELECT COALESCE(SUM(reserved_units),0) AS held FROM jobs WHERE state IN (?,?,?)",
+            (JOB_QUEUED, JOB_RUNNING, JOB_AWAITING_RECONCILE),
+        ).fetchone()["held"]
+        ledger = self._connection.execute(
+            "SELECT kind, COALESCE(SUM(units),0) AS units, COUNT(*) AS entries FROM usage_ledger"
+            " GROUP BY kind ORDER BY kind"
+        ).fetchall()
+        return {
+            "customer_charged_units": int(row["charged"]),
+            "internal_retry_entries": int(retries),
+            "held_reservations": int(held),
+            "ledger": [dict(item) for item in ledger],
+        }
+
+    def recover_inflight_jobs(self) -> dict[str, int]:
+        """网关重启后的恢复。
+
+        分两类，区别很重要：
+
+        * **已经到了上游**（记着 ``upstream_session_id``）——
+          不能当没跑过重新排队。重跑一次就是多扣一次钱，
+          而且结果会不一致。转 ``awaiting_reconcile``，等人工/对账。
+        * **还没到上游** —— 退回 ``queued``，重新排队。这个定价承诺没发生过。
+        """
+        now = self._clock()
+        with self._lock, self._connection:
+            held = self._connection.execute(
+                "SELECT id FROM jobs WHERE state=? AND upstream_session_id IS NOT NULL"
+                " AND upstream_session_id<>''",
+                (JOB_RUNNING,),
+            ).fetchall()
+            requeued = self._connection.execute(
+                "SELECT id FROM jobs WHERE state=? AND (upstream_session_id IS NULL"
+                " OR upstream_session_id='')",
+                (JOB_RUNNING,),
+            ).fetchall()
+            for row in requeued:
+                self._connection.execute(
+                    "UPDATE jobs SET state=?,updated_at=? WHERE id=?",
+                    (JOB_QUEUED, now, row["id"]),
+                )
+            for row in held:
+                self._connection.execute(
+                    "UPDATE jobs SET state=?,error_code=?,error_message=?,updated_at=? WHERE id=?",
+                    (JOB_AWAITING_RECONCILE, "server_restarted",
+                     "服务重启时任务已在上游运行，需要核对账", now, row["id"]),
+                )
+        return {"awaiting_reconcile": len(held), "requeued": len(requeued)}
+
+    def purge_expired(self, older_than_seconds: float = 86400.0) -> dict[str, int]:
+        """清理过期的授权与会话行。
+
+        返回各类删了多少行，谁调的都能看到发生了什么。
+        """
+        now = self._clock()
+        cutoff = now - float(older_than_seconds)
+        with self._lock, self._connection:
+            authorizations = self._connection.execute(
+                "DELETE FROM device_authorizations WHERE expires_at < ?", (cutoff,)
+            ).rowcount
+            access = self._connection.execute(
+                "DELETE FROM access_tokens WHERE expires_at < ?", (cutoff,)
+            ).rowcount
+            refresh = self._connection.execute(
+                "DELETE FROM refresh_tokens WHERE expires_at < ?", (cutoff,)
+            ).rowcount
+            web = self._connection.execute(
+                "DELETE FROM web_sessions WHERE expires_at < ?", (cutoff,)
+            ).rowcount
+        return {
+            "device_authorizations": max(0, int(authorizations)),
+            "access_tokens": max(0, int(access)),
+            "refresh_tokens": max(0, int(refresh)),
+            "web_sessions": max(0, int(web)),
+        }
+
+    def job_row(self, job_id: str) -> sqlite3.Row | None:
+        """按 id 取任务行。**不限定账号**。
+
+        调用方先自己校验账号（见 ``_billing_payload`` 里的比较），
+        所以这里不再重复做一次。返回 ``None`` 而不是抬弄错误：
+        调用方要区分「任务不存在」和「还没拿到」。
+        """
+        return self._connection.execute(
+            "SELECT * FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+
+    def list_jobs(self, account_id: str, states: Sequence[str] = (), limit: int = 50) -> list[dict[str, Any]]:
+        """账号的任务列表。**只看自己的**。
+
+        ``states`` 为空表示不限状态。返回的是 :meth:`job_view`，
+        而不是原始行 —— 列表给的是商户侧读到的那一份。
+        """
+        if states:
+            marks = ",".join("?" for _ in states)
+            rows = self._connection.execute(
+                f"SELECT * FROM jobs WHERE account_id=? AND state IN ({marks})"
+                " ORDER BY created_at DESC LIMIT ?",
+                (account_id, *states, int(limit)),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM jobs WHERE account_id=? ORDER BY created_at DESC LIMIT ?",
+                (account_id, int(limit)),
+            ).fetchall()
+        return [self.job_view(row) for row in rows]
 
     def get_job(self, account_id: str, job_id: str) -> dict[str, Any]:
         row = self._connection.execute("SELECT * FROM jobs WHERE id=? AND account_id=?", (job_id, account_id)).fetchone()
@@ -1868,7 +2162,7 @@ class ProductStore:
 
     def save_job_snapshot(self, job_id: str, alias: str, provider_id: str, model_id: str,
                           catalog_version: str, pricing_class: str, pricing_version: str,
-                          daily_free_limit: int, prompt_version: str, plugin_version: str,
+                          prompt_version: str, plugin_version: str,
                           extra: Mapping[str, Any] | None = None) -> None:
         """创建任务时冻结路由与计费。
 
@@ -1879,9 +2173,9 @@ class ProductStore:
             self._connection.execute(
                 "INSERT OR REPLACE INTO job_model_snapshot"
                 "(job_id,alias,provider_id,model_id,catalog_version,pricing_class,pricing_version,"
-                "daily_free_limit,prompt_version,plugin_version,snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "daily_free_limit,prompt_version,plugin_version,snapshot) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (job_id, alias, provider_id, model_id, catalog_version, pricing_class, pricing_version,
-                 int(daily_free_limit), prompt_version, plugin_version,
+                 prompt_version, plugin_version,
                  json.dumps(dict(extra or {}), ensure_ascii=False)),
             )
 

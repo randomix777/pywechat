@@ -659,7 +659,7 @@ class ProductGateway:
                 job["job_id"],
                 frozen["alias"], frozen["provider_id"], frozen["model_id"],
                 frozen["catalog_version"], frozen["pricing_class"], frozen["pricing_version"],
-                frozen["daily_free_limit"], frozen["prompt_version"], frozen["plugin_version"],
+                0, frozen["prompt_version"], frozen["plugin_version"],
                 extra=frozen["snapshot"],
             )
         status = 200 if job["state"] in {"queued", "running", "succeeded"} else 202
@@ -737,7 +737,6 @@ class ProductGateway:
             "catalog_version": self.catalog.catalog.version,
             "pricing_class": routing["pricing_class"],
             "pricing_version": routing["pricing_version"],
-            "daily_free_limit": routing["daily_free_limit"],
             "prompt_version": routing["prompt_version"],
             "plugin_version": routing["plugin_version"],
             "snapshot": {
@@ -775,7 +774,6 @@ class ProductGateway:
         facts = {
             "pricing_class": str(routing["pricing_class"]),
             "cost_units_per_job": int(routing["cost_units"]),
-            "daily_free_limit": int(routing["daily_free_limit"]),
             "charge_line": entry.charge_line() if entry is not None else "",
             "pricing_version": current,
             "presented_version": presented,
@@ -841,7 +839,6 @@ class ProductGateway:
             "pricing_class": billing["pricing_class"],
             # 计费只认结构化策略里的数字，**不认** charge_note 之类的文案。
             "cost_units": int(billing["cost_units_per_job"]),
-            "daily_free_limit": 0,
             "max_concurrent_per_tenant": int(billing["max_concurrent_per_tenant"]),
             "requests_per_minute": int(billing["requests_per_minute"]),
             "policy_version": str(billing["policy_version"]),

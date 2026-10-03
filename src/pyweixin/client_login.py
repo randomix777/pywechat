@@ -91,6 +91,10 @@ RETRYABLE_ERRORS = {"network_unavailable", "backend_unavailable", "outcome_unkno
 #: 按新价继续扣。
 HELD_ERRORS = {
     "quota_exhausted",
+    # 下面两个是免费档位的错误码。免费路径已经在服务端焊死，它们不会再被抛出；
+    # 这里**故意留着** —— 万一客户端连的是旧版本服务端，收到它们时仍应
+    # 保住已读到的数据，而不是把订单丢掉。从"用不到"变成"用不上"只需删两行，
+    # 但删了就少了一层兜底。
     "free_quota_exhausted",
     "subscription_inactive",
     "no_free_model",

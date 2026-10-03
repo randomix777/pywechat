@@ -1287,9 +1287,6 @@ class MerchantWindow:
             tags.append("当前繁忙，请稍后重试")
         ttk.Label(row, text="　".join(tags), foreground="#7b8794").pack(side="left", padx=(8, 0))
         detail = item.get("summary") or ""
-        quota = item.get("free_quota_text") or ""
-        if quota:
-            detail = f"{detail}　{quota}" if detail else quota
         if detail:
             ttk.Label(card, text=detail, foreground="#5a6572", wraplength=660).pack(anchor="w")
         reason = item.get("status_reason") or ""
@@ -1340,9 +1337,10 @@ class MerchantWindow:
         )
         # 扣费口径来自云端账号，本地不推算。
         if summary.get("billing"):
+            # 不再拆出「其中不消耗额度」那一栏：免费档位已被焊死，
+            # 它恒为 0。写出来只会让商户以为还有不花钱的。
             text += (
-                f"\n提交任务 {summary.get('submitted_jobs', 0)} 个"
-                f"（其中不消耗额度 {summary.get('free_jobs', 0)} 个），"
+                f"\n提交任务 {summary.get('submitted_jobs', 0)} 个，"
                 f"实际扣费 {summary.get('charged_units', 0)} 次"
             )
         skipped = summary.get("already_analyzed") or 0
