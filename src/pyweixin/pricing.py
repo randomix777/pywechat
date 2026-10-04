@@ -189,6 +189,57 @@ def estimate_micro_usd_for_request(
     return merchant_micro_usd_for(expected_usd, rate)
 
 
+def reserve_micro_usd_for_request(
+    prompt_text: str,
+    price: ModelPrice | None,
+    output_tokens: int = DEFAULT_OUTPUT_TOKENS,
+    rate: float = MERCHANT_USD_PER_VENDOR_USD,
+) -> int | None:
+    """提交时**预留**多少微美元。
+
+    用**最大可能成本**，不是估计值：输入能估，输出估不准。先把上限占住，
+    结算时按真实用量扣、多占的部分自动退回（见 :func:`settle_micro_usd_for`）。
+
+    为什么不多留少扣，而是先留上限：留少了任务跑到一半才发现余额不够，
+    那时候钱已经花了；留多了只是商户暂时看到额度少一块，结算完就回来。
+
+    **比上限再多留 1 微美元。** 预留和实扣各自向上取整，误差方向相反，
+    边界上会出现"预留 121、实扣 122"—— 实扣超过预留，商户余额会变成负数。
+    那 1 微美元是给取整误差留的余量，不���预留不覆盖实扣。
+
+    ``price`` 未知时返回 ``None`` —— 调用方退回运营配置的固定预留，
+    **不要**拿一个编出来的数去占商户的额度。
+    """
+    if price is None:
+        return None
+    worst_case = price.cost_for(
+        estimate_input_tokens(prompt_text), max(0, int(output_tokens))
+    )
+    return merchant_micro_usd_for(worst_case, rate) + 1
+
+
+def settle_micro_usd_for(
+    input_tokens: int,
+    output_tokens: int,
+    price: ModelPrice | None,
+    rate: float = MERCHANT_USD_PER_VENDOR_USD,
+) -> int | None:
+    """调用结束后**实扣**多少微美元。
+
+    用上游回的真实 token 用量，不再是估计。这是商户最终被扣的钱。
+
+    返回值可能**小于**预留值 —— 差额由结算时的预留释放自动退回商户，
+    所以商户看到的余额只会变多不会变少。
+
+    ``price`` 未知时返回 ``None``：实扣金额必须能算出来，算不出来就不能
+    悄悄按 0 结算（那等于白送一次解析），也不能随便估一个。
+    """
+    if price is None:
+        return None
+    actual = price.cost_for(int(input_tokens), int(output_tokens))
+    return merchant_micro_usd_for(actual, rate)
+
+
 __all__ = [
     "DEFAULT_OUTPUT_TOKENS",
     "MERCHANT_USD_PER_VENDOR_USD",
@@ -199,5 +250,7 @@ __all__ = [
     "format_usd",
     "merchant_micro_usd_for",
     "price_from_mapping",
+    "reserve_micro_usd_for_request",
+    "settle_micro_usd_for",
     "vendor_cost_usd",
 ]

@@ -28,6 +28,21 @@ from urllib.parse import parse_qs, urlparse
 from .capability_check import run_order_capability_check
 from .client_login import GatewayError
 from .model_catalog import CatalogStatus, reject_client_model_override
+from .pricing import ModelPrice, settle_micro_usd_for
+
+
+def _optional_price(snapshot: Mapping[str, Any], key: str) -> float | None:
+    """从策略里取一个可选单价。
+
+    取不到、不是数字、或者 <= 0，一律返回 ``None`` —— 调用方据此退回固定额度。
+    绝不用 0 顶替：0 会被当成"这个模型免费"，而免费档位已经焊死，
+    那等于白送商户一次解析。
+    """
+    try:
+        value = float(snapshot.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 from .opencode import (
     AdapterError,
@@ -743,6 +758,15 @@ class ProductGateway:
                 # 不再冻结免费相关的东西。订阅额度是按周期的，
                 # 不存在「跨午夜记回预留那天」的问题 —— 那只是免费额度的日号。
                 "cost_units_per_job": routing["cost_units"],
+                # **冻结单价**（美元/百万 token）。商户确认过的是这个价，
+                # 所以运营事后改价不能影响已经在跑的任务 —— 否则商户确认过的
+                # 和最后被扣的不是一回事，那是最伤信任的一种错。
+                #
+                # 没有单价时是 None 而不是 0：0 会被当成"免费"，而**免费档位
+                # 已经焊死**，单价拿不到只能退回固定的 cost_units_per_job，
+                # 不能悄悄按 0 结算。
+                "input_price_per_million": self._frozen_price_of(routing),
+                "output_price_per_million": self._frozen_output_price_of(routing),
                 "max_concurrent_per_tenant": routing["max_concurrent_per_tenant"],
                 "requests_per_minute": routing["requests_per_minute"],
                 "max_task_seconds": routing["max_task_seconds"],
@@ -750,6 +774,24 @@ class ProductGateway:
                 "policy_version": routing["policy_version"],
             },
         }
+
+    def _frozen_price_of(self, routing: Mapping[str, Any]) -> float | None:
+        """冻结的输入单价，拿不到就返回 None（不编）。"""
+        value = routing.get("input_price_per_million")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    def _frozen_output_price_of(self, routing: Mapping[str, Any]) -> float | None:
+        """冻结的输出单价，拿不到就返回 None（不编）。"""
+        value = routing.get("output_price_per_million")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
 
     def _check_pricing_version(self, payload: Mapping[str, Any], routing: Mapping[str, Any]) -> None:
         """提交前校验计费策略版本。
@@ -839,6 +881,11 @@ class ProductGateway:
             "pricing_class": billing["pricing_class"],
             # 计费只认结构化策略里的数字，**不认** charge_note 之类的文案。
             "cost_units": int(billing["cost_units_per_job"]),
+            # 单价（美元/百万 token）。运营在策略里显式配置；没配就是 None，
+            # 结算时退回上面那个固定额度 —— **不猜价格**，也不按 0 结算
+            # （0 等于免费，而免费档位已经焊死）。
+            "input_price_per_million": _optional_price(billing, "input_price_per_million"),
+            "output_price_per_million": _optional_price(billing, "output_price_per_million"),
             "max_concurrent_per_tenant": int(billing["max_concurrent_per_tenant"]),
             "requests_per_minute": int(billing["requests_per_minute"]),
             "policy_version": str(billing["policy_version"]),
@@ -1046,15 +1093,58 @@ class ProductGateway:
     def _frozen_charge_units(
         self, job_id: str, snapshot: Mapping[str, Any], outcome: Any
     ) -> int:
-        """这个任务实际扣多少。只认冻结的策略数字。"""
+        """这个任务实��扣多少（单位：整数微美元）。
+
+        优先级：
+
+        1. **任务冻结的模型单价 + 上游回的真实 token 用量** —— 这是真实成本，
+           也是商户最终被扣的钱。计价单位是微美元，所以不存在"扣 0 次"的问题。
+        2. **冻结的固定额度** ``cost_units_per_job`` —— 单价拿不到时的回退。
+           那是运营显式配的固定值，比猜一个强。
+        3. 都没有 → 适配器自报。
+
+        为什么不再无条件用冻结值：冻结的是**预留上限**，不是实扣额。
+        无条件按预留扣，商户就会为"模型最多可能用到的量"付钱 ——
+        消息短的时候，那些多扣的钱再也回不来。
+        """
         del job_id
         if snapshot.get("pricing_class") == "free":
             return 0
+        price = self._frozen_price(snapshot)
+        if price is not None:
+            settled = settle_micro_usd_for(
+                int(getattr(outcome, "input_tokens", 0) or 0),
+                int(getattr(outcome, "output_tokens", 0) or 0),
+                price,
+            )
+            if settled is not None:
+                return settled
         frozen = (snapshot.get("snapshot") or {}).get("cost_units_per_job")
         if frozen is not None:
             return max(0, int(frozen))
         # 没有快照的旧任务：退回适配器自报，仍然不猜测。
         return int(getattr(outcome, "cost_units", 0) or COST_UNITS_PER_JOB)
+
+    @staticmethod
+    def _frozen_price(snapshot: Mapping[str, Any]) -> ModelPrice | None:
+        """从任务冻结的策略里取出单价。
+
+        冻结的是**价格**不是 token 数：商户确认过的是这个单价，用完这次之后
+        运营再改价也不该影响已经在跑的任务。
+
+        输入与输出单价**必须同时有效**才返回价格。只有一个有效时不能凑合 ——
+        那样会算出真实成本的一半，按那个数字扣商户的钱就是在少扣。
+        """
+        frozen = snapshot.get("snapshot") or {}
+        price_in = _optional_price(frozen, "input_price_per_million")
+        price_out = _optional_price(frozen, "output_price_per_million")
+        if price_in is None and price_out is None:
+            return None
+        return ModelPrice(
+            model=str(frozen.get("model_id") or ""),
+            input_per_million=price_in or 0.0,
+            output_per_million=price_out or 0.0,
+        )
 
     def _job_budget_seconds(self, job: Mapping[str, Any]) -> float:
         """按任务**冻结的** ``max_task_seconds`` 给这次执行定时。
