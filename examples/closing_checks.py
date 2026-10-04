@@ -97,9 +97,11 @@ def main() -> int:
 
     print()
     print("② 客户目录：字段允许列表（构造新对象，而不是黑名单过滤）")
+    # 不再构造免费策略：产品规则是「免费模型也扣额度」，
+    # 旧的此处会直接被 __post_init__ 拒绝 —— 这正好是它应该有的行为。
     policy = OperatorModelPolicy(
-        alias="free-standard", provider_id="p", model_id="m", pricing_class=PricingClass.FREE,
-        daily_free_limit=50, is_default=True, summary="适合日常订单",
+        alias="standard", provider_id="p", model_id="m", pricing_class=PricingClass.METERED,
+        cost_units_per_job=1, is_default=True, summary="适合日常订单",
     )
     store = CatalogStore()
     store.load_policies([policy.to_dict()])
@@ -235,7 +237,7 @@ def main() -> int:
     policies = {
         "free-standard": OperatorModelPolicy(
             alias="free-standard", provider_id="up-免费", model_id="模型-免费",
-            pricing_class=PricingClass.FREE, daily_free_limit=5, is_default=True,
+            pricing_class=PricingClass.METERED, cost_units_per_job=1, is_default=True,
         ),
     }
     catalog = CatalogStore()

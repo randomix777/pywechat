@@ -190,7 +190,7 @@ def bounded_real_call(gateway: str, alias: str, max_calls: int, timeout: float) 
         OperatorModelPolicy(
             alias=alias, provider_id=os.environ.get("PYWEIXIN_OPENCODE_PROVIDER", ""),
             model_id=os.environ.get("PYWEIXIN_OPENCODE_MODEL", ""),
-            pricing_class=PricingClass.FREE, daily_free_limit=max_calls, is_default=True,
+            pricing_class=PricingClass.METERED, cost_units_per_job=1, is_default=True,
         )
     ]
     gateway_obj.catalog.load_policies(policies)

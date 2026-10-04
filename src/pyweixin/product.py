@@ -1718,11 +1718,25 @@ class ProductStore:
                     ("ul_" + secrets.token_hex(12), job_id, row["account_id"], charged,
                      "解析完成结算", now, self._day_key(), charged),
                 )
-            elif not result:
+            elif not result and state not in UNSETTLED_JOB_STATES:
+                # \u53ea\u6709**\u786e\u5b9a\u6ca1\u6210\u529f**\u624d\u91ca\u653e\u9884\u7559\u3002
+                #
+                # ``outcome_unknown`` \u4e0d\u5728\u8fd9\u91cc\uff1a\u8d85\u65f6\u53ea\u8bf4\u660e\u6211\u4eec\u6ca1\u5f97\u5230\u7ed3\u679c\uff0c
+                # \u4e0d\u8bf4\u660e\u4e0a\u6e38\u5230\u5e95\u6267\u884c\u6ca1\u6267\u884c\u3002\u6b64\u65f6\u91ca\u653e\u9884\u7559\uff0c\u5c31\u7b49\u4e8e
+                # \u5411\u5546\u6237\u5148\u9000\u4e86\u94b1\uff0c\u800c\u771f\u5b9e\u7ed3\u8bba\u53ef\u80fd\u662f\u6210\u529f\u2014\u2014
+                # \u5bf9\u8d26\u65f6\u5c31\u4f1a\u5c11\u7b97\u4e00\u7b14\uff0c\u6216\u8005\u66f4\u7cdf\uff1a\u9884\u7559\u88ab\u91ca\u653e\u540e\u53c8\u88ab\u91cd\u65b0\u6263\u56de\u3002
+                #
+                # \u9884\u7559\u5c31\u662f\u4e3a\u4e86\u8fd9\u4e2a\u65f6\u5019\u7559\u7684\u3002
                 self._release_reservation(job_id, int(row["reserved_units"] or 0), error_code or "failed")
-            self._connection.execute(
-                "UPDATE jobs SET charged_units=? WHERE id=?", (int(row["charged_units"] or 0) + charged, job_id)
-            )
+            # **数据最小化**：任务一旦有结论，提交上来的原文就不再需要了。
+            #
+            # 请求体里装着客户的聊天内容 —— 任务结束后还留着，
+            # 就等于把商户的原话长期存在服务端，而它对复盘、对账都没用。
+            # 只有结果未知的那一类要留着，因为对账时可能还要重放。
+            if state in TERMINAL_JOB_STATES:
+                self._connection.execute(
+                    "UPDATE jobs SET request_json=? WHERE id=?", (json.dumps({}, ensure_ascii=False), job_id)
+                )
         self._log_event(job_id, state, error_message or "完成")
         row = self._connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return self.job_view(row)
@@ -1813,21 +1827,36 @@ class ProductStore:
                 (JOB_RUNNING, JOB_QUEUED),
             ).fetchall()
             expired = []
+            held = []
             for row in rows:
                 deadline = row["deadline_at"]
                 if deadline is None or float(deadline) > now:
                     continue
+                reached = bool(row["upstream_session_id"])
+                if reached:
+                    # **到过上游**：只说明我们没等到结果，不说明上游没跑成。
+                    # 转 outcome_unknown 并**留着**预留 —— 释放了就等于先退钱，
+                    # 而对账时它可能根本是成功的，账就对不上了。
+                    held.append(row)
+                    self._connection.execute(
+                        "UPDATE jobs SET state=?,error_code=?,error_message=?,updated_at=? WHERE id=?",
+                        (JOB_OUTCOME_UNKNOWN, "stalled", "任务超时，上游可能仍在运行，额度暂不释放",
+                         now, row["id"]),
+                    )
+                    continue
                 expired.append(row)
                 self._connection.execute(
                     "UPDATE jobs SET state=?,error_code=?,error_message=?,finished_at=?,updated_at=? WHERE id=?",
-                    (JOB_FAILED, "stalled", "任务超时，结果未知", now, now, row["id"]),
+                    (JOB_FAILED, "stalled", "任务超时，且尚未发送到上游", now, now, row["id"]),
                 )
                 if int(row["charged_units"] or 0) > 0:
                     continue          # 已结算，额度不能变动
                 self._release_reservation(row["id"], int(row["reserved_units"] or 0), "stalled")
             for row in expired:
-                self._log_event(row["id"], JOB_FAILED, "超时无待结算")
-        return {"expired": len(expired)}
+                self._log_event(row["id"], JOB_FAILED, "超时，未到上游")
+            for row in held:
+                self._log_event(row["id"], JOB_OUTCOME_UNKNOWN, "超时，预留留待对账")
+        return {"expired": len(expired), "held": len(held)}
 
     def list_all_jobs(self, states: Sequence[str] = (), limit: int = 100) -> list[dict[str, Any]]:
         """运营看的全平台任务列表。
@@ -1838,11 +1867,12 @@ class ProductStore:
         这里手工拼字段，而不是直接 ``SELECT *`` —— 后者会在新加列时悄悄把正文
         带过去。所以这里显式列出允许的字段。
         """
+        # model_requested / model_reported 在 **jobs** 表上（见 mark_model_execution），
+        # 不在 job_model_snapshot 里 —— 列置错位会直接报 no such column。
         base = ("SELECT j.id,j.account_id,j.state,j.created_at,j.finished_at,"
                 "j.attempt,j.charged_units,j.reserved_units,j.error_code,"
-                "m.model_requested,m.model_reported,a.username"
+                "j.model_requested,j.model_reported,a.username"
                 " FROM jobs j"
-                " LEFT JOIN job_model_snapshot m ON m.job_id=j.id"
                 " LEFT JOIN accounts a ON a.id=j.account_id")
         if states:
             marks = ",".join("?" for _ in states)
@@ -1869,8 +1899,9 @@ class ProductStore:
             (account_id, key),
         ).fetchall()
         charged = self._connection.execute(
+            # \u540c\u4e0a\uff1a\u9884\u7559\u4e0d\u662f\u6263\u8d39\uff0c\u53ea\u7b97 settle\u3002
             "SELECT COALESCE(SUM(charged_units),0) AS charged FROM usage_ledger"
-            " WHERE account_id=? AND day=? AND kind<>'internal_retry'",
+            " WHERE account_id=? AND day=? AND kind='settle'",
             (account_id, key),
         ).fetchone()["charged"]
         # 返回清单而不是字典：调用方只要拿这些行各自的 kind，
@@ -1887,8 +1918,11 @@ class ProductStore:
         把这三个混在一起报上去，就会看不出平台自己付了多少。
         """
         row = self._connection.execute(
+            # **只算 settle**。预留（kind='reserve'）不是扣费 —— 任务失败时它会被释放。
+            # 把预留算进来，一次失败的任务也会被报成"扣了钱"，运营看出来的数
+            # 会比商户实际被扣的**多**，而且多多少取决于有多少任务在飞。
             "SELECT COALESCE(SUM(charged_units),0) AS charged FROM usage_ledger"
-            " WHERE kind<>'internal_retry'"
+            " WHERE kind='settle'"
         ).fetchone()
         retries = self._connection.execute(
             "SELECT COUNT(*) AS count FROM usage_ledger WHERE kind='internal_retry'"
@@ -2037,6 +2071,11 @@ class ProductStore:
         }
 
     def job_request(self, job_id: str) -> dict[str, Any] | None:
+        """任务的请求正文。**清掉之后返回 None**。
+
+        任务结束后正文会被清掉（数据最小化）。此时返回 ``{}`` 会让调用方
+        以为还有个空请求；而它所以被清掉，恰好就是因为**没了**。
+        """
         row = self._connection.execute("SELECT request_json FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row is None or not row["request_json"]:
             return None
@@ -2044,7 +2083,9 @@ class ProductStore:
             payload = json.loads(row["request_json"])
         except ValueError:
             return None
-        return payload if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or not payload:
+            return None
+        return payload
 
     def job_upstream_session(self, job_id: str) -> str:
         row = self._connection.execute("SELECT upstream_session_id FROM jobs WHERE id=?", (job_id,)).fetchone()

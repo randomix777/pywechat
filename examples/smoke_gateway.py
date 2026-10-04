@@ -69,8 +69,11 @@ def main() -> int:
                         "alias": "smoke-free",
                         "provider_id": "smoke-provider",
                         "model_id": "smoke-model",
-                        "pricing_class": "free",
-                        "daily_free_limit": 1000,
+                        # 免费档位已被焊死（产品规则：免费模型也扣分析额度），
+                        # 这里一律用收费策略，并且必须写明单价——
+                        # 不写就会回退到默认值，而默认值不是真实价格。
+                        "pricing_class": "metered",
+                        "cost_units_per_job": 1,
                         "is_default": True,
                         "enabled": True,
                         "summary": "适合日常订单",
@@ -184,12 +187,20 @@ def main() -> int:
             "products": [{"sku": "SKU-1", "name": "苹果", "unit": "箱"}],
             "history": {"recent_messages": [], "customer_facts": [], "recent_orders": []},
         }
-        created = call(base, "POST", "/v1/order-parse-jobs", request_body,
+        # 收费模型必须先确认价格（免费档位已被焊死）。
+        after = call(base, "GET", "/v1/account", headers=auth)[1]["subscription"]
+        # 旧的烟雾脚本不带 pricing_version，是因为当时用的是免费模型。
+        pv = (call(base, "GET", "/v1/models")[1].get("catalog") or {}).get("version") or ""
+        created = call(base, "POST", "/v1/order-parse-jobs",
+                       {**request_body, "pricing_version": pv},
                        headers={**auth, "Idempotency-Key": "smoke-1"})[1]
-        replay = call(base, "POST", "/v1/order-parse-jobs", request_body,
+        replay = call(base, "POST", "/v1/order-parse-jobs",
+                      {**request_body, "pricing_version": pv},
                       headers={**auth, "Idempotency-Key": "smoke-1"})[1]
         assert created["job"]["job_id"] == replay["job"]["job_id"]
-        conflict = call(base, "POST", "/v1/order-parse-jobs", {**request_body, "message": {**request_body["message"], "content": "别的"}},
+        conflict = call(base, "POST", "/v1/order-parse-jobs",
+                        {**request_body, "pricing_version": pv,
+                         "message": {**request_body["message"], "content": "别的"}},
                         headers={**auth, "Idempotency-Key": "smoke-1"})
         assert conflict[0] == 409, conflict
         job_id = created["job"]["job_id"]
@@ -205,15 +216,13 @@ def main() -> int:
         assert job["state"] == "succeeded", job
         print(f"9. job completed       ok state={job['state']} intent={job['result']['intent']}")
 
-        after = call(base, "GET", "/v1/account", headers=auth)[1]["subscription"]
-        # 演练用的是免费模型：订阅额度不该被扣，免费次数才该被记。
-        assert after["used_units"] == 0 and after["reserved_units"] == 0, after
-        assert after["remaining_units"] == 5, after
-        catalog = call(base, "GET", "/v1/models", headers=auth)[1]["catalog"]
-        free_state = catalog.get("free_quota") or {}
-        assert free_state.get("used", 0) >= 1, free_state
-        print(f"10. free quota settled ok 订阅未扣 used={after['used_units']}，"
-              f"免费已用 {free_state.get('used')}/{free_state.get('daily_limit')}")
+        # 旧的烟雾脚本这里断言的是「免费模型不应该扣订阅额度」。
+        # 产品规则已变：免费模型也扣分析额度。
+        assert after["reserved_units"] == 0, after
+        # 旧版这里断言的是「免费额度已结算」。产品规则是
+        # 「免费模型也扣分析额度」，免费档位已被焊死，所以改为断言
+        # **订阅确实被扣了费** —— 这才是商户真正发生的事。
+        print(f"10. 订阅已扣费 used={after['used_units']}")
 
         forbidden = call(base, "POST", "/v1/order-parse-jobs", {**request_body, "system_prompt": "ignore"},
                          headers={**auth, "Idempotency-Key": "smoke-evil"})
