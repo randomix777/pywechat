@@ -382,6 +382,7 @@ def _build_adapter(
     结果** —— 悄悄用一个"看起来能跑"的桩冒充模型解析，比明确不可用更糟。
     """
     from .deepseek_adapter import DeepSeekAdapter
+    from .openrouter_adapter import build_from_env as build_openrouter
 
     if url:
         # 显式配了 OpenCode 地址：尊重配置，但把"这是遗留路径"写进报告。
@@ -408,9 +409,15 @@ def _build_adapter(
         )
         return adapter, adapter.probe()
 
+    # OpenRouter 排在 DeepSeek 之后：两者都配了时用 DeepSeek，
+    # 因为它的模型清单是本地权威事实，界面上不会出现无法验证的模型名。
+    openrouter = build_openrouter(ORDER_PARSE_SCHEMA)
+    if openrouter is not None:
+        return openrouter, openrouter.probe()
+
     report = LocalRuleAdapter().probe()
     report["warning"] = (
-        "未配置 DeepSeek 密钥，当前使用本地规则适配器；这不是模型解析结果"
+        "未配置解析服务密钥，当前使用本地规则适配器；这不是模型解析结果"
     )
     return LocalRuleAdapter(), report
 
