@@ -135,6 +135,25 @@ class PricingClass:
     }
 
 
+def _read_price(raw: Any) -> float | None:
+    """从配置里读一个单价。
+
+    ``None`` / 空串 / 非数字 / ``<= 0`` 一律当**没配**。
+
+    为什么把 0 也当"没配"：单价配成 0 **不会**让模型变免费（免费档位已经
+    焊死），只会让结算退回固定的 cost_units_per_job。如果这里放过 0，
+    运营就会看到"我配了 0 怎么还在扣钱"，而真实原因是它被当成了没配。
+    当成没配至少会退回固定额度，行为可预期。
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 @dataclass(frozen=True)
 class OperatorModelPolicy:
     """运营对一个模型的配置。
@@ -181,6 +200,16 @@ class OperatorModelPolicy:
     #: 单位是"分析额度"，**不是**每天的次数。次数上限看 :attr:`daily_free_limit`。
     #: 收费模型配 3 表示"每条消息扣 3 次额度"；免费模型配 0。
     cost_units_per_job: int = 1
+    #: 上游单价（**美元 / 百万 token**）。``None`` 表示"没配"。
+    #:
+    #: 配了就按真实用量计价：提交时按最大可能成本预留，结算时按上游回的真实
+    #: token 用量实扣（见 :mod:`pyweixin.pricing`）。没配就退回
+    #: :attr:`cost_units_per_job` 那个固定值。
+    #:
+    #: **必须大于 0 才有意义。** 0 或负数会被读成"没配"，而不是"免费"——
+    #: 免费档位已经焊死，把单价配成 0 不会让模型免费，只会让系统退回固定额度。
+    input_price_per_million: float | None = None
+    output_price_per_million: float | None = None
     #: 免费额度按哪个时区的日期重置。默认 UTC；商户所在时区要显式配置。
     free_quota_timezone: str = "UTC"
     #: 策略版本。目录版本变化时用于追溯"当时按哪套规则算的"。
@@ -261,6 +290,8 @@ class OperatorModelPolicy:
             summary=str(data.get("summary", "")),
             charge_note=str(data.get("charge_note", "")),
             cost_units_per_job=cost_units,
+            input_price_per_million=_read_price(data.get("input_price_per_million")),
+            output_price_per_million=_read_price(data.get("output_price_per_million")),
             free_quota_timezone=str(data.get("free_quota_timezone", "UTC")),
             policy_version=str(data.get("policy_version", "1")),
             failover_to=str(data.get("failover_to", "")),
@@ -358,6 +389,10 @@ class ModelEntry:
         return {
             "pricing_class": self.policy.pricing_class,
             "cost_units_per_job": max(1, int(self.policy.cost_units_per_job)),
+            # 单价。``None`` 表示没配，调用方退回上面那个固定额度。
+            # **不能下发 0** —— 网关把 0 当"没配"，下发了只会让人以为配过了。
+            "input_price_per_million": self.policy.input_price_per_million,
+            "output_price_per_million": self.policy.output_price_per_million,
             "daily_free_limit": 0,
             "free_quota_timezone": self.policy.free_quota_timezone,
             "max_concurrent_per_tenant": self.policy.max_concurrent_per_tenant,
