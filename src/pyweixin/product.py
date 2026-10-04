@@ -14,6 +14,7 @@ as an OAuth/OIDC certification.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac
 import json
@@ -403,6 +404,28 @@ class IssuedTokens:
     token_type: str = "Bearer"
 
 
+def _guarded(fn):
+    """让方法体在 ProductStore 的锁下执行。
+
+    为什么要这么做：
+
+    写路径都经过 :meth:`_transaction`，它会拿锁。但**读**路径原本往往不拿锁，
+    而连接是**共享的**。另一个线程正在事务里（已经 BEGIN IMMEDIATE）
+    的时候，本线程去 execute() 一下，sqlite3 模块内部状态就会被打乱 ——
+
+        sqlite3.InterfaceError: bad parameter or other API misuse
+
+    这不是并发测试里的工作：它是真实的多线程下的数据库访问错误。
+
+    ``_lock`` 是 RLock，重入可以：已经在事务里的方法被再来一层的装饰器
+    包裹，不会自锁。
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+    return wrapper
+
 class ProductStore:
     """Gateway-side persistence for accounts, devices, subscriptions and jobs."""
 
@@ -427,6 +450,7 @@ class ProductStore:
 
     # ------------------------------------------------------------------ schema
 
+    @_guarded
     def _create_schema(self) -> None:
         with self._lock:
             self._connection.executescript(
@@ -704,6 +728,7 @@ class ProductStore:
 
     # ---------------------------------------------------------------- accounts
 
+    @_guarded
     def create_account(
         self,
         username: str,
@@ -757,16 +782,19 @@ class ProductStore:
             "plan_code": plan_code,
         }
 
+    @_guarded
     def get_account(self, account_id: str) -> dict[str, Any] | None:
         row = self._connection.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
         return dict(row) if row else None
 
+    @_guarded
     def find_account(self, username: str) -> dict[str, Any] | None:
         row = self._connection.execute(
             "SELECT * FROM accounts WHERE username=?", (str(username or "").strip().lower(),)
         ).fetchone()
         return dict(row) if row else None
 
+    @_guarded
     def authenticate_password(self, username: str, password: str) -> dict[str, Any]:
         """Password check with rate limiting and a uniform failure message."""
         username = str(username or "").strip().lower()
@@ -792,6 +820,7 @@ class ProductStore:
 
     _dummy_hash = ""  # replaced below once PasswordHasher exists
 
+    @_guarded
     def change_password(self, account_id: str, old_password: str, new_password: str) -> None:
         account = self.get_account(account_id)
         if account is None:
@@ -814,6 +843,7 @@ class ProductStore:
 
     # --------------------------------------------------------- web sessions
 
+    @_guarded
     def create_web_session(self, account_id: str) -> tuple[str, str, float]:
         """Returns (session cookie value, csrf token, expires_at).
 
@@ -832,6 +862,7 @@ class ProductStore:
             )
         return session_id, csrf, expires
 
+    @_guarded
     def secret(self, name: str) -> str:
         row = self._connection.execute("SELECT value FROM gateway_secrets WHERE name=?", (name,)).fetchone()
         if row is not None:
@@ -847,6 +878,7 @@ class ProductStore:
             self.secret("csrf").encode("utf-8"), str(session_id).encode("utf-8"), hashlib.sha256
         ).hexdigest()
 
+    @_guarded
     def load_web_session(self, session_id: str) -> dict[str, Any] | None:
         if not session_id:
             return None
@@ -867,12 +899,14 @@ class ProductStore:
             return False
         return hmac.compare_digest(self.csrf_token(session["id"]), presented)
 
+    @_guarded
     def revoke_web_session(self, session_id: str) -> None:
         with self._transaction():
             self._connection.execute("UPDATE web_sessions SET revoked_at=? WHERE id=?", (self._clock(), session_id))
 
     # ---------------------------------------------------- device authorizations
 
+    @_guarded
     def start_device_authorization(self, device_name: str, platform: str = "") -> dict[str, Any]:
         device_name = str(device_name or "").strip() or "Windows 电脑"
         if len(device_name) > 64:
@@ -907,17 +941,20 @@ class ProductStore:
         raw = "".join(secrets.choice(_USER_CODE_ALPHABET) for _ in range(8))
         return f"{raw[:4]}-{raw[4:]}"
 
+    @_guarded
     def find_authorization_by_user_code(self, user_code: str) -> dict[str, Any] | None:
         row = self._connection.execute(
             "SELECT * FROM device_authorizations WHERE user_code=?", (user_code,)
         ).fetchone()
         return dict(row) if row else None
 
+    @_guarded
     def _expire_authorizations(self, now: float) -> None:
         self._connection.execute(
             "UPDATE device_authorizations SET status='expired' WHERE status IN ('pending','approved') AND expires_at<=?", (now,)
         )
 
+    @_guarded
     def approve_device_authorization(self, user_code: str, account_id: str) -> dict[str, Any]:
         """Web-side approval. Requires an already authenticated browser session."""
         user_code = normalize_user_code(user_code)
@@ -944,6 +981,7 @@ class ProductStore:
             )
         return {"user_code": user_code, "device_name": row["device_name"], "status": "approved", "repeat": False}
 
+    @_guarded
     def deny_device_authorization(self, user_code: str) -> dict[str, Any]:
         user_code = normalize_user_code(user_code)
         with self._transaction():
@@ -957,6 +995,7 @@ class ProductStore:
             self._connection.execute("UPDATE device_authorizations SET status='denied' WHERE id=?", (row["id"],))
         return {"user_code": user_code, "status": "denied"}
 
+    @_guarded
     def poll_device_authorization(self, device_code: str) -> dict[str, Any]:
         now = self._clock()
         with self._transaction():
@@ -1010,6 +1049,7 @@ class ProductStore:
 
     # ---------------------------------------------------------------- devices
 
+    @_guarded
     def list_accounts(self) -> list[dict[str, Any]]:
         """Operator view. Never returns password hashes."""
         rows = self._connection.execute(
@@ -1035,12 +1075,14 @@ class ProductStore:
             for row in rows
         ]
 
+    @_guarded
     def disable_device_by_id(self, device_id: str) -> dict[str, Any]:
         row = self._connection.execute("SELECT account_id FROM product_devices WHERE id=?", (device_id,)).fetchone()
         if row is None:
             raise NotFound("设备不存在", code="device_not_found")
         return self.revoke_device(row["account_id"], device_id)
 
+    @_guarded
     def _upsert_device(self, account_id: str, merchant_id: str, name: str, platform: str = "") -> tuple[str, bool]:
         now = self._clock()
         row = self._connection.execute(
@@ -1060,6 +1102,7 @@ class ProductStore:
         )
         return device_id, False
 
+    @_guarded
     def list_devices(self, account_id: str) -> list[dict[str, Any]]:
         rows = self._connection.execute(
             "SELECT d.*,(SELECT COUNT(*) FROM jobs j WHERE j.device_id=d.id) AS job_count FROM product_devices d"
@@ -1081,6 +1124,7 @@ class ProductStore:
             "job_count": int(row["job_count"]) if "job_count" in row.keys() else 0,
         }
 
+    @_guarded
     def rename_device(self, account_id: str, device_id: str, name: str) -> dict[str, Any]:
         name = str(name or "").strip()
         if not name or len(name) > 64:
@@ -1093,6 +1137,7 @@ class ProductStore:
                 raise NotFound("设备不存在")
         return self.get_device(account_id, device_id)
 
+    @_guarded
     def get_device(self, account_id: str, device_id: str) -> dict[str, Any]:
         row = self._connection.execute(
             "SELECT * FROM product_devices WHERE id=? AND account_id=?", (device_id, account_id)
@@ -1101,6 +1146,7 @@ class ProductStore:
             raise NotFound("设备不存在")
         return self._device_view(row)
 
+    @_guarded
     def revoke_device(self, account_id: str, device_id: str) -> dict[str, Any]:
         now = self._clock()
         with self._transaction():
@@ -1128,6 +1174,7 @@ class ProductStore:
                 self.release_all_reservations(job["id"], "设备吊销释放")
         return self.get_device(account_id, device_id)
 
+    @_guarded
     def _revoke_device_credentials(self, account_id: str, device_id: str, now: float, reason: str) -> None:
         self._connection.execute(
             "UPDATE refresh_tokens SET revoked_at=?,revoked_reason=? WHERE account_id=? AND device_id=? AND revoked_at IS NULL",
@@ -1138,6 +1185,7 @@ class ProductStore:
             (now, account_id, device_id),
         )
 
+    @_guarded
     def logout_everywhere(self, account_id: str) -> None:
         now = self._clock()
         with self._transaction():
@@ -1152,6 +1200,7 @@ class ProductStore:
 
     # ----------------------------------------------------------------- tokens
 
+    @_guarded
     def _issue_tokens(self, account_id: str, device_id: str, family_id: str = "") -> IssuedTokens:
         now = self._clock()
         access = secrets.token_urlsafe(32)
@@ -1169,6 +1218,7 @@ class ProductStore:
             )
         return IssuedTokens(access, refresh, access_expires, refresh_expires)
 
+    @_guarded
     def authenticate_access_token(self, token: str) -> dict[str, Any] | None:
         """Resolves a bearer token to account+device, enforcing revocation."""
         if not token:
@@ -1204,6 +1254,7 @@ class ProductStore:
             "must_change_password": bool(account["must_change_password"]),
         }
 
+    @_guarded
     def refresh_access_token(self, refresh_token: str) -> dict[str, Any]:
         """Rotating refresh. Reuse of a rotated token revokes the whole family.
 
@@ -1260,6 +1311,7 @@ class ProductStore:
             "expires_in": int(issued.access_expires_at - now),
         }
 
+    @_guarded
     def revoke_refresh_token(self, refresh_token: str) -> bool:
         if not refresh_token:
             return False
@@ -1272,6 +1324,7 @@ class ProductStore:
 
     # ----------------------------------------------------------- subscriptions
 
+    @_guarded
     def get_subscription(self, account_id: str) -> dict[str, Any]:
         row = self._connection.execute("SELECT * FROM subscriptions WHERE account_id=?", (account_id,)).fetchone()
         if row is None:
@@ -1325,6 +1378,7 @@ class ProductStore:
             )
         return self.get_recharge_order(str(order.order_id)) or {}
 
+    @_guarded
     def get_recharge_order(self, order_id: str) -> dict[str, Any] | None:
         row = self._connection.execute(
             "SELECT * FROM recharge_orders WHERE order_id=?", (str(order_id),)
@@ -1366,6 +1420,7 @@ class ProductStore:
                     )
         return {"applied": applied, "units": units if applied else 0, "duplicate": not applied}
 
+    @_guarded
     def credit_history(self, account_id: str, limit: int = 50) -> list[dict[str, Any]]:
         rows = self._connection.execute(
             "SELECT * FROM credit_ledger WHERE account_id=? ORDER BY created_at DESC LIMIT ?",
@@ -1373,6 +1428,7 @@ class ProductStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    @_guarded
     def update_subscription(
         self,
         account_id: str,
@@ -1410,6 +1466,7 @@ class ProductStore:
             )
         return self.get_subscription(account_id)
 
+    @_guarded
     def set_account_status(self, account_id: str, status: str) -> dict[str, Any]:
         if status not in {"active", "disabled"}:
             raise ValidationFailed("status must be active or disabled", code="bad_status")
@@ -1424,6 +1481,7 @@ class ProductStore:
 
     # ------------------------------------------------------------------ quota
 
+    @_guarded
     def _release_reservation(self, job_id: str, units: int, note: str) -> None:
         now = self._clock()
         row = self._connection.execute("SELECT account_id FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -1440,6 +1498,7 @@ class ProductStore:
                 ("ul_" + secrets.token_hex(12), job_id, row["account_id"], -int(units), note, now, self._day_key(now)),
             )
 
+    @_guarded
     def settle_job(self, job_id: str, charged_units: int) -> dict[str, Any]:
         """Convert a reservation into actual customer usage exactly once."""
         now = self._clock()
@@ -1465,6 +1524,7 @@ class ProductStore:
                 )
         return self.get_subscription(row["account_id"])
 
+    @_guarded
     def release_job_reservation(self, job_id: str, note: str = "确定失败释放") -> bool:
         with self._transaction(immediate=True):
             row = self._connection.execute("SELECT reserved_units,charged_units FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -1480,6 +1540,7 @@ class ProductStore:
         """
         return self.release_job_reservation(job_id, note)
 
+    @_guarded
     def record_internal_retry(self, job_id: str, note: str, tokens: int = 0) -> None:
         """Internal retries are a platform cost, never a customer charge.
 
@@ -1507,6 +1568,7 @@ class ProductStore:
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    @_guarded
     def create_job(
         self,
         account_id: str,
@@ -1599,6 +1661,7 @@ class ProductStore:
                 self._insert_job_snapshot(job_id, snapshot)
         return self.get_job(account_id, job_id)
 
+    @_guarded
     def _insert_job_snapshot(self, job_id: str, snapshot: Mapping[str, Any]) -> None:
         """写入路由与计费快照。字段名与 :meth:`save_job_snapshot` 保持一致。"""
         data = dict(snapshot)
@@ -1621,6 +1684,7 @@ class ProductStore:
             ),
         )
 
+    @_guarded
     def claim_next_job(self, lease_seconds: float = 300.0) -> dict[str, Any] | None:
         """Database-backed queue lease. Safe for a single gateway instance."""
         now = self._clock()
@@ -1652,6 +1716,7 @@ class ProductStore:
             self._log_event(row["id"], JOB_RUNNING, f"attempt {int(row['attempt']) + 1}")
         return self.get_job_any(row["account_id"], row["id"])
 
+    @_guarded
     def renew_lease(self, job_id: str, lease_token: str, lease_seconds: float = 300.0) -> bool:
         with self._transaction():
             cursor = self._connection.execute(
@@ -1660,6 +1725,7 @@ class ProductStore:
             )
         return cursor.rowcount == 1
 
+    @_guarded
     def mark_upstream_session(self, job_id: str, session_id: str, message_id: str = "") -> None:
         with self._transaction():
             self._connection.execute(
@@ -1679,6 +1745,7 @@ class ProductStore:
     #: 会认为这里本来就是原版。正常应当核对真实需求后修正。
     _reconstructed = True
 
+    @_guarded
     def finish_job(self, job_id: str, state: str, result: Any = None,
                    error_code: str = "", error_message: str = "",
                    charged_units: int | None = None, tokens: int = 0) -> dict[str, Any]:
@@ -1746,6 +1813,7 @@ class ProductStore:
         row = self._connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return self.job_view(row)
 
+    @_guarded
     def mark_model_execution(self, job_id: str, requested: str = "", reported: str = "",
                             confirmed: bool = False, warning: str = "",
                             evidence: Mapping[str, Any] | None = None) -> None:
@@ -1775,6 +1843,7 @@ class ProductStore:
         """
         self._rate_limit(scope, limit, window, code)
 
+    @_guarded
     def _log_event(self, job_id: str, state: str, detail: str = "") -> None:
         """写一条任务事件。
 
@@ -1789,6 +1858,7 @@ class ProductStore:
                 (job_id, float(self._clock()), str(state), str(detail)),
             )
 
+    @_guarded
     def request_cancel(self, account_id: str, job_id: str) -> dict[str, Any]:
         """请求取消任务。
 
@@ -1810,6 +1880,7 @@ class ProductStore:
         self.finish_job(job_id, JOB_CANCELLED, error_code="cancelled", error_message="任务已取消")
         return self.get_job(account_id, job_id)
 
+    @_guarded
     def cancel_requested(self, job_id: str) -> bool:
         """工作进程轮询时看“有没有被请求取消”。"""
         row = self._connection.execute(
@@ -1817,6 +1888,7 @@ class ProductStore:
         ).fetchone()
         return bool(row["cancel_requested"]) if row is not None else False
 
+    @_guarded
     def expire_stalled_jobs(self) -> dict[str, int]:
         """把卡住的任务判定失败，并释放预留额度。
 
@@ -1863,6 +1935,7 @@ class ProductStore:
                 self._log_event(row["id"], JOB_OUTCOME_UNKNOWN, "超时，预留留待对账")
         return {"expired": len(expired), "held": len(held)}
 
+    @_guarded
     def list_all_jobs(self, states: Sequence[str] = (), limit: int = 100) -> list[dict[str, Any]]:
         """运营看的全平台任务列表。
 
@@ -1891,6 +1964,7 @@ class ProductStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    @_guarded
     def usage_for_account(self, account_id: str, day: str = "") -> dict[str, Any]:
         """账号在某天的用量明细。
 
@@ -1913,6 +1987,7 @@ class ProductStore:
         # 包装成 dict 反而让使用方得自己选字段。
         return [dict(row) for row in rows]
 
+    @_guarded
     def operator_usage_summary(self) -> dict[str, Any]:
         """运营看的用量汇总。**分开说什么**。
 
@@ -1947,6 +2022,7 @@ class ProductStore:
             "ledger": [dict(item) for item in ledger],
         }
 
+    @_guarded
     def recover_inflight_jobs(self) -> dict[str, int]:
         """网关重启后的恢复。
 
@@ -1982,6 +2058,7 @@ class ProductStore:
                 )
         return {"awaiting_reconcile": len(held), "requeued": len(requeued)}
 
+    @_guarded
     def purge_expired(self, older_than_seconds: float = 86400.0) -> dict[str, int]:
         """清理过期的授权与会话行。
 
@@ -2009,6 +2086,7 @@ class ProductStore:
             "web_sessions": max(0, int(web)),
         }
 
+    @_guarded
     def job_row(self, job_id: str) -> sqlite3.Row | None:
         """按 id 取任务行。**不限定账号**。
 
@@ -2020,6 +2098,7 @@ class ProductStore:
             "SELECT * FROM jobs WHERE id=?", (job_id,)
         ).fetchone()
 
+    @_guarded
     def list_jobs(self, account_id: str, states: Sequence[str] = (), limit: int = 50) -> list[dict[str, Any]]:
         """账号的任务列表。**只看自己的**。
 
@@ -2040,6 +2119,7 @@ class ProductStore:
             ).fetchall()
         return [self.job_view(row) for row in rows]
 
+    @_guarded
     def get_job(self, account_id: str, job_id: str) -> dict[str, Any]:
         row = self._connection.execute("SELECT * FROM jobs WHERE id=? AND account_id=?", (job_id, account_id)).fetchone()
         if row is None:
@@ -2047,6 +2127,7 @@ class ProductStore:
             raise NotFound("任务不存在", code="job_not_found")
         return self.job_view(row)
 
+    @_guarded
     def get_job_any(self, account_id: str, job_id: str) -> dict[str, Any]:
         row = self._connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row is None:
@@ -2075,6 +2156,7 @@ class ProductStore:
             "result": result,
         }
 
+    @_guarded
     def job_request(self, job_id: str) -> dict[str, Any] | None:
         """任务的请求正文。**清掉之后返回 None**。
 
@@ -2092,10 +2174,12 @@ class ProductStore:
             return None
         return payload
 
+    @_guarded
     def job_upstream_session(self, job_id: str) -> str:
         row = self._connection.execute("SELECT upstream_session_id FROM jobs WHERE id=?", (job_id,)).fetchone()
         return str(row["upstream_session_id"] or "") if row else ""
 
+    @_guarded
     def find_job_by_idempotency(self, account_id: str, idempotency_key: str) -> dict[str, Any] | None:
         """按幂等键找既有任务。
 
@@ -2110,6 +2194,7 @@ class ProductStore:
             return None
         return {"job_id": str(row["id"]), "request_hash": str(row["request_hash"])}
 
+    @_guarded
     def _account_of_job(self, job_id: str) -> str:
         row = self._connection.execute("SELECT account_id FROM jobs WHERE id=?", (job_id,)).fetchone()
         return str(row["account_id"]) if row else ""
@@ -2123,6 +2208,7 @@ class ProductStore:
     def _transaction(self, immediate: bool = False):
         return _Transaction(self)
 
+    @_guarded
     def _rate_limit(self, scope: str, limit: int, window: float, code: str) -> None:
         now = self._clock()
         with self._transaction():
@@ -2134,6 +2220,7 @@ class ProductStore:
                 raise Forbidden("尝试过于频繁，请稍后再试", code=code)
             self._connection.execute("INSERT INTO login_attempts(scope,at) VALUES(?,?)", (scope, now))
 
+    @_guarded
     def health(self) -> dict[str, Any]:
         with self._lock:
             jobs = {
@@ -2150,12 +2237,14 @@ class ProductStore:
             "devices": devices,
         }
 
+    @_guarded
     def close(self) -> None:
         with self._lock:
             self._connection.close()
 
     # ------------------------------------------------------- model catalog
 
+    @_guarded
     def save_catalog(self, catalog: Any) -> str:
         """持久化目录。凭据已经在进入这里之前被剔除。"""
         payload = json.dumps(catalog.to_dict(), ensure_ascii=False)
@@ -2167,6 +2256,7 @@ class ProductStore:
             )
         return catalog.version
 
+    @_guarded
     def load_catalog(self) -> Any:
         from .model_catalog import ModelCatalog
 
@@ -2181,6 +2271,7 @@ class ProductStore:
         except (TypeError, ValueError):
             return ModelCatalog()
 
+    @_guarded
     def save_model_policies(self, policies: Sequence[Any]) -> None:
         now = utc_now()
         with self._transaction():
@@ -2190,6 +2281,7 @@ class ProductStore:
                     (policy.alias, json.dumps(policy.to_dict(), ensure_ascii=False), now),
                 )
 
+    @_guarded
     def load_model_policies(self) -> list[Any]:
         from .model_catalog import OperatorModelPolicy
 
@@ -2203,6 +2295,7 @@ class ProductStore:
                 continue
         return result
 
+    @_guarded
     def record_model_verification(
         self, alias: str, backend: str, provider_id: str, model_id: str,
         prompt_version: str, passed: bool, checks: Mapping[str, Any],
@@ -2221,6 +2314,7 @@ class ProductStore:
                  json.dumps(dict(checks), ensure_ascii=False), utc_now()),
             )
 
+    @_guarded
     def model_verification(self, alias: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._connection.execute(
@@ -2256,6 +2350,7 @@ class ProductStore:
         return day_key(self._clock() if now is None else now, timezone_name)
     # -------------------------------------------------- job model snapshot
 
+    @_guarded
     def save_job_snapshot(self, job_id: str, alias: str, provider_id: str, model_id: str,
                           catalog_version: str, pricing_class: str, pricing_version: str,
                           prompt_version: str, plugin_version: str,
@@ -2275,6 +2370,7 @@ class ProductStore:
                  json.dumps(dict(extra or {}), ensure_ascii=False)),
             )
 
+    @_guarded
     def job_snapshot(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._connection.execute(
