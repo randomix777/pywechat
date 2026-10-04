@@ -80,7 +80,11 @@ class RecoveryHarness(unittest.TestCase):
             data_dir=self.dir, orders=self.store, tenant=self.tenant,
             probe=kwargs.pop("probe", SimulatedWeChat([WeChatState.LOGGED_IN])),
             conversation_source=SimulatedConversations([(self.group, ConversationKind.GROUP, 128)]),
-            history_reader_fn=SimulatedHistory(default_count=0),
+            # 默认 0 条。需要真的读到内容的测试用
+            # history_reader_fn=... 覆盖它 —— 不要把数据写死在这里，
+            # 否则测试结果取决于这个默认值而不是被测的行为。
+            history_reader_fn=kwargs.pop("history_reader_fn",
+                                          SimulatedHistory(default_count=0)),
             sender=kwargs.pop("sender", lambda t, x: None),
             simulated=True,
         )
@@ -208,13 +212,13 @@ class CrashRecoveryTests(RecoveryHarness):
         self.assertEqual(restarted.outbox.pending_count(), 1, "重启后待发回执不能丢")
 
     def test_history_cursor_survives_a_restart(self):
-        app = self.make_app()
+        app = self.make_app(history_reader_fn=SimulatedHistory(default_count=2))
         from pyweixin.history_read import HistoryRange
 
         app.choose_history_conversations(app.refresh_conversations())
         app.wizard.orders = lambda: self.store
         app.wizard.pipeline.orders = self.store
-        app.read_history(range_kind=HistoryRange.LAST_DAY, max_messages=2)
+        app.read_history(range_kind=HistoryRange.LAST_DAY, max_messages=5)
         import time
 
         time.sleep(0.5)

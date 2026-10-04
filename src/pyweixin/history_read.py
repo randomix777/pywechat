@@ -578,12 +578,25 @@ class HistoryReader:
             if self.cursor is not None:
                 previous = self.cursor.get(conversation.identity, merchant_id)
                 total_seen = int(previous["message_count"]) + len(kept) if previous else len(kept)
+                # **一条都没读到 ≠ 翻到底了。**
+                #
+                # 「exhausted」的意思是"确认这个会话没有更多了"，下次读取会
+                # **整个跳过它**。而读到 0 条时 truncated 和 hit_ceiling 都是
+                # False，按老写法 exhausted 会被置成 True ——
+                # 于是「这次没拿到」被记成了「确认没有了」。
+                #
+                # 后果：商户第一次读到 0 条（比如微信没聚焦、时间窗不匹配），
+                # 之后**永远**读不出东西，而且没有任何办法恢复，只能清库。
+                # 表现为「读取历史偶尔返回 0 条」，实际上那 0 条是**永久**的。
+                #
+                # 所以这里必须加一条：读到 0 条就不算翻到底。
+                exhausted = bool(kept) and not truncated and not hit_ceiling and mode != ReadMode.UPDATE
                 # 只有真的翻到底了才算 exhausted。增量读永远不算 —— 它按定义没读完。
                 self.cursor.record(
                     conversation.identity, merchant_id, total_seen,
                     earliest or (_parse(saved["earliest"]) if saved is not None else None),
                     latest or (_parse(saved["latest"]) if saved is not None else None),
-                    not truncated and not hit_ceiling and mode != ReadMode.UPDATE,
+                    exhausted,
                     self._clock(),
                 )
 
