@@ -57,7 +57,7 @@ def _run_concurrently(fns, workers=8):
 class SharedConnectionGuardTests(unittest.TestCase):
     def setUp(self):
         self.store = ProductStore(":memory:")
-        self.account = self.store.create_account("guard-shop", "password-1234", quota_units=1000)
+        self.account = self.store.create_account("guard-shop", "password-1234", quota_micro_usd=1000)
         self.device_id, _created = self.store._upsert_device(
             self.account["account_id"], self.account["merchant_id"], "电脑")
 

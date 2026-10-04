@@ -1053,7 +1053,7 @@ class MerchantWindow:
         holder = bar.master if bar is not None else None
         unlimited = bool(getattr(view, "unlimited", False))
         usable = (not unlimited
-                  and int(getattr(view, "total_units", 0) or 0) > 0
+                  and int(getattr(view, "total_micro_usd", 0) or 0) > 0
                   and bool(getattr(view, "active", False)))
         if bar is not None and self._alive(bar):
             if usable:
@@ -1341,7 +1341,7 @@ class MerchantWindow:
             # 它恒为 0。写出来只会让商户以为还有不花钱的。
             text += (
                 f"\n提交任务 {summary.get('submitted_jobs', 0)} 个，"
-                f"实际扣费 {summary.get('charged_units', 0)} 次"
+                f"实际扣费 {summary.get('charged_micro_usd', 0)} 次"
             )
         skipped = summary.get("already_analyzed") or 0
         if skipped:

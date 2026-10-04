@@ -45,7 +45,7 @@ class Client:
         self.remaining = remaining
 
     def account(self):
-        return {"subscription": {"active": True, "remaining_units": self.remaining,
+        return {"subscription": {"active": True, "remaining_micro_usd": self.remaining,
                                  "plan_code": "标准版", "period_end": "2026-10-25T00:00:00+00:00"}}
 
     # 补上模型目录接口。以前这里没有，第 4 步会抛 AttributeError，
@@ -893,7 +893,7 @@ def main(argv: list[str] | None = None) -> int:
             return ""
 
     app.wizard.quota = _QV(logged_in=True, active=True, remaining=5,
-                          total_units=8, used_units=3)
+                          total_micro_usd=8, used_micro_usd=3)
     window._on_quota(app.wizard.quota)
     pump(window, 0.3)
     record("额度显示百分比", "38%" in _read("quota"), _read("quota") or "(无)")
@@ -909,7 +909,7 @@ def main(argv: list[str] | None = None) -> int:
            "条消息" not in _read("quota") and "次" not in _read("quota"),
            _read("quota") or "(无)")
 
-    app.wizard.quota = _QV(logged_in=True, active=True, remaining=5, total_units=0)
+    app.wizard.quota = _QV(logged_in=True, active=True, remaining=5, total_micro_usd=0)
     window._on_quota(app.wizard.quota)
     pump(window, 0.3)
     record("不限量时不硬登百分比",

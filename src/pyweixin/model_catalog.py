@@ -73,7 +73,7 @@ CAP_ORDER_PARSE = "order_parse"
 REQUIRED_CAPABILITIES = (CAP_ORDER_PARSE,)
 
 #: 文案里"扣 N 次"的样子。文案与数字对不上时以策略为准。
-_CHARGE_UNITS_PATTERN = re.compile(r"扣\s*(\d+)\s*(?:次|个|笔)")
+_CHARGE_COUNT_PATTERN = re.compile(r"扣\s*(\d+)\s*(?:次|个|笔)")
 
 #: 文案里出现这些词，就是在声称这次分析不收钱。
 #:
@@ -106,7 +106,7 @@ def _claims_to_be_free(note: str) -> bool:
     return False
 
 
-def _note_contradicts(note: str, units: int) -> bool:
+def _note_contradicts(note: str, micro_usd: int) -> bool:
     """``charge_note`` 是否与结构化策略矛盾。
 
     两类要拦：
@@ -119,8 +119,8 @@ def _note_contradicts(note: str, units: int) -> bool:
     text = str(note or "")
     if _claims_to_be_free(text):
         return True
-    match = _CHARGE_UNITS_PATTERN.search(text)
-    return bool(match) and int(match.group(1)) != int(units)
+    match = _CHARGE_COUNT_PATTERN.search(text)
+    return bool(match) and int(match.group(1)) != int(micro_usd)
 
 
 class PricingClass:
@@ -141,7 +141,7 @@ def _read_price(raw: Any) -> float | None:
     ``None`` / 空串 / 非数字 / ``<= 0`` 一律当**没配**。
 
     为什么把 0 也当"没配"：单价配成 0 **不会**让模型变免费（免费档位已经
-    焊死），只会让结算退回固定的 cost_units_per_job。如果这里放过 0，
+    焊死），只会让结算退回固定的 cost_micro_usd_per_job。如果这里放过 0，
     运营就会看到"我配了 0 怎么还在扣钱"，而真实原因是它被当成了没配。
     当成没配至少会退回固定额度，行为可预期。
     """
@@ -174,8 +174,8 @@ class OperatorModelPolicy:
     #: 每天免费分析次数。0 表示该模型不提供免费额度。
     #:
     #: 这是**每天的次数上限**（例：50 表示一天 50 条消息），
-    #: 和 :attr:`cost_units_per_job` 是两回事：后者是**每条任务扣多少分析额度**。
-    #: 免费模型不扣分析额度，所以它的 ``cost_units_per_job`` 恒为 0。
+    #: 和 :attr:`cost_micro_usd_per_job` 是两回事：后者是**每条任务扣多少分析额度**。
+    #: 免费模型不扣分析额度，所以它的 ``cost_micro_usd_per_job`` 恒为 0。
     daily_free_limit: int = 0
     max_input_tokens: int = 200_000
     max_output_tokens: int = 8_000
@@ -192,19 +192,19 @@ class OperatorModelPolicy:
     #: 客户看到的一句话说明。
     summary: str = ""
     #: 收费模型给客户看的扣费说明。**纯展示文案**，不参与任何扣费计算 ——
-    #: 真实扣多少看 :attr:`cost_units_per_job`。两者由 :meth:`charge_line` 同源生成，
+    #: 真实扣多少看 :attr:`cost_micro_usd_per_job`。两者由 :meth:`charge_line` 同源生成，
     #: 避免"显示一套、扣另一套"。
     charge_note: str = ""
     #: 每个任务扣多少分析额度。免费模型忽略这个值（恒按 0 处理）。
     #:
     #: 单位是"分析额度"，**不是**每天的次数。次数上限看 :attr:`daily_free_limit`。
     #: 收费模型配 3 表示"每条消息扣 3 次额度"；免费模型配 0。
-    cost_units_per_job: int = 1
+    cost_micro_usd_per_job: int = 1
     #: 上游单价（**美元 / 百万 token**）。``None`` 表示"没配"。
     #:
     #: 配了就按真实用量计价：提交时按最大可能成本预留，结算时按上游回的真实
     #: token 用量实扣（见 :mod:`pyweixin.pricing`）。没配就退回
-    #: :attr:`cost_units_per_job` 那个固定值。
+    #: :attr:`cost_micro_usd_per_job` 那个固定值。
     #:
     #: **必须大于 0 才有意义。** 0 或负数会被读成"没配"，而不是"免费"——
     #: 免费档位已经焊死，把单价配成 0 不会让模型免费，只会让系统退回固定额度。
@@ -242,8 +242,8 @@ class OperatorModelPolicy:
             raise ValueError("max_output_tokens must be positive")
         if self.max_task_seconds <= 0:
             raise ValueError("max_task_seconds must be positive")
-        if self.cost_units_per_job < 0:
-            raise ValueError("cost_units_per_job must not be negative")
+        if self.cost_micro_usd_per_job < 0:
+            raise ValueError("cost_micro_usd_per_job must not be negative")
         if self.max_concurrent_per_tenant < 1:
             raise ValueError("max_concurrent_per_tenant must be at least 1")
         if self.requests_per_minute < 1:
@@ -264,14 +264,14 @@ class OperatorModelPolicy:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "OperatorModelPolicy":
         pricing_class = str(data.get("pricing_class", PricingClass.METERED))
-        cost_units = int(data.get("cost_units_per_job", 1))
+        cost_micro_usd = int(data.get("cost_micro_usd_per_job", 1))
         if pricing_class == PricingClass.FREE:
             # 存量配置里可能还有免费档位。**不丢数据，也不让它继续免费**：
-            # 直接按收费加载，单价取配置里的 ``cost_units_per_job``；
+            # 直接按收费加载，单价取配置里的 ``cost_micro_usd_per_job``；
             # 它当年若是 0（免费模型按定义就是 0），补成 1 ——
             # 宁可按最低单价扣，也不能出现"这次不扣"的旁路。
             pricing_class = PricingClass.METERED
-            cost_units = max(1, cost_units)
+            cost_micro_usd = max(1, cost_micro_usd)
         return cls(
             alias=str(data["alias"]),
             provider_id=str(data.get("provider_id", "")),
@@ -289,7 +289,7 @@ class OperatorModelPolicy:
             enabled=bool(data.get("enabled", True)),
             summary=str(data.get("summary", "")),
             charge_note=str(data.get("charge_note", "")),
-            cost_units_per_job=cost_units,
+            cost_micro_usd_per_job=cost_micro_usd,
             input_price_per_million=_read_price(data.get("input_price_per_million")),
             output_price_per_million=_read_price(data.get("output_price_per_million")),
             free_quota_timezone=str(data.get("free_quota_timezone", "UTC")),
@@ -346,7 +346,7 @@ class ModelEntry:
     def charge_line(self) -> str:
         """收费模型的扣费说明。
 
-        **从 :attr:`cost_units_per_job` 生成**，不是在文案里另写一套 ——
+        **从 :attr:`cost_micro_usd_per_job` 生成**，不是在文案里另写一套 ——
         显示和扣费必须同源，否则会出现"显示扣 1、实际扣 3"。
 
         运营确实可以自己写 ``charge_note``；但只要它写的次数与结构化策略里的
@@ -362,7 +362,7 @@ class ModelEntry:
         这条消息有多长**。不写死一个数字，因为那个数字本来就是假的。
         """
         note = str(self.policy.charge_note or "").strip()
-        if note and not _note_contradicts(note, self.policy.cost_units_per_job):
+        if note and not _note_contradicts(note, self.policy.cost_micro_usd_per_job):
             return note
         return (
             "该模型会消耗分析额度，按这条消息的实际长度计费"
@@ -384,11 +384,11 @@ class ModelEntry:
 
         免费档位已被 :meth:`OperatorModelPolicy.__post_init__` 焊死，
         所以这里**不再**有"免费就不扣"的分支：每条任务都按
-        ``cost_units_per_job`` 扣分析额度。留着那个分支等于给将来留后门。
+        ``cost_micro_usd_per_job`` 扣分析额度。留着那个分支等于给将来留后门。
         """
         return {
             "pricing_class": self.policy.pricing_class,
-            "cost_units_per_job": max(1, int(self.policy.cost_units_per_job)),
+            "cost_micro_usd_per_job": max(1, int(self.policy.cost_micro_usd_per_job)),
             # 单价。``None`` 表示没配，调用方退回上面那个固定额度。
             # **不能下发 0** —— 网关把 0 当"没配"，下发了只会让人以为配过了。
             "input_price_per_million": self.policy.input_price_per_million,

@@ -95,7 +95,7 @@ SESSION_COOKIE = "pyw_session"
 MAX_BODY_BYTES = 256 * 1024
 MAX_MESSAGE_CHARS = 4000
 MAX_HISTORY_ITEMS = 40
-COST_UNITS_PER_JOB = 1
+DEFAULT_COST_MICRO_USD = 1
 #: Wall-clock ceiling for one parse job.
 #:
 #: Raised from 120s after measuring a real model: a failing upstream call took
@@ -279,7 +279,7 @@ class ProductGateway:
             return _json(200, {"devices": self.store.list_devices(identity["account_id"])})
         if path == "/v1/subscription":
             identity = self._require_client(headers)
-            # 进度条靠的是 subscription 里的 quota_units / used_units，
+            # 进度条靠的是 subscription 里的 quota_micro_usd / used_micro_usd，
             # 那些已经在这里。**不下发单价**：
             # 商户要的是百分比，不是「还够做多少次」
             # （一条消息并不等于一笔订单）。
@@ -659,7 +659,7 @@ class ProductGateway:
                 identity["merchant_id"],
                 idempotency_key,
                 request_hash,
-                routing["cost_units"],
+                routing["cost_micro_usd"],
                 min(self.job_timeout, routing["max_task_seconds"]) if routing["max_task_seconds"] else self.job_timeout,
                 request_payload=request,
                 max_concurrent=routing["max_concurrent_per_tenant"],
@@ -729,12 +729,12 @@ class ProductGateway:
             "state": str(row["state"]),
             "model_alias": str(snapshot.get("alias") or ""),
             "pricing_class": str(snapshot.get("pricing_class") or ""),
-            # 已结算的扣费。排队/执行中为 0，预留在 charged_units 之前记。
-            "charged_units": int(row["charged_units"]),
-            "reserved_units": int(row["reserved_units"]),
-            "cost_units_per_job": int(frozen.get("cost_units_per_job") or 0),
+            # 已结算的扣费。排队/执行中为 0，预留在 charged_micro_usd 之前记。
+            "charged_micro_usd": int(row["charged_micro_usd"]),
+            "reserved_micro_usd": int(row["reserved_micro_usd"]),
+            "cost_micro_usd_per_job": int(frozen.get("cost_micro_usd_per_job") or 0),
             "charge_line": entry.charge_line() if entry is not None else "",
-            "subscription_remaining_units": int(subscription.get("remaining_units", 0)),
+            "subscription_remaining_units": int(subscription.get("remaining_micro_usd", 0)),
             # 策略变了客户端必须重新确认，不能让客户在不知情时承担更高收费。
             "policy_version": str(snapshot.get("pricing_version") or frozen.get("policy_version") or ""),
             "frozen_policy_version": str(frozen.get("policy_version") or ""),
@@ -757,13 +757,13 @@ class ProductGateway:
             "snapshot": {
                 # 不再冻结免费相关的东西。订阅额度是按周期的，
                 # 不存在「跨午夜记回预留那天」的问题 —— 那只是免费额度的日号。
-                "cost_units_per_job": routing["cost_units"],
+                "cost_micro_usd_per_job": routing["cost_micro_usd"],
                 # **冻结单价**（美元/百万 token）。商户确认过的是这个价，
                 # 所以运营事后改价不能影响已经在跑的任务 —— 否则商户确认过的
                 # 和最后被扣的不是一回事，那是最伤信任的一种错。
                 #
                 # 没有单价时是 None 而不是 0：0 会被当成"免费"，而**免费档位
-                # 已经焊死**，单价拿不到只能退回固定的 cost_units_per_job，
+                # 已经焊死**，单价拿不到只能退回固定的 cost_micro_usd_per_job，
                 # 不能悄悄按 0 结算。
                 "input_price_per_million": self._frozen_price_of(routing),
                 "output_price_per_million": self._frozen_output_price_of(routing),
@@ -815,7 +815,7 @@ class ProductGateway:
         entry = self.catalog.entry(str(routing["alias"]))
         facts = {
             "pricing_class": str(routing["pricing_class"]),
-            "cost_units_per_job": int(routing["cost_units"]),
+            "cost_micro_usd_per_job": int(routing["cost_micro_usd"]),
             "charge_line": entry.charge_line() if entry is not None else "",
             "pricing_version": current,
             "presented_version": presented,
@@ -880,7 +880,7 @@ class ProductGateway:
             "model_id": entry.model_id,
             "pricing_class": billing["pricing_class"],
             # 计费只认结构化策略里的数字，**不认** charge_note 之类的文案。
-            "cost_units": int(billing["cost_units_per_job"]),
+            "cost_micro_usd": int(billing["cost_micro_usd_per_job"]),
             # 单价（美元/百万 token）。运营在策略里显式配置；没配就是 None，
             # 结算时退回上面那个固定额度 —— **不猜价格**，也不按 0 结算
             # （0 等于免费，而免费档位已经焊死）。
@@ -1072,10 +1072,10 @@ class ProductGateway:
             return
         self._queue_session_cleanup(session_id)
         # 计费按**任务冻结的快照**，不按适配器返回值 —— 否则一个固定
-        # cost_units=1 的适配器会给免费任务也记上一笔；反过来，若只信适配器，
+        # cost_micro_usd=1 的适配器会给免费任务也记上一笔；反过来，若只信适配器，
         # 运营配的「每条消息扣 3 次」会变成实际只扣 1 次，显示与扣费就对不上。
         snapshot = self.store.job_snapshot(job_id) or {}
-        charged = self._frozen_charge_units(job_id, snapshot, outcome)
+        charged = self._frozen_charge_micro_usd(job_id, snapshot, outcome)
         # 请求的模型与**上游自报**实际执行的模型分开记。上游没回标识就是
         # 「未能独立确认」，不是"确认一致"；对不上就明确留一条警告。
         self.store.mark_model_execution(
@@ -1088,9 +1088,9 @@ class ProductGateway:
         )
         if getattr(outcome, "model_warning", ""):
             LOGGER.warning("job %s model identity: %s", job_id, outcome.model_warning)
-        self.store.finish_job(job_id, JOB_SUCCEEDED, result=outcome.result, charged_units=charged)
+        self.store.finish_job(job_id, JOB_SUCCEEDED, result=outcome.result, charged_micro_usd=charged)
 
-    def _frozen_charge_units(
+    def _frozen_charge_micro_usd(
         self, job_id: str, snapshot: Mapping[str, Any], outcome: Any
     ) -> int:
         """这个任务实��扣多少（单位：整数微美元）。
@@ -1099,7 +1099,7 @@ class ProductGateway:
 
         1. **任务冻结的模型单价 + 上游回的真实 token 用量** —— 这是真实成本，
            也是商户最终被扣的钱。计价单位是微美元，所以不存在"扣 0 次"的问题。
-        2. **冻结的固定额度** ``cost_units_per_job`` —— 单价拿不到时的回退。
+        2. **冻结的固定额度** ``cost_micro_usd_per_job`` —— 单价拿不到时的回退。
            那是运营显式配的固定值，比猜一个强。
         3. 都没有 → 适配器自报。
 
@@ -1119,11 +1119,11 @@ class ProductGateway:
             )
             if settled is not None:
                 return settled
-        frozen = (snapshot.get("snapshot") or {}).get("cost_units_per_job")
+        frozen = (snapshot.get("snapshot") or {}).get("cost_micro_usd_per_job")
         if frozen is not None:
             return max(0, int(frozen))
         # 没有快照的旧任务：退回适配器自报，仍然不猜测。
-        return int(getattr(outcome, "cost_units", 0) or COST_UNITS_PER_JOB)
+        return int(getattr(outcome, "cost_micro_usd", 0) or DEFAULT_COST_MICRO_USD)
 
     @staticmethod
     def _frozen_price(snapshot: Mapping[str, Any]) -> ModelPrice | None:
@@ -1199,7 +1199,7 @@ class ProductGateway:
             raise NotFound("任务不存在", code="job_not_found")
         if row["state"] not in {JOB_OUTCOME_UNKNOWN, "awaiting_reconcile"}:
             raise Conflict("该任务无需确认", code="not_reconcilable")
-        if int(row["charged_units"]):
+        if int(row["charged_micro_usd"]):
             raise Conflict("该任务已结算", code="already_settled")
         session_id = str(row["upstream_session_id"] or "")
         snapshot = self.store.job_snapshot(job_id) or {}
@@ -1215,8 +1215,8 @@ class ProductGateway:
             self._queue_session_cleanup(session_id)
             result = validate_parse_result(extract_json_object(found["text"]))
             # 与正常完成走同一个扣费口径，同样只认冻结的策略数字。
-            charged = self._frozen_charge_units(job_id, snapshot, None)
-            view = self.store.finish_job(job_id, JOB_SUCCEEDED, result=result, charged_units=charged)
+            charged = self._frozen_charge_micro_usd(job_id, snapshot, None)
+            view = self.store.finish_job(job_id, JOB_SUCCEEDED, result=result, charged_micro_usd=charged)
             return view
         # 还没定：状态保持不变，预留也留着。继续等，不盲目重发。
         return self.store.get_job_any(row["account_id"], job_id)
@@ -1292,7 +1292,7 @@ class ProductGateway:
             merchant_id=str(payload.get("merchant_id", "")) or "",
             display_name=str(payload.get("display_name", "")),
             plan_code=str(payload.get("plan_code", "trial")),
-            quota_units=int(payload.get("quota_units", 0)),
+            quota_micro_usd=int(payload.get("quota_micro_usd", 0)),
             max_concurrent_jobs=int(payload.get("max_concurrent_jobs", 2)),
             period_days=int(payload.get("period_days", 30)),
         )
@@ -1300,8 +1300,8 @@ class ProductGateway:
 
     def _operator_update_account(self, account_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         updates: dict[str, Any] = {}
-        if "quota_units" in payload:
-            updates["quota_units"] = int(payload["quota_units"])
+        if "quota_micro_usd" in payload:
+            updates["quota_micro_usd"] = int(payload["quota_micro_usd"])
         if "plan_code" in payload:
             updates["plan_code"] = str(payload["plan_code"])
         if "max_concurrent_jobs" in payload:
@@ -1416,7 +1416,7 @@ def _generated_password(length: int = 16) -> str:
 __all__ = [
     "ProductGateway",
     "GatewayResponse",
-    "COST_UNITS_PER_JOB",
+    "DEFAULT_COST_MICRO_USD",
     "OpenCodeAdapter",
     "LocalRuleAdapter",
     "Conflict",

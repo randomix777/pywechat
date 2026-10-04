@@ -3,7 +3,7 @@
 ## 这一轮接的是什么
 
 之前 :mod:`pyweixin.pricing` 算得出美元金额，但**没有任何调用点** ——
-实际扣费走的还是固定的整数 ``cost_units_per_job``。这一轮把两者接上。
+实际扣费走的还是固定的整数 ``cost_micro_usd_per_job``。这一轮把两者接上。
 
 ## 核心约定：预留按上限，实扣按真实用量
 
@@ -95,16 +95,16 @@ class ChargeUnitsTests(unittest.TestCase):
     """网关选实扣金额时的优先级。"""
 
     def _snapshot(self, **inner):
-        return {"pricing_class": "metered", "snapshot": {"cost_units_per_job": 1, **inner}}
+        return {"pricing_class": "metered", "snapshot": {"cost_micro_usd_per_job": 1, **inner}}
 
     class _Outcome:
         input_tokens = 40
         output_tokens = 120
-        cost_units = 99
+        cost_micro_usd = 99
 
     def test_real_usage_wins_when_the_price_is_frozen(self):
         gateway = object.__new__(ProductGateway)
-        charged = ProductGateway._frozen_charge_units(
+        charged = ProductGateway._frozen_charge_micro_usd(
             gateway, "job-1",
             self._snapshot(input_price_per_million=0.003, output_price_per_million=0.015),
             self._Outcome(),
@@ -116,7 +116,7 @@ class ChargeUnitsTests(unittest.TestCase):
     def test_it_falls_back_to_the_frozen_fixed_amount(self):
         """单价拿不到时退回运营配的固定值 —— 比猜一个强。"""
         gateway = object.__new__(ProductGateway)
-        charged = ProductGateway._frozen_charge_units(
+        charged = ProductGateway._frozen_charge_micro_usd(
             gateway, "job-1", self._snapshot(), self._Outcome(),
         )
         self.assertEqual(charged, 1)
@@ -126,7 +126,7 @@ class ChargeUnitsTests(unittest.TestCase):
         gateway = object.__new__(ProductGateway)
         for broken in ("abc", -1, 0):
             with self.subTest(broken=broken):
-                charged = ProductGateway._frozen_charge_units(
+                charged = ProductGateway._frozen_charge_micro_usd(
                     gateway, "job-1",
                     self._snapshot(input_price_per_million=broken,
                                    output_price_per_million=broken),
@@ -136,7 +136,7 @@ class ChargeUnitsTests(unittest.TestCase):
 
     def test_free_never_charges(self):
         gateway = object.__new__(ProductGateway)
-        charged = ProductGateway._frozen_charge_units(
+        charged = ProductGateway._frozen_charge_micro_usd(
             gateway, "job-1",
             {"pricing_class": "free", "snapshot": {}},
             self._Outcome(),

@@ -74,7 +74,7 @@ class MerchantFacingLineTests(unittest.TestCase):
 
         policy = OperatorModelPolicy(
             alias="m", provider_id="p", model_id="m",
-            pricing_class=PricingClass.METERED, cost_units_per_job=1,
+            pricing_class=PricingClass.METERED, cost_micro_usd_per_job=1,
         )
         store = CatalogStore()
         store.load_policies([policy.to_dict()])

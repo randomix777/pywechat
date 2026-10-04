@@ -458,7 +458,7 @@ class BillingSourceTests(unittest.TestCase):
             ),
             "paid-deep": OperatorModelPolicy(
                 alias="paid-deep", provider_id="p", model_id="m-paid",
-                pricing_class=PricingClass.METERED, cost_units_per_job=3,
+                pricing_class=PricingClass.METERED, cost_micro_usd_per_job=3,
             ),
         }
         catalog = CatalogStore()
@@ -476,7 +476,7 @@ class BillingSourceTests(unittest.TestCase):
         self.gateway = ProductGateway(store=self.store, adapter=LocalRuleAdapter(), secure_cookies=False, catalog=catalog)
         self.pricing_version = self.gateway.catalog.for_client()["version"]
         self.account = self.store.create_account(
-            "shop", "password-1234", display_name="店", quota_units=50, max_concurrent_jobs=4
+            "shop", "password-1234", display_name="店", quota_micro_usd=50, max_concurrent_jobs=4
         )
         self.device_id, _ = self.store._upsert_device(
             self.account["account_id"], self.account["merchant_id"], "pc"
@@ -511,9 +511,9 @@ class BillingSourceTests(unittest.TestCase):
         billing = response.payload["billing"]
         self.assertTrue(billing["available"])
         self.assertEqual(billing["pricing_class"], "metered")
-        self.assertEqual(billing["cost_units_per_job"], 3, "服务端口径必须下发")
-        self.assertEqual(billing["charged_units"], 0)
-        self.assertEqual(billing["reserved_units"], 3)
+        self.assertEqual(billing["cost_micro_usd_per_job"], 3, "服务端口径必须下发")
+        self.assertEqual(billing["charged_micro_usd"], 0)
+        self.assertEqual(billing["reserved_micro_usd"], 3)
         self.assertTrue(billing["policy_version"])
         self.assertTrue(billing["charge_line"])
 
@@ -524,7 +524,7 @@ class BillingSourceTests(unittest.TestCase):
         error = caught.exception
         self.assertEqual(error.code, "pricing_changed")
         self.assertEqual(error.http_status, 409)
-        self.assertEqual(error.facts["cost_units_per_job"], 3)
+        self.assertEqual(error.facts["cost_micro_usd_per_job"], 3)
         self.assertEqual(self.store.list_jobs(self.account["account_id"]), [], "不得建任务")
 
     def test_matching_pricing_version_is_accepted(self):
@@ -543,10 +543,10 @@ class BillingSourceTests(unittest.TestCase):
         error = caught.exception
         self.assertEqual(error.code, "pricing_version_required")
         self.assertEqual(error.http_status, 409)
-        self.assertEqual(error.facts["cost_units_per_job"], 3, "要把当前事实告诉客户端去展示")
+        self.assertEqual(error.facts["cost_micro_usd_per_job"], 3, "要把当前事实告诉客户端去展示")
         self.assertEqual(self.store.list_jobs(self.account["account_id"]), [], "不得建任务")
         self.assertEqual(
-            self.store.get_subscription(self.account["account_id"])["reserved_units"], 0, "不得预留"
+            self.store.get_subscription(self.account["account_id"])["reserved_micro_usd"], 0, "不得预留"
         )
 
     def test_free_turned_paid_cannot_slip_through_without_a_version(self):
@@ -557,7 +557,7 @@ class BillingSourceTests(unittest.TestCase):
 
         entry = self.gateway.catalog.entry("free-standard")
         entry.policy = dataclasses.replace(
-            free_policy, pricing_class="metered", daily_free_limit=0, cost_units_per_job=2
+            free_policy, pricing_class="metered", daily_free_limit=0, cost_micro_usd_per_job=2
         )
         self.gateway.catalog.catalog.version = self.gateway.catalog.catalog.compute_version()
         self.pricing_version = self.gateway.catalog.catalog.version
@@ -575,7 +575,7 @@ class BillingSourceTests(unittest.TestCase):
         """重试一笔已存在的任务：返回原任务与原计费，**不按新价重收**。"""
         first = self._submit("b-replay", self._payload(model="paid-deep"))
         job_id = first.payload["job"]["job_id"]
-        self.assertEqual(first.payload["billing"]["cost_units_per_job"], 3)
+        self.assertEqual(first.payload["billing"]["cost_micro_usd_per_job"], 3)
         self.gateway.start(workers=1)
         try:
             import time
@@ -587,20 +587,20 @@ class BillingSourceTests(unittest.TestCase):
                 time.sleep(0.05)
         finally:
             self.gateway.stop()
-        used_before = self.store.get_subscription(self.account["account_id"])["used_units"]
+        used_before = self.store.get_subscription(self.account["account_id"])["used_micro_usd"]
         self.assertEqual(used_before, 3)
 
         # 价格翻倍之后重试同一个幂等键
         self.gateway.catalog.entry("paid-deep").policy = dataclasses.replace(
-            self.gateway.catalog.entry("paid-deep").policy, cost_units_per_job=9
+            self.gateway.catalog.entry("paid-deep").policy, cost_micro_usd_per_job=9
         )
         self.gateway.catalog.catalog.version = self.gateway.catalog.catalog.compute_version()
         replay = self._submit("b-replay", self._payload(model="paid-deep"))
         self.assertTrue(replay.payload.get("replayed"))
         self.assertEqual(replay.payload["job"]["job_id"], job_id, "必须返回原任务")
-        self.assertEqual(replay.payload["billing"]["cost_units_per_job"], 3, "播报冻结时的口径")
+        self.assertEqual(replay.payload["billing"]["cost_micro_usd_per_job"], 3, "播报冻结时的口径")
         self.assertEqual(
-            self.store.get_subscription(self.account["account_id"])["used_units"], used_before,
+            self.store.get_subscription(self.account["account_id"])["used_micro_usd"], used_before,
             "重试不得按新价重新收费",
         )
 
@@ -621,8 +621,8 @@ class BillingSourceTests(unittest.TestCase):
             self.assertIn(field, source, f"客户端必须读取服务端计费字段：{field}")
         # …而本地没有任何一处"每个任务扣 1 次"的推算。
         self.assertNotIn("charged += 1", source)
-        self.assertNotIn("cost_units=1", source)
-        self.assertNotIn("cost_units_per_job=", source, "客户端不得自己读策略算钱")
+        self.assertNotIn("cost_micro_usd=1", source)
+        self.assertNotIn("cost_micro_usd_per_job=", source, "客户端不得自己读策略算钱")
 
     def test_wizard_summary_aggregates_server_numbers_only(self):
         import inspect
@@ -631,14 +631,14 @@ class BillingSourceTests(unittest.TestCase):
 
         source = inspect.getsource(Wizard.analyze)
         self.assertIn("billing_fact", source, "汇总必须来自服务端事实")
-        self.assertIn('fact.get("charged_units", 0)', source)
+        self.assertIn('fact.get("charged_micro_usd", 0)', source)
         self.assertNotIn("charged += 1", source)
 
     def test_gateway_error_carries_billing_facts(self):
         from pyweixin.client_login import GatewayError
 
-        error = GatewayError("pricing_changed", "变了", 409, billing={"cost_units_per_job": 3})
-        self.assertEqual(error.billing["cost_units_per_job"], 3)
+        error = GatewayError("pricing_changed", "变了", 409, billing={"cost_micro_usd_per_job": 3})
+        self.assertEqual(error.billing["cost_micro_usd_per_job"], 3)
 
 
 def source_of(obj) -> str:

@@ -61,19 +61,19 @@ class GateTestBase(unittest.TestCase):
         device = self.poll.get("device") or {}
         return str(device.get("id") or self.poll.get("device_id") or "")
 
-    def top_up(self, units=50, reference="txn-1") -> dict:
-        return self.store.credit(self.account, units, credit_reference(reference))
+    def top_up(self, micro_usd=50, reference="txn-1") -> dict:
+        return self.store.credit(self.account, micro_usd, credit_reference(reference))
 
 
 class InitialBalanceTests(GateTestBase):
     def test_a_new_account_starts_at_zero(self):
         """产品规则：初始分析余额为 0，必须先购买额度。"""
-        self.assertEqual(self.store.get_subscription(self.account)["remaining_units"], 0)
+        self.assertEqual(self.store.get_subscription(self.account)["remaining_micro_usd"], 0)
 
     def test_the_default_quota_is_zero_not_a_free_allowance(self):
         created = self.store.create_account("shop-two", "password-1234")
         self.assertEqual(
-            self.store.get_subscription(created["account_id"])["quota_units"], 0,
+            self.store.get_subscription(created["account_id"])["quota_micro_usd"], 0,
             "新账号带了免费额度",
         )
 
@@ -131,20 +131,20 @@ class AfterTopUpTests(GateTestBase):
             request_payload={"message": {"content": "两箱苹果"}},
         )
         self.assertTrue(job.get("job_id"))
-        self.assertEqual(self.store.get_subscription(self.account)["reserved_units"], 1)
+        self.assertEqual(self.store.get_subscription(self.account)["reserved_micro_usd"], 1)
 
     def test_a_refused_submission_charged_nothing(self):
         with self.assertRaises(QuotaExhausted):
             self.store.create_job(self.account, self.device_id(), self.merchant_id,
                                   "k1", "h1", 1, 60.0, request_payload={})
-        self.assertEqual(self.store.get_subscription(self.account)["used_units"], 0)
-        self.assertEqual(self.store.get_subscription(self.account)["reserved_units"], 0,
+        self.assertEqual(self.store.get_subscription(self.account)["used_micro_usd"], 0)
+        self.assertEqual(self.store.get_subscription(self.account)["reserved_micro_usd"], 0,
                          "被拒却占了预留")
 
     def test_topping_up_twice_with_one_transaction_credits_once(self):
         self.assertTrue(self.top_up(50, "txn-dup")["applied"])
         self.assertFalse(self.top_up(50, "txn-dup")["applied"])
-        self.assertEqual(self.store.get_subscription(self.account)["quota_units"], 50)
+        self.assertEqual(self.store.get_subscription(self.account)["quota_micro_usd"], 50)
 
     def test_the_test_payment_adapter_identifies_itself(self):
         """没有真实支付配置时用的通道必须自报家门，不能冒充真钱。"""
@@ -155,7 +155,7 @@ class NoParallelWalletTests(GateTestBase):
     def test_crediting_goes_through_the_subscription_ledger(self):
         """充值记在**现有**额度账本里，没有第二个钱包可以绕过门禁。"""
         self.top_up(30)
-        self.assertEqual(self.store.get_subscription(self.account)["quota_units"], 30)
+        self.assertEqual(self.store.get_subscription(self.account)["quota_micro_usd"], 30)
         self.assertEqual(len(self.store.credit_history(self.account)), 1)
 
     def test_the_credit_ledger_records_the_source_transaction(self):
@@ -163,7 +163,7 @@ class NoParallelWalletTests(GateTestBase):
         self.top_up(30, "txn-trace")
         row = self.store.credit_history(self.account)[0]
         self.assertTrue(row["reference"].startswith("jyiref:"))
-        self.assertEqual(row["units"], 30)
+        self.assertEqual(row["micro_usd"], 30)
 
 
 if __name__ == "__main__":

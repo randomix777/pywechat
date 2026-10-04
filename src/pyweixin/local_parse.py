@@ -119,10 +119,10 @@ class LocalParseService:
             return ""
         line = str(facts.get("charge_line") or "")
         if not line:
-            units = max(1, int(facts.get("cost_units_per_job") or 0))
+            micro_usd = max(1, int(facts.get("cost_micro_usd_per_job") or 0))
             # 不再有「本次不消耗」这个分支：免费档位已被焊死，
             # 每一次分析都扣。写「不消耗」会让商户预期错误。
-            line = f"每分析一条消息消耗 {units} 次分析额度"
+            line = f"每分析一条消息消耗 {micro_usd} 次分析额度"
         return line
 
     # ------------------------------------------------------------- context
@@ -455,7 +455,7 @@ def describe_subscription(subscription: Mapping[str, Any]) -> dict[str, str]:
     if not subscription.get("active"):
         return {"headline": STATUS_SUBSCRIPTION_EXPIRED, "detail": "请联系商家续期。本地订单查看和导出仍可正常使用。"}
     return {
-        "headline": f"剩余额度：{int(subscription.get('remaining_units', 0))}",
+        "headline": f"剩余额度：{int(subscription.get('remaining_micro_usd', 0))}",
         "detail": f"套餐：{subscription.get('plan_code', '')}　有效期至：{str(subscription.get('period_end', ''))[:10]}",
     }
 

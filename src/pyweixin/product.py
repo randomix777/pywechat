@@ -196,7 +196,7 @@ class PlatformBudget:
     #: 免费任务不受平台付费预算限制。
     free_jobs_exempt: bool = True
 
-    def can_accept(self, charged_units: int) -> bool:
+    def can_accept(self, charged_micro_usd: int) -> bool:
         """只做静态判断；实际用量由 :meth:`PlatformBudgetLedger` 判定。"""
         return True
 
@@ -224,7 +224,7 @@ class PlatformBudgetLedger:
     def paid_jobs_today(self) -> int:
         row = self.store._connection.execute(
             "SELECT COUNT(*) AS count FROM usage_ledger"
-            " WHERE kind='settle' AND day=? AND charged_units>0",
+            " WHERE kind='settle' AND day=? AND charged_micro_usd>0",
             (self._today(),),
         ).fetchone()
         return int(row["count"] or 0)
@@ -240,7 +240,7 @@ class PlatformBudgetLedger:
             return None
         row = self.store._connection.execute(
             "SELECT COUNT(*) AS count FROM usage_ledger"
-            " WHERE kind='settle' AND day=? AND charged_units>0",
+            " WHERE kind='settle' AND day=? AND charged_micro_usd>0",
             (self._today(),),
         ).fetchone()
         return int(row["count"] or 0) * int(unit)
@@ -248,18 +248,18 @@ class PlatformBudgetLedger:
     def running_paid_jobs(self) -> int:
         """当前占着执行位的付费任务数。
 
-        未结算的付费任务把金额记在 ``jobs.reserved_units`` 上（结算之后才写
-        ``charged_units``），所以两个字段都要看。只看 ``charged_units`` 的话，
+        未结算的付费任务把金额记在 ``jobs.reserved_micro_usd`` 上（结算之后才写
+        ``charged_micro_usd``），所以两个字段都要看。只看 ``charged_micro_usd`` 的话，
         排队和执行中的任务一个都数不到 —— 全局并发上限就成了摆设。
         """
         row = self.store._connection.execute(
             "SELECT COUNT(*) AS count FROM jobs"
-            " WHERE state IN ('queued','running') AND (reserved_units>0 OR charged_units>0)"
+            " WHERE state IN ('queued','running') AND (reserved_micro_usd>0 OR charged_micro_usd>0)"
         ).fetchone()
         return int(row["count"] or 0)
 
-    def can_accept(self, charged_units: int) -> bool:
-        if self.budget.free_jobs_exempt and int(charged_units) <= 0:
+    def can_accept(self, charged_micro_usd: int) -> bool:
+        if self.budget.free_jobs_exempt and int(charged_micro_usd) <= 0:
             return True
         if self.budget.daily_paid_jobs and self.paid_jobs_today() >= int(self.budget.daily_paid_jobs):
             return False
@@ -541,9 +541,9 @@ class ProductStore:
                 CREATE TABLE IF NOT EXISTS subscriptions(
                     account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
                     plan_code TEXT NOT NULL,
-                    quota_units INTEGER NOT NULL,
-                    used_units INTEGER NOT NULL DEFAULT 0,
-                    reserved_units INTEGER NOT NULL DEFAULT 0,
+                    quota_micro_usd INTEGER NOT NULL,
+                    used_micro_usd INTEGER NOT NULL DEFAULT 0,
+                    reserved_micro_usd INTEGER NOT NULL DEFAULT 0,
                     max_concurrent_jobs INTEGER NOT NULL DEFAULT 2,
                     period_start REAL NOT NULL,
                     period_end REAL NOT NULL,
@@ -569,8 +569,8 @@ class ProductStore:
                     result_json TEXT,
                     error_code TEXT,
                     error_message TEXT,
-                    reserved_units INTEGER NOT NULL DEFAULT 0,
-                    charged_units INTEGER NOT NULL DEFAULT 0,
+                    reserved_micro_usd INTEGER NOT NULL DEFAULT 0,
+                    charged_micro_usd INTEGER NOT NULL DEFAULT 0,
                     cancel_requested INTEGER NOT NULL DEFAULT 0,
                     deadline_at REAL NOT NULL,
                     lease_until REAL,
@@ -649,12 +649,12 @@ class ProductStore:
                     job_id TEXT,
                     account_id TEXT NOT NULL,
                     kind TEXT NOT NULL CHECK(kind IN ('reserve','settle','release','internal_retry')),
-                    units INTEGER NOT NULL,
+                    micro_usd INTEGER NOT NULL,
                     note TEXT NOT NULL DEFAULT '',
                     created_at REAL NOT NULL,
-                    -- 平台预算按天统计用；不知道单价时只按 units 计数，不折算金额。
+                    -- 平台预算按天统计用；不知道单价时只按 micro_usd 计数，不折算金额。
                     day TEXT NOT NULL DEFAULT '',
-                    charged_units INTEGER NOT NULL DEFAULT 0
+                    charged_micro_usd INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS usage_ledger_job ON usage_ledger(job_id, created_at);
                 CREATE INDEX IF NOT EXISTS usage_ledger_day ON usage_ledger(day, kind);
@@ -682,7 +682,7 @@ class ProductStore:
                 CREATE TABLE IF NOT EXISTS credit_ledger(
                     id TEXT PRIMARY KEY,
                     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-                    units INTEGER NOT NULL,
+                    micro_usd INTEGER NOT NULL,
                     reference TEXT NOT NULL UNIQUE,
                     order_id TEXT NOT NULL DEFAULT '',
                     adapter TEXT NOT NULL DEFAULT '',
@@ -737,7 +737,7 @@ class ProductStore:
         display_name: str = "",
         role: str = "merchant",
         plan_code: str = "trial",
-        quota_units: int = 0,
+        quota_micro_usd: int = 0,
         max_concurrent_jobs: int = 2,
         period_days: int = 30,
         must_change_password: bool = True,
@@ -771,7 +771,7 @@ class ProductStore:
             )
             self._connection.execute(
                 "INSERT INTO subscriptions VALUES(?,?,?,0,0,?,?,?,?,?)",
-                (account_id, plan_code, int(quota_units), int(max_concurrent_jobs), now, now + period_days * 86400, "active", now),
+                (account_id, plan_code, int(quota_micro_usd), int(max_concurrent_jobs), now, now + period_days * 86400, "active", now),
             )
         return {
             "account_id": account_id,
@@ -1053,8 +1053,8 @@ class ProductStore:
     def list_accounts(self) -> list[dict[str, Any]]:
         """Operator view. Never returns password hashes."""
         rows = self._connection.execute(
-            "SELECT a.id,a.username,a.display_name,a.role,a.status,a.created_at,s.plan_code,s.quota_units,"
-            "s.used_units,s.reserved_units,s.period_end,s.status AS subscription_status"
+            "SELECT a.id,a.username,a.display_name,a.role,a.status,a.created_at,s.plan_code,s.quota_micro_usd,"
+            "s.used_micro_usd,s.reserved_micro_usd,s.period_end,s.status AS subscription_status"
             " FROM accounts a LEFT JOIN subscriptions s ON s.account_id=a.id ORDER BY a.created_at"
         ).fetchall()
         return [
@@ -1066,9 +1066,9 @@ class ProductStore:
                 "status": row["status"],
                 "created_at": iso(row["created_at"]),
                 "plan_code": row["plan_code"],
-                "quota_units": int(row["quota_units"] or 0),
-                "used_units": int(row["used_units"] or 0),
-                "reserved_units": int(row["reserved_units"] or 0),
+                "quota_micro_usd": int(row["quota_micro_usd"] or 0),
+                "used_micro_usd": int(row["used_micro_usd"] or 0),
+                "reserved_micro_usd": int(row["reserved_micro_usd"] or 0),
                 "period_end": iso(row["period_end"]) if row["period_end"] else None,
                 "subscription_status": row["subscription_status"],
             }
@@ -1168,8 +1168,8 @@ class ProductStore:
                 (device_id,),
             ).fetchall()
             for job in queued:
-                # 两种预留一起放：``release_all_reservations`` 内部按 ``reserved_units``
-                # 与快照标记防重，重复吊销不会多退。只看 ``reserved_units>0`` 的旧写法
+                # 两种预留一起放：``release_all_reservations`` 内部按 ``reserved_micro_usd``
+                # 与快照标记防重，重复吊销不会多退。只看 ``reserved_micro_usd>0`` 的旧写法
                 # 会漏掉免费任务 —— 它们的额度记在 free_usage 上，等于白扣商户一次免费。
                 self.release_all_reservations(job["id"], "设备吊销释放")
         return self.get_device(account_id, device_id)
@@ -1333,15 +1333,15 @@ class ProductStore:
 
     @staticmethod
     def _subscription_view(row: sqlite3.Row) -> dict[str, Any]:
-        reserved = int(row["reserved_units"])
-        quota = int(row["quota_units"])
-        used = int(row["used_units"])
+        reserved = int(row["reserved_micro_usd"])
+        quota = int(row["quota_micro_usd"])
+        used = int(row["used_micro_usd"])
         return {
             "plan_code": row["plan_code"],
-            "quota_units": quota,
-            "used_units": used,
-            "reserved_units": reserved,
-            "remaining_units": max(0, quota - used - reserved),
+            "quota_micro_usd": quota,
+            "used_micro_usd": used,
+            "reserved_micro_usd": reserved,
+            "remaining_micro_usd": max(0, quota - used - reserved),
             "max_concurrent_jobs": int(row["max_concurrent_jobs"]),
             "period_start": iso(row["period_start"]),
             "period_end": iso(row["period_end"]),
@@ -1385,17 +1385,17 @@ class ProductStore:
         ).fetchone()
         return dict(row) if row is not None else None
 
-    def credit(self, account_id: str, units: int, reference: str, order_id: str = "", adapter: str = "") -> dict[str, Any]:
+    def credit(self, account_id: str, micro_usd: int, reference: str, order_id: str = "", adapter: str = "") -> dict[str, Any]:
         """给账户加分析点数。**幂等**：同一个 ``reference`` 只会真正入账一次。
 
         幂等靠 ``credit_ledger.reference`` 的唯一约束，不靠调用方记得查重 ——
         支付回调会重复送达，靠自觉必然重复加点。
 
-        ``units`` 为正表示充值，为负表示退款扣回。扣回**不会**把余额扣成负数：
+        ``micro_usd`` 为正表示充值，为负表示退款扣回。扣回**不会**把余额扣成负数：
         超出已消耗的部分记为超退，返回 ``over_refunded``，交人工处理。
         """
-        units = int(units)
-        if units == 0:
+        micro_usd = int(micro_usd)
+        if micro_usd == 0:
             raise ValidationFailed("充值点数必须为非零整数", code="credit_zero")
         if not str(reference or "").strip():
             raise ValidationFailed("到账必须有来源交易标识", code="credit_reference_required")
@@ -1403,22 +1403,22 @@ class ProductStore:
         applied = False
         with self._transaction(immediate=True) as db:
             cursor = db.execute(
-                "INSERT OR IGNORE INTO credit_ledger(id,account_id,units,reference,order_id,adapter,created_at) VALUES(?,?,?,?,?,?,?)",
-                (f"cl_{uuid.uuid4().hex[:16]}", account_id, units, str(reference), str(order_id), str(adapter), now),
+                "INSERT OR IGNORE INTO credit_ledger(id,account_id,micro_usd,reference,order_id,adapter,created_at) VALUES(?,?,?,?,?,?,?)",
+                (f"cl_{uuid.uuid4().hex[:16]}", account_id, micro_usd, str(reference), str(order_id), str(adapter), now),
             )
             if cursor.rowcount:
                 applied = True
-                if units > 0:
+                if micro_usd > 0:
                     db.execute(
-                        "UPDATE subscriptions SET quota_units=quota_units+?, updated_at=? WHERE account_id=?",
-                        (units, now, account_id),
+                        "UPDATE subscriptions SET quota_micro_usd=quota_micro_usd+?, updated_at=? WHERE account_id=?",
+                        (micro_usd, now, account_id),
                     )
                 else:
                     db.execute(
-                        "UPDATE subscriptions SET quota_units=MAX(0, quota_units+?), updated_at=? WHERE account_id=?",
-                        (units, now, account_id),
+                        "UPDATE subscriptions SET quota_micro_usd=MAX(0, quota_micro_usd+?), updated_at=? WHERE account_id=?",
+                        (micro_usd, now, account_id),
                     )
-        return {"applied": applied, "units": units if applied else 0, "duplicate": not applied}
+        return {"applied": applied, "micro_usd": micro_usd if applied else 0, "duplicate": not applied}
 
     @_guarded
     def credit_history(self, account_id: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -1433,7 +1433,7 @@ class ProductStore:
         self,
         account_id: str,
         plan_code: str | None = None,
-        quota_units: int | None = None,
+        quota_micro_usd: int | None = None,
         max_concurrent_jobs: int | None = None,
         period_end: float | None = None,
         period_days: int | None = None,
@@ -1453,10 +1453,10 @@ class ProductStore:
             elif extend_period:
                 end = max(end, now) + 30 * 86400
             self._connection.execute(
-                "UPDATE subscriptions SET plan_code=?,quota_units=?,max_concurrent_jobs=?,period_end=?,status=?,updated_at=? WHERE account_id=?",
+                "UPDATE subscriptions SET plan_code=?,quota_micro_usd=?,max_concurrent_jobs=?,period_end=?,status=?,updated_at=? WHERE account_id=?",
                 (
                     plan_code or current["plan_code"],
-                    int(quota_units) if quota_units is not None else int(current["quota_units"]),
+                    int(quota_micro_usd) if quota_micro_usd is not None else int(current["quota_micro_usd"]),
                     int(max_concurrent_jobs) if max_concurrent_jobs is not None else int(current["max_concurrent_jobs"]),
                     end,
                     status or current["status"],
@@ -1482,42 +1482,42 @@ class ProductStore:
     # ------------------------------------------------------------------ quota
 
     @_guarded
-    def _release_reservation(self, job_id: str, units: int, note: str) -> None:
+    def _release_reservation(self, job_id: str, micro_usd: int, note: str) -> None:
         now = self._clock()
         row = self._connection.execute("SELECT account_id FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row is None:
             return
         self._connection.execute(
-            "UPDATE subscriptions SET reserved_units=MAX(0,reserved_units-?),updated_at=? WHERE account_id=?",
-            (int(units), now, row["account_id"]),
+            "UPDATE subscriptions SET reserved_micro_usd=MAX(0,reserved_micro_usd-?),updated_at=? WHERE account_id=?",
+            (int(micro_usd), now, row["account_id"]),
         )
-        if units:
+        if micro_usd:
             self._connection.execute(
-                "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
+                "INSERT INTO usage_ledger(id,job_id,account_id,kind,micro_usd,note,created_at,day,charged_micro_usd)"
                 " VALUES(?,?,?,'release',?,?,?,?,0)",
-                ("ul_" + secrets.token_hex(12), job_id, row["account_id"], -int(units), note, now, self._day_key(now)),
+                ("ul_" + secrets.token_hex(12), job_id, row["account_id"], -int(micro_usd), note, now, self._day_key(now)),
             )
 
     @_guarded
-    def settle_job(self, job_id: str, charged_units: int) -> dict[str, Any]:
+    def settle_job(self, job_id: str, charged_micro_usd: int) -> dict[str, Any]:
         """Convert a reservation into actual customer usage exactly once."""
         now = self._clock()
         with self._transaction(immediate=True):
             row = self._connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 raise NotFound("任务不存在")
-            if row["charged_units"]:
+            if row["charged_micro_usd"]:
                 return self.get_subscription(row["account_id"])
-            reserved = int(row["reserved_units"])
-            charged = max(0, int(charged_units))
+            reserved = int(row["reserved_micro_usd"])
+            charged = max(0, int(charged_micro_usd))
             self._connection.execute(
-                "UPDATE subscriptions SET reserved_units=MAX(0,reserved_units-?),used_units=used_units+?,updated_at=? WHERE account_id=?",
+                "UPDATE subscriptions SET reserved_micro_usd=MAX(0,reserved_micro_usd-?),used_micro_usd=used_micro_usd+?,updated_at=? WHERE account_id=?",
                 (reserved, charged, now, row["account_id"]),
             )
-            self._connection.execute("UPDATE jobs SET reserved_units=0,charged_units=?,updated_at=? WHERE id=?", (charged, now, job_id))
+            self._connection.execute("UPDATE jobs SET reserved_micro_usd=0,charged_micro_usd=?,updated_at=? WHERE id=?", (charged, now, job_id))
             if reserved:
                 self._connection.execute(
-                    "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
+                    "INSERT INTO usage_ledger(id,job_id,account_id,kind,micro_usd,note,created_at,day,charged_micro_usd)"
                     " VALUES(?,?,?,'settle',?,?,?,?,?)",
                     ("ul_" + secrets.token_hex(12), job_id, row["account_id"], charged,
                      f"结算预留 {reserved}", now, self._day_key(now), int(charged)),
@@ -1527,11 +1527,11 @@ class ProductStore:
     @_guarded
     def release_job_reservation(self, job_id: str, note: str = "确定失败释放") -> bool:
         with self._transaction(immediate=True):
-            row = self._connection.execute("SELECT reserved_units,charged_units FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if row is None or not int(row["reserved_units"]) or int(row["charged_units"]):
+            row = self._connection.execute("SELECT reserved_micro_usd,charged_micro_usd FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None or not int(row["reserved_micro_usd"]) or int(row["charged_micro_usd"]):
                 return False
-            self._release_reservation(job_id, int(row["reserved_units"]), note)
-            self._connection.execute("UPDATE jobs SET reserved_units=0,updated_at=? WHERE id=?", (self._clock(), job_id))
+            self._release_reservation(job_id, int(row["reserved_micro_usd"]), note)
+            self._connection.execute("UPDATE jobs SET reserved_micro_usd=0,updated_at=? WHERE id=?", (self._clock(), job_id))
         return True
 
     def release_all_reservations(self, job_id: str, note: str = "确定未执行释放") -> bool:
@@ -1552,7 +1552,7 @@ class ProductStore:
             return
         now = self._clock()
         self._connection.execute(
-            "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
+            "INSERT INTO usage_ledger(id,job_id,account_id,kind,micro_usd,note,created_at,day,charged_micro_usd)"
             # day 一定要写当天。写空串的话，
             # ``usage_for_account`` 按当天查就查不到，
             # 平台自己花的钱就“不可见”了 —— 而它必须可见。
@@ -1576,7 +1576,7 @@ class ProductStore:
         merchant_id: str,
         idempotency_key: str,
         request_hash: str,
-        cost_units: int,
+        cost_micro_usd: int,
         job_timeout: float,
         request_payload: Mapping[str, Any] | None = None,
         max_concurrent: int = 0,
@@ -1597,7 +1597,7 @@ class ProductStore:
         """
         now = self._clock()
         job_id = "job_" + secrets.token_hex(12)
-        charged = int(cost_units)
+        charged = int(cost_micro_usd)
         with self._transaction(immediate=True):
             existing = self._connection.execute(
                 "SELECT * FROM jobs WHERE account_id=? AND idempotency_key=?", (account_id, idempotency_key)
@@ -1625,11 +1625,11 @@ class ProductStore:
                     platform_budget.exhausted_reason(), code="platform_budget_exhausted"
                 )
             # 余额检查。**每一个任务都收费**，没有免费通道可以绕过。
-            if int(subscription["used_units"]) + int(subscription["reserved_units"]) + charged > int(subscription["quota_units"]):
+            if int(subscription["used_micro_usd"]) + int(subscription["reserved_micro_usd"]) + charged > int(subscription["quota_micro_usd"]):
                 raise QuotaExhausted("剩余额度不足，请等待额度重置或联系商家", code="quota_exhausted")
             self._connection.execute(
                 "INSERT INTO jobs(id,account_id,device_id,merchant_id,idempotency_key,request_hash,state,created_at,attempt,"
-                "request_json,reserved_units,charged_units,cancel_requested,deadline_at,updated_at)"
+                "request_json,reserved_micro_usd,charged_micro_usd,cancel_requested,deadline_at,updated_at)"
                 " VALUES(?,?,?,?,?,?,?,?,0,?,?,0,0,?,?)",
                 (
                     job_id,
@@ -1647,11 +1647,11 @@ class ProductStore:
                 ),
             )
             self._connection.execute(
-                "UPDATE subscriptions SET reserved_units=reserved_units+?,updated_at=? WHERE account_id=?",
+                "UPDATE subscriptions SET reserved_micro_usd=reserved_micro_usd+?,updated_at=? WHERE account_id=?",
                 (charged, now, account_id),
             )
             self._connection.execute(
-                "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
+                "INSERT INTO usage_ledger(id,job_id,account_id,kind,micro_usd,note,created_at,day,charged_micro_usd)"
                 " VALUES(?,?,?,'reserve',?,?,?,?,?)",
                 ("ul_" + secrets.token_hex(12), job_id, account_id, charged,
                  "创建解析任务预留", now, self._day_key(), int(charged)),
@@ -1704,7 +1704,7 @@ class ProductStore:
                     "UPDATE jobs SET state='cancelled',error_code='device_revoked',error_message='设备已吊销',finished_at=?,updated_at=? WHERE id=?",
                     (now, now, row["id"]),
                 )
-                self._release_reservation(row["id"], int(row["reserved_units"]), "device_revoked")
+                self._release_reservation(row["id"], int(row["reserved_micro_usd"]), "device_revoked")
                 return None
             cursor = self._connection.execute(
                 "UPDATE jobs SET state='running',attempt=attempt+1,started_at=COALESCE(started_at,?),lease_until=?,lease_token=?,updated_at=?"
@@ -1748,7 +1748,7 @@ class ProductStore:
     @_guarded
     def finish_job(self, job_id: str, state: str, result: Any = None,
                    error_code: str = "", error_message: str = "",
-                   charged_units: int | None = None, tokens: int = 0) -> dict[str, Any]:
+                   charged_micro_usd: int | None = None, tokens: int = 0) -> dict[str, Any]:
         """写终态。**第一次写入生效**，后来的一律忽略。
 
         为什么：任务可能被启动后的工作进程收到结果，
@@ -1766,26 +1766,26 @@ class ProductStore:
                 raise NotFound("任务不存在", code="job_not_found")
             if row["state"] in TERMINAL_JOB_STATES:
                 return self.job_view(row)          # 已经终止了，不覆盖
-            charged = int(charged_units or 0) if state == JOB_SUCCEEDED else 0
+            charged = int(charged_micro_usd or 0) if state == JOB_SUCCEEDED else 0
             import os as _os, sys as _sy
             if _os.environ.get("TRACE_FINISH"):
-                print(f"[TRACE] finish_job {row['state']}->{state} in={charged_units} "
-                      f"charged={charged} job.charged={row['charged_units']} "
-                      f"job.reserved={row['reserved_units']}", file=_sy.stderr, flush=True)
+                print(f"[TRACE] finish_job {row['state']}->{state} in={charged_micro_usd} "
+                      f"charged={charged} job.charged={row['charged_micro_usd']} "
+                      f"job.reserved={row['reserved_micro_usd']}", file=_sy.stderr, flush=True)
             self._connection.execute(
                 "UPDATE jobs SET state=?,result_json=?,error_code=?,error_message=?,"
-                "charged_units=?,finished_at=?,updated_at=? WHERE id=?",
+                "charged_micro_usd=?,finished_at=?,updated_at=? WHERE id=?",
                 (state, json.dumps(result, ensure_ascii=False) if result is not None else None,
-                 error_code, error_message, int(row["charged_units"] or 0) + charged, now, now, job_id),
+                 error_code, error_message, int(row["charged_micro_usd"] or 0) + charged, now, now, job_id),
             )
             if charged:
                 self._connection.execute(
-                    "UPDATE subscriptions SET used_units=used_units+?,"
-                    "reserved_units=MAX(0,reserved_units-?),updated_at=? WHERE account_id=?",
-                    (charged, int(row["reserved_units"] or 0), now, row["account_id"]),
+                    "UPDATE subscriptions SET used_micro_usd=used_micro_usd+?,"
+                    "reserved_micro_usd=MAX(0,reserved_micro_usd-?),updated_at=? WHERE account_id=?",
+                    (charged, int(row["reserved_micro_usd"] or 0), now, row["account_id"]),
                 )
                 self._connection.execute(
-                    "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
+                    "INSERT INTO usage_ledger(id,job_id,account_id,kind,micro_usd,note,created_at,day,charged_micro_usd)"
                     " VALUES(?,?,?,'settle',?,?,?,?,?)",
                     ("ul_" + secrets.token_hex(12), job_id, row["account_id"], charged,
                      "解析完成结算", now, self._day_key(), charged),
@@ -1799,7 +1799,7 @@ class ProductStore:
                 # 对账时就会少算一笔，或者更糟：预留被释放后又被重新扣回。
                 #
                 # 预留就是为了这个时候留的。
-                self._release_reservation(job_id, int(row["reserved_units"] or 0), error_code or "failed")
+                self._release_reservation(job_id, int(row["reserved_micro_usd"] or 0), error_code or "failed")
             # **数据最小化**：任务一旦有结论，提交上来的原文就不再需要了。
             #
             # 请求体里装着客户的聊天内容 —— 任务结束后还留着，
@@ -1899,7 +1899,7 @@ class ProductStore:
         now = self._clock()
         with self._transaction():
             rows = self._connection.execute(
-                "SELECT id,reserved_units,charged_units,upstream_session_id,deadline_at"
+                "SELECT id,reserved_micro_usd,charged_micro_usd,upstream_session_id,deadline_at"
                 " FROM jobs WHERE state IN (?,?)",
                 (JOB_RUNNING, JOB_QUEUED),
             ).fetchall()
@@ -1926,9 +1926,9 @@ class ProductStore:
                     "UPDATE jobs SET state=?,error_code=?,error_message=?,finished_at=?,updated_at=? WHERE id=?",
                     (JOB_FAILED, "stalled", "任务超时，且尚未发送到上游", now, now, row["id"]),
                 )
-                if int(row["charged_units"] or 0) > 0:
+                if int(row["charged_micro_usd"] or 0) > 0:
                     continue          # 已结算，额度不能变动
-                self._release_reservation(row["id"], int(row["reserved_units"] or 0), "stalled")
+                self._release_reservation(row["id"], int(row["reserved_micro_usd"] or 0), "stalled")
             for row in expired:
                 self._log_event(row["id"], JOB_FAILED, "超时，未到上游")
             for row in held:
@@ -1948,7 +1948,7 @@ class ProductStore:
         # model_requested / model_reported 在 **jobs** 表上（见 mark_model_execution），
         # 不在 job_model_snapshot 里 —— 列置错位会直接报 no such column。
         base = ("SELECT j.id,j.account_id,j.state,j.created_at,j.finished_at,"
-                "j.attempt,j.charged_units,j.reserved_units,j.error_code,"
+                "j.attempt,j.charged_micro_usd,j.reserved_micro_usd,j.error_code,"
                 "j.model_requested,j.model_reported,a.username"
                 " FROM jobs j"
                 " LEFT JOIN accounts a ON a.id=j.account_id")
@@ -1973,13 +1973,13 @@ class ProductStore:
         """
         key = str(day or "") or self._day_key()
         rows = self._connection.execute(
-            "SELECT kind, COALESCE(SUM(units),0) AS units, COUNT(*) AS entries"
+            "SELECT kind, COALESCE(SUM(micro_usd),0) AS micro_usd, COUNT(*) AS entries"
             " FROM usage_ledger WHERE account_id=? AND day=? GROUP BY kind ORDER BY kind",
             (account_id, key),
         ).fetchall()
         charged = self._connection.execute(
             # 同上：预留不是扣费，只算 settle。
-            "SELECT COALESCE(SUM(charged_units),0) AS charged FROM usage_ledger"
+            "SELECT COALESCE(SUM(charged_micro_usd),0) AS charged FROM usage_ledger"
             " WHERE account_id=? AND day=? AND kind='settle'",
             (account_id, key),
         ).fetchone()["charged"]
@@ -2001,18 +2001,18 @@ class ProductStore:
             # **只算 settle**。预留（kind='reserve'）不是扣费 —— 任务失败时它会被释放。
             # 把预留算进来，一次失败的任务也会被报成"扣了钱"，运营看出来的数
             # 会比商户实际被扣的**多**，而且多多少取决于有多少任务在飞。
-            "SELECT COALESCE(SUM(charged_units),0) AS charged FROM usage_ledger"
+            "SELECT COALESCE(SUM(charged_micro_usd),0) AS charged FROM usage_ledger"
             " WHERE kind='settle'"
         ).fetchone()
         retries = self._connection.execute(
             "SELECT COUNT(*) AS count FROM usage_ledger WHERE kind='internal_retry'"
         ).fetchone()["count"]
         held = self._connection.execute(
-            "SELECT COALESCE(SUM(reserved_units),0) AS held FROM jobs WHERE state IN (?,?,?)",
+            "SELECT COALESCE(SUM(reserved_micro_usd),0) AS held FROM jobs WHERE state IN (?,?,?)",
             (JOB_QUEUED, JOB_RUNNING, JOB_AWAITING_RECONCILE),
         ).fetchone()["held"]
         ledger = self._connection.execute(
-            "SELECT kind, COALESCE(SUM(units),0) AS units, COUNT(*) AS entries FROM usage_ledger"
+            "SELECT kind, COALESCE(SUM(micro_usd),0) AS micro_usd, COUNT(*) AS entries FROM usage_ledger"
             " GROUP BY kind ORDER BY kind"
         ).fetchall()
         return {
@@ -2143,8 +2143,8 @@ class ProductStore:
             "started_at": iso(row["started_at"]) if row["started_at"] else None,
             "finished_at": iso(row["finished_at"]) if row["finished_at"] else None,
             "attempt": int(row["attempt"]),
-            "charged_units": int(row["charged_units"]),
-            "reserved_units": int(row["reserved_units"]),
+            "charged_micro_usd": int(row["charged_micro_usd"]),
+            "reserved_micro_usd": int(row["reserved_micro_usd"]),
             "has_upstream_session": bool(row["upstream_session_id"]),
             # 请求的模型与上游自报**实际执行**的模型。商户用不到这两个字段，
             # 但运营核对"这一单到底跑了什么"时必须有。

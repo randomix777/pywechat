@@ -44,7 +44,7 @@ class FakeClient:
                 "pricing_version_required",
                 "提交前需要先确认这次分析的费用",
                 409,
-                billing={"pricing_version": "v2", "cost_units_per_job": 1},
+                billing={"pricing_version": "v2", "cost_micro_usd_per_job": 1},
             )
         self.last_job_id = "job_1"
         return {"job": {"job_id": "job_1", "state": "queued"}}

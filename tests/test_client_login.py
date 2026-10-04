@@ -234,7 +234,7 @@ class ClientAgainstRealGatewayTests(unittest.TestCase):
         self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        self.account = self.store.create_account("client-shop", "password-1234", display_name="客户端店", quota_units=9)
+        self.account = self.store.create_account("client-shop", "password-1234", display_name="客户端店", quota_micro_usd=9)
         self.directory = Path(tempfile.mkdtemp(prefix="pyweixin-login-"))
         self.credentials = CredentialStore(self.directory / "creds.bin")
 
@@ -291,7 +291,7 @@ class ClientAgainstRealGatewayTests(unittest.TestCase):
         self.assertEqual(session.device_name, "收银台电脑")
         self.assertIn(STATUS_WAITING_BROWSER, progress)
         self.assertIn(STATUS_LOGGED_IN, progress)
-        self.assertEqual(session.remaining_units, 9)
+        self.assertEqual(session.remaining_micro_usd, 9)
 
         client.session = session
         self.assertEqual(client.account()["merchant"]["display_name"], "客户端店")

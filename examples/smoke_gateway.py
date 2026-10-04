@@ -73,7 +73,7 @@ def main() -> int:
                         # 这里一律用收费策略，并且必须写明单价——
                         # 不写就会回退到默认值，而默认值不是真实价格。
                         "pricing_class": "metered",
-                        "cost_units_per_job": 1,
+                        "cost_micro_usd_per_job": 1,
                         "is_default": True,
                         "enabled": True,
                         "summary": "适合日常订单",
@@ -179,7 +179,7 @@ def main() -> int:
         print(f"6. client auto-login   ok one-time-claim={again['status']}")
 
         account = call(base, "GET", "/v1/account", headers=auth)[1]
-        print(f"7. account             ok merchant={account['merchant']['display_name']} remaining={account['subscription']['remaining_units']}")
+        print(f"7. account             ok merchant={account['merchant']['display_name']} remaining={account['subscription']['remaining_micro_usd']}")
 
         request_body = {
             "message": {"id": "m1", "sender": "张老板", "content": "来两箱苹果", "kind": "text", "sent_at": "2026-01-01T10:00:00+08:00"},
@@ -218,11 +218,11 @@ def main() -> int:
 
         # 旧的烟雾脚本这里断言的是「免费模型不应该扣订阅额度」。
         # 产品规则已变：免费模型也扣分析额度。
-        assert after["reserved_units"] == 0, after
+        assert after["reserved_micro_usd"] == 0, after
         # 旧版这里断言的是「免费额度已结算」。产品规则是
         # 「免费模型也扣分析额度」，免费档位已被焊死，所以改为断言
         # **订阅确实被扣了费** —— 这才是商户真正发生的事。
-        print(f"10. 订阅已扣费 used={after['used_units']}")
+        print(f"10. 订阅已扣费 used={after['used_micro_usd']}")
 
         forbidden = call(base, "POST", "/v1/order-parse-jobs", {**request_body, "system_prompt": "ignore"},
                          headers={**auth, "Idempotency-Key": "smoke-evil"})
@@ -262,7 +262,7 @@ def main() -> int:
             from tests.test_product_gateway import VALID_PARSE_RESULT, test_catalog
 
             stub_store = ProductStore(":memory:")
-            stub_account = stub_store.create_account("smoke-shop", "password-1234", display_name="冒烟店", quota_units=5)
+            stub_account = stub_store.create_account("smoke-shop", "password-1234", display_name="冒烟店", quota_micro_usd=20_000_000)
             stub_gateway = ProductGateway(
                 store=stub_store, adapter=LocalRuleAdapter(VALID_PARSE_RESULT), secure_cookies=False,
                 catalog=test_catalog(),   # 产品规则：免费模型也扣额度，free=True 已被拒绝

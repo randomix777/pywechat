@@ -146,7 +146,7 @@ class DemoGateway:
         return {
             "subscription": {
                 "active": self.active,
-                "remaining_units": self.remaining,
+                "remaining_micro_usd": self.remaining,
                 "plan_code": "标准版",
                 "period_end": "2026-10-25T00:00:00+00:00",
             }
@@ -390,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = app.analyze()
     if summary:
         print(f"   处理 {summary['processed']} 条，生成订单 {summary['with_result']} 单，需要核对 {summary['needs_review']} 单")
-        print(f"   不需要处理 {summary['ignored']} 条　消耗额度 {summary['charged_units']} 单位")
+        print(f"   不需要处理 {summary['ignored']} 条　消耗额度 {summary['charged_micro_usd']} 单位")
         for trace in summary["traces"][:4]:
             print(f"     · {trace['message_id'][-10:]} → {trace['status']}　订单 {trace['order_id'] or '（无）'}")
     else:

@@ -77,10 +77,10 @@ class QuotaView:
     plan: str = ""
     period_end: str = ""
     #: 额度总额、0 = 不限量（那时**不显示百分比**）。
-    total_units: int = 0
-    used_units: int = 0
+    total_micro_usd: int = 0
+    used_micro_usd: int = 0
     #: 提预中的（已接单尚未结算）。展示上算已用量。
-    reserved_units: int = 0
+    reserved_micro_usd: int = 0
     purchase_method: str = "manual"
     purchase_hint: str = ""
     message: str = ""
@@ -91,15 +91,15 @@ class QuotaView:
 
     @property
     def unlimited(self) -> bool:
-        return self.total_units <= 0
+        return self.total_micro_usd <= 0
 
     @property
     def used_percent(self) -> int:
         """已用百分比 0-100。不限量时返回 0。"""
-        if self.unlimited or self.total_units <= 0:
+        if self.unlimited or self.total_micro_usd <= 0:
             return 0
-        return max(0, min(100, round((self.used_units + self.reserved_units)
-                                     * 100 / self.total_units)))
+        return max(0, min(100, round((self.used_micro_usd + self.reserved_micro_usd)
+                                     * 100 / self.total_micro_usd)))
 
     def headline(self) -> str:
         if not self.logged_in:
@@ -123,9 +123,9 @@ class QuotaView:
             "purchase_hint": self.purchase_hint,
             "message": self.message,
             "headline": self.headline(),
-            "total_units": self.total_units,
-            "used_units": self.used_units,
-            "reserved_units": self.reserved_units,
+            "total_micro_usd": self.total_micro_usd,
+            "used_micro_usd": self.used_micro_usd,
+            "reserved_micro_usd": self.reserved_micro_usd,
             "used_percent": self.used_percent,
             "unlimited": self.unlimited,
         }
@@ -399,14 +399,14 @@ class Wizard:
         self.quota = QuotaView(
             logged_in=True,
             active=bool(subscription.get("active")),
-            remaining=int(subscription.get("remaining_units", 0) or 0),
+            remaining=int(subscription.get("remaining_micro_usd", 0) or 0),
             plan=str(subscription.get("plan_code", "")),
             period_end=str(subscription.get("period_end", "")),
             # 进度条要的是这三个。缺任何一个都画不出百分比 ——
             # 那是「已用 / 共多少」，不是「还剩多少次」。
-            total_units=int(subscription.get("quota_units", 0) or 0),
-            used_units=int(subscription.get("used_units", 0) or 0),
-            reserved_units=int(subscription.get("reserved_units", 0) or 0),
+            total_micro_usd=int(subscription.get("quota_micro_usd", 0) or 0),
+            used_micro_usd=int(subscription.get("used_micro_usd", 0) or 0),
+            reserved_micro_usd=int(subscription.get("reserved_micro_usd", 0) or 0),
             purchase_method="manual",
             purchase_hint="请联系客服开通或续期。",
             message="",
@@ -452,24 +452,24 @@ class Wizard:
                     billing.append(fact)
         self._analyzed_ids = ids
         # 汇总口径来自服务端：网关说扣了多少就是多少。
-        charged_units = sum(int(fact.get("charged_units", 0)) for fact in billing)
+        charged_micro_usd = sum(int(fact.get("charged_micro_usd", 0)) for fact in billing)
         summary = {
             "processed": len(ids),
             "with_result": sum(1 for item in outcomes if item.get("order_id")),
             "needs_review": sum(1 for item in outcomes if item.get("needs_review")),
             "ignored": sum(1 for item in outcomes if item.get("outcome") == "ignored"),
             "already_analyzed": self.already_analyzed_count(),
-            # submitted 是任务数，charged_units 是服务端判定的扣费量 —— 两者
+            # submitted 是任务数，charged_micro_usd 是服务端判定的扣费量 —— 两者
             # 不一定相等，不能互相替代。
             "submitted_jobs": submitted,
-            "charged_units": charged_units,
+            "charged_micro_usd": charged_micro_usd,
             "billing": billing,
             "billing_note": "扣费金额由云端账号按服务端策略计算，此处只做汇总。",
             "traces": [item["trace"] for item in outcomes],
         }
         self._log(
             f"整理完成：处理 {summary['processed']} 条，生成订单 {summary['with_result']} 条，"
-            f"需要核对 {summary['needs_review']} 条，本次实际扣费 {charged_units} 次"
+            f"需要核对 {summary['needs_review']} 条，本次实际扣费 {charged_micro_usd} 次"
         )
         self.finish()
         return summary

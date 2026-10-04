@@ -109,7 +109,7 @@ class GatewayModelHarness(unittest.TestCase):
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         self.account = self.store.create_account(
-            "modelshop", "password-1234", display_name="模型店", quota_units=10, max_concurrent_jobs=4
+            "modelshop", "password-1234", display_name="模型店", quota_micro_usd=10, max_concurrent_jobs=4
         )
         self.device_id, _created = self.store._upsert_device(
             self.account["account_id"], self.account["merchant_id"], "模型电脑"
@@ -187,7 +187,7 @@ class JobCreationTests(GatewayModelHarness):
 
     def test_paid_model_reserves_subscription_quota(self):
         _, body = self.post_job(request(model=PAID), "j6")
-        self.assertEqual(body["job"]["reserved_units"], 1)
+        self.assertEqual(body["job"]["reserved_micro_usd"], 1)
         snapshot = self.store.job_snapshot(body["job"]["job_id"])
         self.assertEqual(snapshot["pricing_class"], "metered")
         self.assertEqual(snapshot["model_id"], "m-paid")

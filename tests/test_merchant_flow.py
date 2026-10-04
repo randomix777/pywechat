@@ -51,7 +51,7 @@ class FakeClient:
         return {
             "subscription": {
                 "active": self.active,
-                "remaining_units": self.remaining,
+                "remaining_micro_usd": self.remaining,
                 "plan_code": "标准版",
                 "period_end": "2026-10-25T00:00:00+00:00",
             }

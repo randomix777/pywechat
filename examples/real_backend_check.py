@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         device_id=creds.get("device_id", ""),
         merchant_name="回环验证商家",
         device_name="回环验证电脑",
-        subscription={"active": True, "remaining_units": 500, "plan_code": "验证", "period_end": ""},
+        subscription={"active": True, "remaining_micro_usd": 500, "plan_code": "验证", "period_end": ""},
     )
     print(f"② 网关签发的设备令牌：{creds.get('device_id')}")
     client = MerchantClient(args.gateway, session=session, allow_insecure_remote=True)

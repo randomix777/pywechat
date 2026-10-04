@@ -290,7 +290,7 @@ class FreeQuotaTests(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp(prefix="free-"))
         self.store = ProductStore(str(self.dir / "p.db"))
         self.account = self.store.create_account(
-            username="freeuser", password="p" * 12, quota_units=100, must_change_password=False
+            username="freeuser", password="p" * 12, quota_micro_usd=100, must_change_password=False
         )["account_id"]
 
     def tearDown(self):

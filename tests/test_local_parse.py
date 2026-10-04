@@ -286,7 +286,7 @@ class LocalParseLoopTests(unittest.TestCase):
         self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        self.account = self.store.create_account("loop-shop", "password-1234", display_name="循环店", quota_units=20, max_concurrent_jobs=4)
+        self.account = self.store.create_account("loop-shop", "password-1234", display_name="循环店", quota_micro_usd=20, max_concurrent_jobs=4)
         self.queue = PendingQueue(self.directory / "pending.db")
         self.session = self._login()
 
@@ -446,10 +446,10 @@ class LocalParseLoopTests(unittest.TestCase):
 
 class MerchantWordingTests(unittest.TestCase):
     def test_subscription_is_described_in_plain_chinese(self):
-        active = describe_subscription({"active": True, "remaining_units": 42, "plan_code": "trial", "period_end": "2026-10-01T00:00:00+00:00"})
+        active = describe_subscription({"active": True, "remaining_micro_usd": 42, "plan_code": "trial", "period_end": "2026-10-01T00:00:00+00:00"})
         self.assertIn("剩余额度：42", active["headline"])
         self.assertNotIn("token", active["headline"].lower())
-        expired = describe_subscription({"active": False, "remaining_units": 0, "plan_code": "trial", "period_end": "2026-01-01T00:00:00+00:00"})
+        expired = describe_subscription({"active": False, "remaining_micro_usd": 0, "plan_code": "trial", "period_end": "2026-01-01T00:00:00+00:00"})
         self.assertIn("套餐已到期", expired["headline"])
         self.assertIn("本地订单", expired["detail"])
         self.assertEqual(describe_subscription({})["headline"], "未登录")

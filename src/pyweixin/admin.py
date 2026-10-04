@@ -16,6 +16,7 @@ public registration endpoint.
 from __future__ import annotations
 
 import argparse
+import math
 import getpass
 import json
 import sys
@@ -46,6 +47,19 @@ def _emit(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
+
+def usd_to_micro(amount: float | int) -> int:
+    """美元 -> 微美元（整数）。
+
+    命令行面向人，所以输入是美元；存储里是整数微美元。两者差 100 万倍，
+    所以转换只能在这一个边界做一次。
+
+    返回 int：价钱不能用浮点存。向上取整——少多一美分应认为向上取整，
+    小数部分让利等于每次都在向平台多拿一点。
+    """
+    return int(math.ceil(max(0.0, float(amount or 0.0)) * 1_000_000))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pyweixin-admin")
     parser.add_argument("--db", default="product.db", help="网关 SQLite 文件路径")
@@ -60,7 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
     merchant.add_argument("--username", required=True)
     merchant.add_argument("--display-name", default="")
     merchant.add_argument("--plan-code", default="trial")
-    merchant.add_argument("--quota", type=int, default=0)
+    # 命令行收**美元**。存储用微美元（整数），但操作员手输 --quota 100
+    # 期望的是 $100。把微美元直接暴露给人，一定会少写三个零。
+    merchant.add_argument("--quota-usd", type=float, default=0.0,
+                        help="额度（美元），储存时换算为微美元")
     merchant.add_argument("--max-concurrent-jobs", type=int, default=2)
     merchant.add_argument("--period-days", type=int, default=30)
     merchant.add_argument("--password-stdin", action="store_true")
@@ -69,7 +86,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = sub.add_parser("set-plan", help="调整套餐、额度或有效期")
     plan.add_argument("--username", required=True)
-    plan.add_argument("--quota", type=int)
+    plan.add_argument("--quota-usd", type=float,
+                     help="额度（美元），存储时换算为微美元")
     plan.add_argument("--plan-code")
     plan.add_argument("--max-concurrent-jobs", type=int)
     plan.add_argument("--period-days", type=int)
@@ -111,7 +129,7 @@ def _dispatch(store: ProductStore, args: Any) -> int:
             display_name=args.display_name or "运营",
             role="operator",
             plan_code="internal",
-            quota_units=0,
+            quota_micro_usd=0,
             period_days=3650,
             must_change_password=True,
         )
@@ -125,7 +143,7 @@ def _dispatch(store: ProductStore, args: Any) -> int:
             password,
             display_name=args.display_name,
             plan_code=args.plan_code,
-            quota_units=args.quota,
+            quota_micro_usd=usd_to_micro(args.quota_usd),
             max_concurrent_jobs=args.max_concurrent_jobs,
             period_days=args.period_days,
         )
@@ -154,7 +172,7 @@ def _dispatch(store: ProductStore, args: Any) -> int:
         subscription = store.update_subscription(
             account["id"],
             plan_code=args.plan_code,
-            quota_units=args.quota,
+            quota_micro_usd=usd_to_micro(args.quota_usd),
             max_concurrent_jobs=args.max_concurrent_jobs,
             period_days=args.period_days,
         )

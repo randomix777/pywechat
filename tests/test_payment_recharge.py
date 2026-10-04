@@ -71,7 +71,7 @@ class CreditIdempotencyTests(RechargeTestBase):
         order = self.order()
         result = self.settle(order)
         self.assertTrue(result["applied"])
-        self.assertEqual(self.store.get_subscription(self.account)["quota_units"], 100)
+        self.assertEqual(self.store.get_subscription(self.account)["quota_micro_usd"], 100)
 
     def test_a_repeated_callback_does_not_credit_again(self):
         """支付回调会重复送达。靠自觉查重必然重复加点。"""
@@ -80,7 +80,7 @@ class CreditIdempotencyTests(RechargeTestBase):
         again = self.settle(order)
         self.assertFalse(again["applied"], "重复回调又加了一次")
         self.assertTrue(again["duplicate"])
-        self.assertEqual(self.store.get_subscription(self.account)["quota_units"], 100,
+        self.assertEqual(self.store.get_subscription(self.account)["quota_micro_usd"], 100,
                          "余额被重复加了")
 
     def test_the_same_transaction_id_across_orders_still_credits_once(self):
@@ -92,7 +92,7 @@ class CreditIdempotencyTests(RechargeTestBase):
         self.store.credit(self.account, 100, reference, order_id=a.order_id)
         second = self.store.credit(self.account, 100, reference, order_id=b.order_id)
         self.assertFalse(second["applied"])
-        self.assertEqual(self.store.get_subscription(self.account)["quota_units"], 100)
+        self.assertEqual(self.store.get_subscription(self.account)["quota_micro_usd"], 100)
 
     def test_a_credit_without_a_reference_is_refused(self):
         with self.assertRaises(ValidationFailed):
@@ -177,7 +177,7 @@ class BrowserRedirectIsNotPaymentTests(RechargeTestBase):
         with self.assertRaises(PaymentError) as caught:
             validate_notice(notice, _as_order(self.store.get_recharge_order(order.order_id)))
         self.assertEqual(caught.exception.code, "not_paid")
-        self.assertEqual(self.store.get_subscription(self.account)["quota_units"], 0,
+        self.assertEqual(self.store.get_subscription(self.account)["quota_micro_usd"], 0,
                          "没到账却加了额度")
 
     def test_a_failed_notice_credits_nothing(self):
@@ -186,7 +186,7 @@ class BrowserRedirectIsNotPaymentTests(RechargeTestBase):
         notice = self.pay.verify_notice(payload, payload["signature"])
         with self.assertRaises(PaymentError):
             validate_notice(notice, _as_order(self.store.get_recharge_order(order.order_id)))
-        self.assertEqual(self.store.get_subscription(self.account)["quota_units"], 0)
+        self.assertEqual(self.store.get_subscription(self.account)["quota_micro_usd"], 0)
 
 
 class RefundTests(RechargeTestBase):
@@ -203,12 +203,12 @@ class RefundTests(RechargeTestBase):
         self.store.credit(self.account, 100, credit_reference("t1"))
         spent = 80
         self.store.update_subscription(self.account)
-        before = self.store.get_subscription(self.account)["quota_units"]
+        before = self.store.get_subscription(self.account)["quota_micro_usd"]
         # 退款 1000 分（全部），但只消耗了 80 点 —— 不该把余额扣成负数。
         taken = refund_offset(credits_spent=spent, refunded_minor=1000,
                               order_amount_minor=1000, order_credits=100)
         self.store.credit(self.account, -taken, credit_reference("refund-1"))
-        after = self.store.get_subscription(self.account)["quota_units"]
+        after = self.store.get_subscription(self.account)["quota_micro_usd"]
         self.assertGreaterEqual(after, 0, "余额被扣成负数")
         self.assertEqual(after, before - taken)
 
@@ -222,7 +222,7 @@ class BalanceGateTests(RechargeTestBase):
     """零余额：本地资料照常可用，但不许发起分析。"""
 
     def test_a_fresh_account_starts_at_zero(self):
-        self.assertEqual(self.store.get_subscription(self.account)["remaining_units"], 0)
+        self.assertEqual(self.store.get_subscription(self.account)["remaining_micro_usd"], 0)
 
     def test_viewing_and_editing_local_data_needs_no_balance(self):
         """查看、读取、保存、人工修改、导出都不扣额度，也不需要额度。"""
@@ -232,7 +232,7 @@ class BalanceGateTests(RechargeTestBase):
 
     def test_crediting_makes_the_balance_usable(self):
         self.store.credit(self.account, 50, credit_reference("t1"))
-        self.assertEqual(self.store.get_subscription(self.account)["remaining_units"], 50)
+        self.assertEqual(self.store.get_subscription(self.account)["remaining_micro_usd"], 50)
 
 
 if __name__ == "__main__":

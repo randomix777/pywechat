@@ -655,6 +655,9 @@ class NoDoubleChargeTests(unittest.TestCase):
         result = core.run(request)
         self.assertEqual(result.status, RunStatus.OUTCOME_UNKNOWN)
         self.assertEqual(len(calls), 1, "结果未知不得重复执行，否则会重复计费")
+        # 。Usage.cost_units。是 business_agent 包自己的字段（报告平台实际消耗，
+        # 包注释写明 "The host decides what to charge"），**不是**商户账单。
+        # 把这里改名成商户口径会把「平台花了多少」和「商户被扣多少」混成一件事。
         self.assertEqual(result.usage.cost_units, 0, "结果未知不产生客户账单")
 
     def test_timeout_does_not_retry_either(self):
@@ -753,7 +756,7 @@ def iso(moment: datetime) -> str:
 
 class _Client:
     def account(self):
-        return {"subscription": {"active": True, "remaining_units": 99,
+        return {"subscription": {"active": True, "remaining_micro_usd": 99,
                                  "plan_code": "标准版", "period_end": "2026-10-25T00:00:00+00:00"}}
 
 

@@ -301,7 +301,7 @@ class PipelineReceiptTests(unittest.TestCase):
             simulated=True,
         )
         client = type("C", (), {
-            "account": lambda self: {"subscription": {"active": True, "remaining_units": 99}}
+            "account": lambda self: {"subscription": {"active": True, "remaining_micro_usd": 99}}
         })()
         self.app.attach(object(), client, self.stub_parse(mapping, model_executed), backend_is_model=model_executed)
         self.app.auto = auto

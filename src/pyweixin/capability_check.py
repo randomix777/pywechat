@@ -179,9 +179,9 @@ def _check_case(message: str, history: list[dict[str, Any]], result: Mapping[str
         if expected["sku"] not in skus:
             problems.append(f"商品应为 {expected['sku']}，实际 {skus}")
     if "unit" in expected and items:
-        units = [item.get("unit") for item in items]
-        if expected["unit"] not in units:
-            problems.append(f"单位应为 {expected['unit']}，实际 {units}")
+        micro_usd = [item.get("unit") for item in items]
+        if expected["unit"] not in micro_usd:
+            problems.append(f"单位应为 {expected['unit']}，实际 {micro_usd}")
 
     # 4) 老样子引用历史
     if "target_order" in expected:

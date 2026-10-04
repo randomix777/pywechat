@@ -76,11 +76,11 @@ def make_catalog(free_limit: int = 5, paid_cost: int = 1) -> CatalogStore:
         FREE: OperatorModelPolicy(
             alias=FREE, provider_id="p", model_id="m-free", pricing_class=PricingClass.METERED,
             daily_free_limit=free_limit, is_default=True, summary="适合日常订单",
-            cost_units_per_job=0, free_quota_timezone="UTC", policy_version="p1",
+            cost_micro_usd_per_job=0, free_quota_timezone="UTC", policy_version="p1",
         ),
         PAID: OperatorModelPolicy(
             alias=PAID, provider_id="p", model_id="m-paid", pricing_class=PricingClass.METERED,
-            summary="分析较慢", cost_units_per_job=paid_cost, policy_version="p1",
+            summary="分析较慢", cost_micro_usd_per_job=paid_cost, policy_version="p1",
         ),
     }
     store = CatalogStore()
@@ -168,7 +168,7 @@ class ConcurrencyHarness(unittest.TestCase):
         if name in self.accounts:
             return self.accounts[name]
         created = self.store.create_account(
-            name, "password-1234", display_name=name, quota_units=quota,
+            name, "password-1234", display_name=name, quota_micro_usd=quota,
             max_concurrent_jobs=concurrency,
         )
         device_id, _ = self.store._upsert_device(created["account_id"], created["merchant_id"], name + "电脑")
@@ -310,7 +310,7 @@ class PlatformBudgetTests(ConcurrencyHarness):
         day = self.store._day_key()
         for _ in range(2):
             self.store._connection.execute(
-                "INSERT INTO usage_ledger(id,job_id,account_id,kind,units,note,created_at,day,charged_units)"
+                "INSERT INTO usage_ledger(id,job_id,account_id,kind,micro_usd,note,created_at,day,charged_micro_usd)"
                 " VALUES(?,'',?,'settle',1,'x',0,?,1)",
                 ("ul_" + __import__("secrets").token_hex(8), self.accounts[_self_current]["account_id"], day),
             )

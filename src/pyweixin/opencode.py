@@ -212,7 +212,7 @@ class ParseOutcome:
     message_id: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
-    cost_units: int = 1
+    cost_micro_usd: int = 1
     #: 本次**请求**的 provider/model（来自任务冻结的快照）。
     model_requested: str = ""
     #: 上游**自报**实际执行的 provider/model。上游没回就是空串。

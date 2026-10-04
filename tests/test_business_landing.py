@@ -109,8 +109,8 @@ class BusinessLandingBase(unittest.TestCase):
         for item in detail["items"]:
             actual[item["sku"]] = actual.get(item["sku"], 0.0) + float(item["quantity"])
         self.assertEqual(actual, expected, why)
-        units = {item["sku"]: item["unit"] for item in detail["items"]}
-        self.assertTrue(all(units.values()), f"{why or order_id}：单位不得为空")
+        micro_usd = {item["sku"]: item["unit"] for item in detail["items"]}
+        self.assertTrue(all(micro_usd.values()), f"{why or order_id}：单位不得为空")
         return detail
 
     def assert_single_line_per_sku(self, order_id: str, why: str = ""):

@@ -222,8 +222,8 @@ class Session:
     expires_at: float = 0.0
 
     @property
-    def remaining_units(self) -> int:
-        return int(self.subscription.get("remaining_units", 0))
+    def remaining_micro_usd(self) -> int:
+        return int(self.subscription.get("remaining_micro_usd", 0))
 
     @property
     def plan_code(self) -> str:

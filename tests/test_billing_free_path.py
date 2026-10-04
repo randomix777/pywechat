@@ -3,7 +3,7 @@
 这些测试针对的是**具体的缺陷**，每一条都说明"不修会怎样"：
 
 * 客户选的模型没有真的送到执行后端（改的是适配器上没人读的副本）；
-* 收费任务按适配器返回值扣费，而不是按冻结的 ``cost_units_per_job``；
+* 收费任务按适配器返回值扣费，而不是按冻结的 ``cost_micro_usd_per_job``；
 * 任务与快照分两次提交，中间存在"免费任务按收费结算"的窗口；
 * 取消一个还在排队的免费任务，那一次免费额度永远不还；
 * 平台全局并发上限因为数错了字段而从未生效；
@@ -81,11 +81,11 @@ def make_catalog(free_limit: int = 5, paid_cost: int = 1, paid_free_timezone: st
         FREE: OperatorModelPolicy(
             alias=FREE, provider_id="p", model_id="m-free", pricing_class=PricingClass.METERED,
             daily_free_limit=free_limit, is_default=True, summary="适合日常订单",
-            cost_units_per_job=0, free_quota_timezone=paid_free_timezone, policy_version="p1",
+            cost_micro_usd_per_job=0, free_quota_timezone=paid_free_timezone, policy_version="p1",
         ),
         PAID: OperatorModelPolicy(
             alias=PAID, provider_id="p", model_id="m-paid", pricing_class=PricingClass.METERED,
-            summary="分析较慢", cost_units_per_job=paid_cost, policy_version="p1",
+            summary="分析较慢", cost_micro_usd_per_job=paid_cost, policy_version="p1",
         ),
     }
     store = CatalogStore()
@@ -120,7 +120,7 @@ class GatewayHarness(unittest.TestCase):
         self.pricing_version = self.gateway.catalog.for_client()["version"]
         self.account = self.store.create_account(
             "shop", "password-1234", display_name="测试店",
-            quota_units=quota, max_concurrent_jobs=concurrency,
+            quota_micro_usd=quota, max_concurrent_jobs=concurrency,
         )
         self.account_id = self.account["account_id"]
         self.device_id, _ = self.store._upsert_device(
@@ -276,8 +276,8 @@ class FrozenRouteIsNotAnAvailabilityPromiseTests(GatewayHarness):
         self.gateway._run_job(dict(job))
         self.assertEqual(self.store.get_job(self.account_id, job["job_id"])["state"], "failed")
         subscription = self.store.get_subscription(self.account_id)
-        self.assertEqual(subscription["used_units"], 0, "确定失败不得扣费")
-        self.assertEqual(subscription["reserved_units"], 0, "预留必须归还")
+        self.assertEqual(subscription["used_micro_usd"], 0, "确定失败不得扣费")
+        self.assertEqual(subscription["reserved_micro_usd"], 0, "预留必须归还")
 
     def test_failover_to_never_switches_to_a_paid_model(self):
         """``failover_to`` 是保留字段：本产品**不做**自动换模型。"""
@@ -299,7 +299,7 @@ class FrozenRouteIsNotAnAvailabilityPromiseTests(GatewayHarness):
         self.gateway._run_job(dict(job))
         self.assertEqual(self.store.get_job(self.account_id, job["job_id"])["state"], "failed")
         self.assertEqual(self.store.get_job(self.account_id, job["job_id"])["error"]["code"], "backend_unavailable")
-        self.assertEqual(self.store.get_subscription(self.account_id)["used_units"], 0)
+        self.assertEqual(self.store.get_subscription(self.account_id)["used_micro_usd"], 0)
         self.assertEqual(len(self.store.list_jobs(self.account_id)), 1, "不得偷偷再建一个收费任务")
 
 
@@ -312,17 +312,17 @@ class FrozenChargeTests(GatewayHarness):
         self.build(catalog=make_catalog(paid_cost=3))
         adapter = LocalRuleAdapter(VALID)
         # 适配器自报 1 次（旧适配器固定返回 1），策略说 3 次。
-        self.assertEqual(adapter.run_parse("s", request(), "j", 0.0).cost_units, 1)
+        self.assertEqual(adapter.run_parse("s", request(), "j", 0.0).cost_micro_usd, 1)
         self.adapter = adapter
         self.gateway.adapter = adapter
         response = self.submit("p1", request(model=PAID))
         job = response.payload["job"]
-        self.assertEqual(job["reserved_units"], 3, "应按策略预留 3 次")
+        self.assertEqual(job["reserved_micro_usd"], 3, "应按策略预留 3 次")
         self.gateway._run_job({**job, "job_id": job["job_id"]})
         self.assertEqual(self.store.get_job(self.account_id, job["job_id"])["state"], "succeeded")
         subscription = self.store.get_subscription(self.account_id)
-        self.assertEqual(subscription["reserved_units"], 0)
-        self.assertEqual(subscription["used_units"], 3, "实际扣费必须等于冻结的策略数字")
+        self.assertEqual(subscription["reserved_micro_usd"], 0)
+        self.assertEqual(subscription["used_micro_usd"], 3, "实际扣费必须等于冻结的策略数字")
 
     def test_charge_note_cannot_contradict_the_structured_policy(self):
         """展示文案只是展示。它与结构化策略矛盾时，以策略为准。
@@ -334,7 +334,7 @@ class FrozenChargeTests(GatewayHarness):
         lying = "免费使用，不消耗额度"
         policies = {PAID: OperatorModelPolicy(
             alias=PAID, provider_id="p", model_id="m", pricing_class=PricingClass.METERED,
-            cost_units_per_job=1, charge_note=lying,
+            cost_micro_usd_per_job=1, charge_note=lying,
         )}
         store = CatalogStore()
         store.load_policies(list(policies.values()))
@@ -355,9 +355,9 @@ class FrozenChargeTests(GatewayHarness):
     def test_charge_note_without_a_count_is_kept(self):
         policies = {PAID: OperatorModelPolicy(
             alias=PAID, provider_id="p", model_id="m", pricing_class=PricingClass.METERED,
-            cost_units_per_job=2, charge_note="分析较慢，会占用额度",
+            cost_micro_usd_per_job=2, charge_note="分析较慢，会占用额度",
         )}
-        self.assertEqual(policies[PAID].to_dict()["cost_units_per_job"], 2)
+        self.assertEqual(policies[PAID].to_dict()["cost_micro_usd_per_job"], 2)
 
 
 # ---------------------------------------------------- 3. 任务与快照同一个事务
@@ -406,13 +406,13 @@ class FreeReservationTests(GatewayHarness):
     def test_expired_paid_job_returns_the_reserved_units(self):
         self.build()
         job = self.submit("c6", request(model=PAID)).payload["job"]
-        self.assertEqual(self.store.get_subscription(self.account_id)["reserved_units"], 1)
+        self.assertEqual(self.store.get_subscription(self.account_id)["reserved_micro_usd"], 1)
         self.store._connection.execute(
             "UPDATE jobs SET deadline_at=? WHERE id=?", (self.store._clock() - 1, job["job_id"])
         )
         self.store._connection.commit()
         self.store.expire_stalled_jobs()
-        self.assertEqual(self.store.get_subscription(self.account_id)["reserved_units"], 0)
+        self.assertEqual(self.store.get_subscription(self.account_id)["reserved_micro_usd"], 0)
 
 
 # --------------------------------------------------------- 5. 每日额度与时区
@@ -450,7 +450,7 @@ class FreeQuotaDayTests(unittest.TestCase):
             store=store, adapter=LocalRuleAdapter(VALID), secure_cookies=False,
             catalog=make_catalog(free_limit=limit),
         )
-        account = store.create_account("shop", "password-1234", quota_units=10, max_concurrent_jobs=4)
+        account = store.create_account("shop", "password-1234", quota_micro_usd=10, max_concurrent_jobs=4)
         self.account_id = account["account_id"]
         device_id, _ = store._upsert_device(self.account_id, account["merchant_id"], "电脑")
         identity = {"account_id": self.account_id, "device_id": device_id, "merchant_id": account["merchant_id"]}

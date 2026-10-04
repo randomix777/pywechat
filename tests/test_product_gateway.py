@@ -15,7 +15,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from pyweixin.gateway import COST_UNITS_PER_JOB, ProductGateway
+from pyweixin.gateway import DEFAULT_COST_MICRO_USD, ProductGateway
 from pyweixin.opencode import (
     AdapterRejected,
     InvalidParseOutput,
@@ -131,8 +131,8 @@ class GatewayHarness(unittest.TestCase):
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        self.merchant = self.store.create_account("shop-one", "initial-pass-1", display_name="一号店", quota_units=20, max_concurrent_jobs=2)
-        self.other = self.store.create_account("shop-two", "initial-pass-2", display_name="二号店", quota_units=20)
+        self.merchant = self.store.create_account("shop-one", "initial-pass-1", display_name="一号店", quota_micro_usd=20, max_concurrent_jobs=2)
+        self.other = self.store.create_account("shop-two", "initial-pass-2", display_name="二号店", quota_micro_usd=20)
 
     def tearDown(self) -> None:
         self.httpd.shutdown()
@@ -257,7 +257,7 @@ class BrowserVerificationFlowTests(GatewayHarness):
         self.assertEqual(identity[0], 200)
         self.assertEqual(identity[1]["merchant"]["display_name"], "一号店")
         self.assertEqual(identity[1]["device"]["name"], "收银台电脑")
-        self.assertEqual(identity[1]["subscription"]["remaining_units"], 20)
+        self.assertEqual(identity[1]["subscription"]["remaining_micro_usd"], 20)
 
     def test_approval_requires_login_and_csrf(self):
         _, flow, _ = self.call("POST", "/v1/device/authorize", {"device_name": "电脑 A"})
@@ -321,7 +321,7 @@ class DeviceAuthorizationAbuseTests(GatewayHarness):
     def test_expired_code_cannot_be_approved_then_claimed(self):
         clock = [2_000_000.0]
         store = ProductStore(":memory:", clock=lambda: clock[0])
-        account = store.create_account("expiry-shop", "password-1234", quota_units=5)
+        account = store.create_account("expiry-shop", "password-1234", quota_micro_usd=5)
         flow = store.start_device_authorization("慢电脑")
         clock[0] += 10_000
         with self.assertRaises(Exception) as ctx:
@@ -424,7 +424,7 @@ class TokenRotationAndDeviceTests(GatewayHarness):
         self.call("POST", f"/v1/devices/{device_id}/revoke", {}, headers=self.bearer(tokens))
         self.assertEqual(self.store.get_job(self.merchant["account_id"], created[1]["job"]["job_id"])["state"], "cancelled")
         subscription = self.store.get_subscription(self.merchant["account_id"])
-        self.assertEqual(subscription["reserved_units"], 0, "queued job must release its reservation on device revocation")
+        self.assertEqual(subscription["reserved_micro_usd"], 0, "queued job must release its reservation on device revocation")
 
     def test_devices_can_be_listed_and_renamed(self):
         _, tokens, _, _ = self.logged_in_device("旧名字")
@@ -561,7 +561,7 @@ class IdempotencyAndQuotaTests(GatewayHarness):
         first = self.call("POST", "/v1/order-parse-jobs", sample_request(), headers={**self.bearer(tokens), "Idempotency-Key": "dup-1"})
         second = self.call("POST", "/v1/order-parse-jobs", sample_request(), headers={**self.bearer(tokens), "Idempotency-Key": "dup-1"})
         self.assertEqual(first[1]["job"]["job_id"], second[1]["job"]["job_id"])
-        self.assertEqual(first[1]["subscription"]["reserved_units"], 1, "replay must not reserve twice")
+        self.assertEqual(first[1]["subscription"]["reserved_micro_usd"], 1, "replay must not reserve twice")
         self.assertEqual(len(self.store.list_jobs(self.merchant["account_id"])), 1)
 
     def test_same_key_different_body_conflicts(self):
@@ -587,7 +587,7 @@ class IdempotencyAndQuotaTests(GatewayHarness):
         self.assertEqual(payload["error"], "missing_idempotency_key")
 
     def test_quota_exhaustion_is_enforced_under_concurrency(self):
-        small = self.store.create_account("tiny-shop", "password-1234", quota_units=1, max_concurrent_jobs=10)
+        small = self.store.create_account("tiny-shop", "password-1234", quota_micro_usd=1, max_concurrent_jobs=10)
         _, tokens, _, _ = self.logged_in_device("小额度电脑", account=small)
         first = self.call("POST", "/v1/order-parse-jobs", sample_request(), headers={**self.bearer(tokens), "Idempotency-Key": "q1"})
         self.assertIn(first[0], (200, 202))
@@ -597,7 +597,7 @@ class IdempotencyAndQuotaTests(GatewayHarness):
 
     def test_concurrent_reservations_never_oversell(self):
         store = ProductStore(":memory:")
-        account = store.create_account("race-shop", "password-1234", quota_units=3, max_concurrent_jobs=50)
+        account = store.create_account("race-shop", "password-1234", quota_micro_usd=3, max_concurrent_jobs=50)
         device = store._upsert_device(account["account_id"], account["merchant_id"], "并发电脑")[0]
         results: list[str] = []
         barrier = threading.Barrier(8)
@@ -617,9 +617,9 @@ class IdempotencyAndQuotaTests(GatewayHarness):
             thread.join()
         subscription = store.get_subscription(account["account_id"])
         self.assertEqual(len(results), 8)
-        self.assertLessEqual(subscription["used_units"] + subscription["reserved_units"], 3)
+        self.assertLessEqual(subscription["used_micro_usd"] + subscription["reserved_micro_usd"], 3)
         self.assertEqual(results.count("ok"), 3, f"expected 3 grants, got {sorted(results)}")
-        self.assertEqual(subscription["reserved_units"], 3)
+        self.assertEqual(subscription["reserved_micro_usd"], 3)
         store.close()
 
     def test_success_settles_and_failure_releases(self):
@@ -651,8 +651,8 @@ class IdempotencyAndQuotaTests(GatewayHarness):
         finally:
             self.gateway.stop()
         after = self.store.get_subscription(self.merchant["account_id"])
-        self.assertEqual(after["reserved_units"], 0, f"states={[j['state'] for j in self.store.list_jobs(self.merchant['account_id'])]}")
-        self.assertEqual(after["used_units"], COST_UNITS_PER_JOB, "only the successful job is billable")
+        self.assertEqual(after["reserved_micro_usd"], 0, f"states={[j['state'] for j in self.store.list_jobs(self.merchant['account_id'])]}")
+        self.assertEqual(after["used_micro_usd"], DEFAULT_COST_MICRO_USD, "only the successful job is billable")
         self.assertEqual(self.store.get_job(self.merchant["account_id"], ok[1]["job"]["job_id"])["state"], "succeeded")
         self.assertEqual(self.store.get_job(self.merchant["account_id"], bad[1]["job"]["job_id"])["state"], "failed")
 
@@ -679,8 +679,8 @@ class IdempotencyAndQuotaTests(GatewayHarness):
         finally:
             self.gateway.stop()
         subscription = self.store.get_subscription(self.merchant["account_id"])
-        self.assertEqual(subscription["used_units"], 0, "a platform failure must not bill the customer")
-        self.assertEqual(subscription["reserved_units"], 0)
+        self.assertEqual(subscription["used_micro_usd"], 0, "a platform failure must not bill the customer")
+        self.assertEqual(subscription["reserved_micro_usd"], 0)
         entries = [row for row in self.store.usage_for_account(self.merchant["account_id"]) if row["kind"] == "internal_retry"]
         self.assertTrue(entries, "the platform cost must still be visible internally")
         summary = self.store.operator_usage_summary()
@@ -711,8 +711,8 @@ class AdapterFailureAndRecoveryTests(GatewayHarness):
         self.assertEqual(job["state"], "outcome_unknown")
         self.assertEqual(job["error"]["code"], "outcome_unknown")
         subscription = self.store.get_subscription(self.merchant["account_id"])
-        self.assertEqual(subscription["used_units"], 0, "an unknown outcome must not bill")
-        self.assertEqual(subscription["reserved_units"], COST_UNITS_PER_JOB, "the reservation is held pending reconciliation")
+        self.assertEqual(subscription["used_micro_usd"], 0, "an unknown outcome must not bill")
+        self.assertEqual(subscription["reserved_micro_usd"], DEFAULT_COST_MICRO_USD, "the reservation is held pending reconciliation")
 
     def test_unknown_outcome_reconciles_to_success_and_settles_once(self):
         _, tokens, _, _ = self.logged_in_device("对账电脑")
@@ -732,7 +732,7 @@ class AdapterFailureAndRecoveryTests(GatewayHarness):
         reconciled = self.gateway.reconcile_job(job_id)
         self.assertEqual(reconciled["state"], "succeeded")
         subscription = self.store.get_subscription(self.merchant["account_id"])
-        self.assertEqual(subscription["used_units"], COST_UNITS_PER_JOB)
+        self.assertEqual(subscription["used_micro_usd"], DEFAULT_COST_MICRO_USD)
         # Reconciling again must be refused rather than double-charging.
         with self.assertRaises(Exception) as ctx:
             self.gateway.reconcile_job(job_id)
@@ -747,8 +747,8 @@ class AdapterFailureAndRecoveryTests(GatewayHarness):
         self.gateway.adapter = LocalRuleAdapter()
         reconciled = self.gateway.reconcile_job(job_id)
         self.assertEqual(reconciled["state"], "failed")
-        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["reserved_units"], 0)
-        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["used_units"], 0)
+        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["reserved_micro_usd"], 0)
+        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["used_micro_usd"], 0)
 
     def test_invalid_upstream_output_is_a_definite_failure(self):
         _, tokens, _, _ = self.logged_in_device("非法输出电脑")
@@ -758,7 +758,7 @@ class AdapterFailureAndRecoveryTests(GatewayHarness):
         job = self.store.get_job(self.merchant["account_id"], created[1]["job"]["job_id"])
         self.assertEqual(job["state"], "failed")
         self.assertEqual(job["error"]["code"], "invalid_output")
-        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["reserved_units"], 0)
+        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["reserved_micro_usd"], 0)
 
     def test_cancel_a_queued_job(self):
         _, tokens, _, _ = self.logged_in_device("取消电脑")
@@ -768,8 +768,8 @@ class AdapterFailureAndRecoveryTests(GatewayHarness):
         self.assertEqual(cancelled[0], 200)
         self.assertEqual(cancelled[1]["job"]["state"], "cancelled")
         subscription = self.store.get_subscription(self.merchant["account_id"])
-        self.assertEqual(subscription["reserved_units"], 0)
-        self.assertEqual(subscription["used_units"], 0)
+        self.assertEqual(subscription["reserved_micro_usd"], 0)
+        self.assertEqual(subscription["used_micro_usd"], 0)
         # A second cancel is a no-op, not an error.
         self.assertEqual(self.call("POST", f"/v1/order-parse-jobs/{job_id}/cancel", {}, headers=self.bearer(tokens))[0], 200)
 
@@ -799,7 +799,7 @@ class AdapterFailureAndRecoveryTests(GatewayHarness):
         job = self.store.get_job(self.merchant["account_id"], job_id)
         self.assertEqual(job["state"], "awaiting_reconcile")
         self.assertTrue(job["has_upstream_session"])
-        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["used_units"], 0)
+        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["used_micro_usd"], 0)
 
     def test_server_restart_requeues_a_job_that_never_reached_the_model(self):
         _, tokens, _, _ = self.logged_in_device("重启电脑2")
@@ -811,18 +811,18 @@ class AdapterFailureAndRecoveryTests(GatewayHarness):
         # And it still completes without a second charge.
         self.gateway.adapter = LocalRuleAdapter(VALID_PARSE_RESULT)
         self._run_until_terminal({"succeeded"})
-        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["used_units"], COST_UNITS_PER_JOB)
+        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["used_micro_usd"], DEFAULT_COST_MICRO_USD)
 
     def test_first_terminal_write_wins(self):
         _, tokens, _, _ = self.logged_in_device("终态电脑")
         created = self.call("POST", "/v1/order-parse-jobs", sample_request(), headers={**self.bearer(tokens), "Idempotency-Key": "fin-1"})
         job_id = created[1]["job"]["job_id"]
         self.store.claim_next_job()
-        self.store.finish_job(job_id, "succeeded", result=VALID_PARSE_RESULT, charged_units=1)
+        self.store.finish_job(job_id, "succeeded", result=VALID_PARSE_RESULT, charged_micro_usd=1)
         self.store.finish_job(job_id, "failed", error_code="late", error_message="迟到的失败")
         job = self.store.get_job(self.merchant["account_id"], job_id)
         self.assertEqual(job["state"], "succeeded")
-        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["used_units"], 1)
+        self.assertEqual(self.store.get_subscription(self.merchant["account_id"])["used_micro_usd"], 1)
 
 
 class SessionCleanupAndBackupTests(GatewayHarness):
@@ -872,7 +872,7 @@ class SessionCleanupAndBackupTests(GatewayHarness):
         try:
             path = os.path.join(directory, "product.db")
             store = ProductStore(path)
-            account = store.create_account("backup-shop", "password-1234", quota_units=7)
+            account = store.create_account("backup-shop", "password-1234", quota_micro_usd=7)
             device = store._upsert_device(account["account_id"], account["merchant_id"], "备份电脑")[0]
             job = store.create_job(account["account_id"], device, account["merchant_id"], "bk-1", "h1", 1, 60.0, request_payload={"message": {"content": "备份测试"}})
             store.close()
@@ -886,8 +886,8 @@ class SessionCleanupAndBackupTests(GatewayHarness):
                 reopened.get_job(account["account_id"], job["job_id"])["state"],
                 restored.get_job(account["account_id"], job["job_id"])["state"],
             )
-            self.assertEqual(restored.get_subscription(account["account_id"])["reserved_units"], 1)
-            self.assertEqual(restored.get_subscription(account["account_id"])["remaining_units"], 6)
+            self.assertEqual(restored.get_subscription(account["account_id"])["reserved_micro_usd"], 1)
+            self.assertEqual(restored.get_subscription(account["account_id"])["remaining_micro_usd"], 6)
             reopened.close()
             restored.close()
         finally:
@@ -896,7 +896,7 @@ class SessionCleanupAndBackupTests(GatewayHarness):
     def test_expired_grants_are_purged(self):
         clock = [3_000_000.0]
         store = ProductStore(":memory:", clock=lambda: clock[0])
-        store.create_account("purge-shop", "password-1234", quota_units=1)
+        store.create_account("purge-shop", "password-1234", quota_micro_usd=1)
         store.start_device_authorization("清理电脑")
         clock[0] += 10 * 24 * 3600
         removed = store.purge_expired(86400)
@@ -1032,17 +1032,17 @@ class OperatorApiTests(GatewayHarness):
         created = self.call(
             "POST",
             "/v1/operator/accounts",
-            {"username": "new-shop", "display_name": "新店", "plan_code": "trial", "quota_units": 50, "max_concurrent_jobs": 3},
+            {"username": "new-shop", "display_name": "新店", "plan_code": "trial", "quota_micro_usd": 50, "max_concurrent_jobs": 3},
             headers=headers,
         )
         self.assertEqual(created[0], 201)
         account_id = created[1]["account"]["account_id"]
         self.assertTrue(created[1]["account"]["password"])
-        self.assertEqual(self.store.get_subscription(account_id)["quota_units"], 50)
+        self.assertEqual(self.store.get_subscription(account_id)["quota_micro_usd"], 50)
 
-        updated = self.call("PATCH", f"/v1/operator/accounts/{account_id}", {"quota_units": 80, "period_days": 60}, headers=headers)
+        updated = self.call("PATCH", f"/v1/operator/accounts/{account_id}", {"quota_micro_usd": 80, "period_days": 60}, headers=headers)
         self.assertEqual(updated[0], 200)
-        self.assertEqual(updated[1]["subscription"]["quota_units"], 80)
+        self.assertEqual(updated[1]["subscription"]["quota_micro_usd"], 80)
         self.assertEqual(updated[1]["subscription"]["max_concurrent_jobs"], 3)
 
         disabled = self.call("PATCH", f"/v1/operator/accounts/{account_id}", {"status": "disabled"}, headers=headers)

@@ -38,7 +38,7 @@ class StubClient:
     def account(self):
         if self.error is not None:
             raise self.error
-        return {"subscription": {"active": self.active, "remaining_units": self.remaining,
+        return {"subscription": {"active": self.active, "remaining_micro_usd": self.remaining,
                                  "plan_code": "标准版", "period_end": "2026-10-25T00:00:00+00:00"}}
 
 

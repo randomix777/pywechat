@@ -32,7 +32,7 @@ from pyweixin.gateway import _optional_price  # noqa: E402
 
 def _policy(**kwargs):
     base = {"alias": "m", "provider_id": "openrouter", "model_id": "vendor/model",
-            "pricing_class": PricingClass.METERED, "cost_units_per_job": 1}
+            "pricing_class": PricingClass.METERED, "cost_micro_usd_per_job": 1}
     base.update(kwargs)
     return OperatorModelPolicy.from_dict(base)
 

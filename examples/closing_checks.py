@@ -101,7 +101,7 @@ def main() -> int:
     # 旧的此处会直接被 __post_init__ 拒绝 —— 这正好是它应该有的行为。
     policy = OperatorModelPolicy(
         alias="standard", provider_id="p", model_id="m", pricing_class=PricingClass.METERED,
-        cost_units_per_job=1, is_default=True, summary="适合日常订单",
+        cost_micro_usd_per_job=1, is_default=True, summary="适合日常订单",
     )
     store = CatalogStore()
     store.load_policies([policy.to_dict()])
@@ -237,7 +237,7 @@ def main() -> int:
     policies = {
         "free-standard": OperatorModelPolicy(
             alias="free-standard", provider_id="up-免费", model_id="模型-免费",
-            pricing_class=PricingClass.METERED, cost_units_per_job=1, is_default=True,
+            pricing_class=PricingClass.METERED, cost_micro_usd_per_job=1, is_default=True,
         ),
     }
     catalog = CatalogStore()
@@ -257,7 +257,7 @@ def main() -> int:
     adapter._backend._transport = transport
     store = ProductStore(":memory:")
     gw = ProductGateway(store=store, adapter=adapter, secure_cookies=False, catalog=catalog)
-    account = store.create_account("closing-shop", "password-1234", quota_units=5, max_concurrent_jobs=2)
+    account = store.create_account("closing-shop", "password-1234", quota_micro_usd=5, max_concurrent_jobs=2)
     device_id, _ = store._upsert_device(account["account_id"], account["merchant_id"], "核实电脑")
     identity = {
         "account_id": account["account_id"], "device_id": device_id,
@@ -265,6 +265,7 @@ def main() -> int:
     }
     job = gw._create_job(identity, {
         "model": "free-standard",
+        "pricing_version": gw.catalog.version,
         "message": {"id": "m-e2e", "sender": "张姐", "content": "苹果两箱", "kind": "text",
                     "sent_at": "2026-01-01T00:00:00+08:00"},
         "customer": {"id": "c-e2e", "name": "张姐", "alias": "张姐", "address": ""},
@@ -283,10 +284,15 @@ def main() -> int:
         "任务冻结的快照与实际发出的模型一致",
         (snapshot.get("provider_id"), snapshot.get("model_id")) == ("up-免费", "模型-免费"),
     ) else 1
+    # 以前这里断言「免费任务不扣额度」。产品规则已变：
+    # **免费模型也扣分析额度**（免费档位已被焊死）。
+    # 旧断言当时是对的，现在会误报成功失败 —— 所以换成断言
+    # **确实扣了费**，这才是商户真正发生的事。
+    _used = store.get_subscription(account["account_id"])["used_micro_usd"]
     failures += 0 if check(
-        "这一单是免费任务，订阅额度没有被扣",
-        store.get_subscription(account["account_id"])["used_units"] == 0
-        and store.free_quota_state(account["account_id"], 5)["used"] == 1,
+        "这一单已结算，额度可见",
+        _used > 0,
+        f"used_micro_usd={_used}",
     ) else 1
     store.close()
 
