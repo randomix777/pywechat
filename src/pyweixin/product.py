@@ -1700,6 +1700,11 @@ class ProductStore:
             if row["state"] in TERMINAL_JOB_STATES:
                 return self.job_view(row)          # 已经终止了，不覆盖
             charged = int(charged_units or 0) if state == JOB_SUCCEEDED else 0
+            import os as _os, sys as _sy
+            if _os.environ.get("TRACE_FINISH"):
+                print(f"[TRACE] finish_job {row['state']}->{state} in={charged_units} "
+                      f"charged={charged} job.charged={row['charged_units']} "
+                      f"job.reserved={row['reserved_units']}", file=_sy.stderr, flush=True)
             self._connection.execute(
                 "UPDATE jobs SET state=?,result_json=?,error_code=?,error_message=?,"
                 "charged_units=?,finished_at=?,updated_at=? WHERE id=?",

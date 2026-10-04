@@ -265,7 +265,7 @@ def main() -> int:
             stub_account = stub_store.create_account("smoke-shop", "password-1234", display_name="冒烟店", quota_units=5)
             stub_gateway = ProductGateway(
                 store=stub_store, adapter=LocalRuleAdapter(VALID_PARSE_RESULT), secure_cookies=False,
-                catalog=test_catalog(free=True),
+                catalog=test_catalog(),   # 产品规则：免费模型也扣额度，free=True 已被拒绝
             )
 
             class StubHandler(GatewayHTTPRequestHandler):
@@ -313,6 +313,11 @@ def main() -> int:
                     group="群A",
                 )
                 local_progress = service.submit(row["id"])
+                # 收费模型必须先确认价格——免费档位已被焊死，
+                # 所以每一次分析都会先被拒绝一次，就算商户确认了价格。
+                if local_progress.state == "blocked":
+                    service.confirm_pricing()
+                    local_progress = service.submit(row["id"])
                 # submit 本身已经提交并结算过一次；只有还没到终态时才继续轮询，
                 # 否则第二次 settle 会返回"没有待处理的解析"把好结果盖掉。
                 if local_progress.state not in {"done", "needs_retry", "blocked"}:
@@ -322,6 +327,10 @@ def main() -> int:
                         if polled.state in {"done", "needs_retry", "blocked"}:
                             local_progress = polled
                             break
+                        # "没有待处理的解析" 意味着任务还在队列里，
+                        # worker 还没赶到。这时**不能把 local_progress 覆盖掉**，
+                        # 否则等到最后拿到的是这个中间态，断言就会
+                        # 报错得很让人迷惑。继续等。
                         time.sleep(0.3)
                 assert local_progress.state == "done", local_progress
                 assert local_progress.message == "已生成待确认订单", local_progress.message
