@@ -22,11 +22,26 @@
 两者的差额就是这个 10 倍。如果它们长期偏离，说明预计估错了，要回去调估算，
 而不是偷偷改商户的账单。
 
-## 不知道单价时怎么办
+## 记账单位：微美元，不是"额度"
 
-**不猜。** :func:`merchant_units_for` 在单价未知时返回 ``None``，调用方必须
-自己决定怎么办 —— 通常是退回运营配置的 ``cost_units_per_job``，而不是拿
-一个编出来的价格去扣钱。
+商户侧按**美元**计价，不是按抽象的"分析额度"。金额一律以整数微美元
+（1 美元 = 1,000,000 µ$）存储 —— **绝不用浮点记钱**，浮点在累加几万次之后
+会出现分位误差，而商户的余额不该因为他解析了 3000 条消息就少一分钱。
+
+微美元还有一个副作用是好的：它足够细，所以**不需要"最低 1 额度"那条地板**。
+以额度为单位时，一次真实解析的成本折算后常常不足 1，向上取整全变成 1，
+于是价格差 2000 倍的模型扣的额度一模一样 —— 额度成了定价开关。换成微美元
+之后差异回来了：
+
+    $0.000012 上游 ->      120 \u00b5$
+    $0.001100 \u4e0a\u6e38 -> 11,001 \u00b5$
+    $0.066600 \u4e0a\u6e38 -> 666,000 \u00b5$
+
+## \u4e0d\u77e5\u9053\u5355\u4ef7\u65f6\u600e\u4e48\u529e
+
+**\u4e0d\u731c\u3002** :func:`merchant_micro_usd_for` \u5728\u5355\u4ef7\u672a\u77e5\u65f6\u8fd4\u56de ``None``\uff0c\u8c03\u7528\u65b9\u5fc5\u987b
+\u81ea\u5df1\u51b3\u5b9a\u600e\u4e48\u529e \u2014\u2014 \u901a\u5e38\u662f\u9000\u56de\u8fd0\u8425\u914d\u7f6e\u7684\u56fa\u5b9a\u5355\u4ef7\uff0c\u800c\u4e0d\u662f\u62ff
+\u4e00\u4e2a\u7f16\u51fa\u6765\u7684\u4ef7\u683c\u53bb\u6263\u94b1\u3002
 """
 from __future__ import annotations
 
@@ -34,11 +49,17 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-#: 1 美元上游成本 = 10 个分析额度。
+#: 1 美元上游成本 = 10 美元商户账单（乘以 10）。
 #:
 #: 商家定的：商户买 1 美元额度，平台实际花 0.1 美元上游。
 #: 这是**商业决定**，写在代码里是因为它必须有一个唯一的、可查的出处。
-MERCHANT_UNITS_PER_VENDOR_USD = 10.0
+MERCHANT_USD_PER_VENDOR_USD = 10.0
+
+#: 1 美元 = 100 万微美元。金额一律用它存。
+#:
+#: 整数微美元而不是浮点：浮点在累加几万次之后会出现分位误差，而商户的余额
+#: 不该因为他解析了 3000 条消息就少一分钱。
+US_PER_USD = 1_000_000
 
 #: 一次解析的输出 token 上限估计。模型一般在这个量级内收尾；
 #: 估高了商户多付，估低了平台贴钱，所以偏保守。
@@ -85,14 +106,31 @@ def vendor_cost_usd(
     ) / 1_000_000.0
 
 
-def merchant_units_for(vendor_usd: float, rate: float = MERCHANT_UNITS_PER_VENDOR_USD) -> int:
-    """上游成本（美元）→ 商户该扣的额度。
+def merchant_micro_usd_for(
+    vendor_usd: float,
+    rate: float = MERCHANT_USD_PER_VENDOR_USD,
+) -> int:
+    """上游成本（美元）→ 商户该扣多少**微美元**。
 
-    **向上取整**：平台已经花了这么多钱，不该因为小数部分而少收。
-    但**最低 1 个额度** —— 一次真实的分析不应该算出 0 额度，那等于免费。
+    **向上取整**：平台已经花了这么多钱，不该因为小数部分而少收。微美元已经
+    足够细，所以这里**不需要**"最低 1 额度"的地板 —— 加了反而会把价格差异
+    压平。
     """
-    units = math.ceil(max(0.0, float(vendor_usd)) * float(rate))
-    return max(1, int(units))
+    return int(math.ceil(max(0.0, float(vendor_usd)) * float(rate) * US_PER_USD))
+
+
+def format_usd(micro: int | float) -> str:
+    """微美元 → 给商户看的金额。
+
+    小于 1 美分时显示到 6 位小数（0.000012 美元），因为再粗就显示成 0.00，
+    而商户会以为自己没被扣钱、或者被系统吞了。再细就没意义了 —— 那全是噪声。
+    """
+    value = max(0, int(micro)) / US_PER_USD
+    if value == 0:
+        return "$0.00"
+    if value < 0.01:
+        return f"${value:.6f}"
+    return f"${value:.2f}"
 
 
 @dataclass(frozen=True)
@@ -134,30 +172,32 @@ def price_from_mapping(raw: Mapping[str, Any] | None) -> ModelPrice | None:
     )
 
 
-def estimate_units_for_request(
+def estimate_micro_usd_for_request(
     prompt_text: str,
     price: ModelPrice | None,
     output_tokens: int = DEFAULT_OUTPUT_TOKENS,
-    rate: float = MERCHANT_UNITS_PER_VENDOR_USD,
+    rate: float = MERCHANT_USD_PER_VENDOR_USD,
 ) -> int | None:
-    """提交前：按预计成本算出该冻结多少额度。
+    """提交前：按预计成本算出该冻结扣多少微美元。
 
     ``price`` 未知时返回 ``None``，调用方必须自己处理 —— 通常是退回运营
-    配置的 ``cost_units_per_job``。这里**不返回 0**，因为 0 会悄悄变成免费。
+    配置的固定单价。这里**不返回 0**，因为 0 会悄悄变成免费。
     """
     if price is None:
         return None
     expected_usd = price.cost_for(estimate_input_tokens(prompt_text), int(output_tokens))
-    return merchant_units_for(expected_usd, rate)
+    return merchant_micro_usd_for(expected_usd, rate)
 
 
 __all__ = [
     "DEFAULT_OUTPUT_TOKENS",
-    "MERCHANT_UNITS_PER_VENDOR_USD",
+    "MERCHANT_USD_PER_VENDOR_USD",
+    "US_PER_USD",
     "ModelPrice",
     "estimate_input_tokens",
-    "estimate_units_for_request",
-    "merchant_units_for",
+    "estimate_micro_usd_for_request",
+    "format_usd",
+    "merchant_micro_usd_for",
     "price_from_mapping",
     "vendor_cost_usd",
 ]
