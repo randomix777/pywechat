@@ -269,7 +269,7 @@ def _build_agent_request(payload: Mapping[str, Any], job_id: str, deadline: floa
         scope=Scope(tenant_id=str((payload or {}).get("merchant_id") or "default")),
         events=events,
         as_of=AsOf(instant=now),
-        budget=Budget(max_steps=1, max_output_tokens=2000, deadline_seconds=remaining),
+        budget=Budget(max_steps=1, max_output_tokens=2000, timeout_seconds=remaining),
     )
 
 
