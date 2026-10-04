@@ -75,14 +75,51 @@ REQUIRED_CAPABILITIES = (CAP_ORDER_PARSE,)
 #: 文案里"扣 N 次"的样子。文案与数字对不上时以策略为准。
 _CHARGE_UNITS_PATTERN = re.compile(r"扣\s*(\d+)\s*(?:次|个|笔)")
 
+#: 文案里出现这些词，就是在声称这次分析不收钱。
+#:
+#: 免费档位已经焊死（产品规则：免费模型也扣分析额度），所以收费模型自称
+#: 「免费」「不扣额度」**一定是假的** —— 那不是文案跑偏，是在骗商户。
+#: 以前只在文案里数「扣 N 次」，这类谎话根本抓不住。
+#:
+#: 注意**否定语境不算撒谎**：「不是免费模型，但会扣费」是在如实说明，
+#: 不该被丢掉。所以下面几个词只在**没有被否定**时才算谎话。
+_FALSE_CHARGE_CLAIMS = ("免费", "不扣", "不收费", "无需付费", "不用付费", "不消耗额度")
+_NEGATIONS = ("不是", "不会", "不再", "并非", "不是免费的")
+
+
+def _claims_to_be_free(note: str) -> bool:
+    """这段文案是否在声称「不收钱」。
+
+    带否定的说法（"不是免费模型"）返回 ``False`` —— 那是在如实说明，
+    不该因为出现了"免费"两个字就把运营的话丢掉。
+    """
+    for word in _FALSE_CHARGE_CLAIMS:
+        start = 0
+        while True:
+            index = note.find(word, start)
+            if index < 0:
+                break
+            prefix = note[max(0, index - 4):index]
+            if not any(neg in prefix for neg in _NEGATIONS):
+                return True
+            start = index + len(word)
+    return False
+
 
 def _note_contradicts(note: str, units: int) -> bool:
-    """``charge_note`` 写的次数与策略里的 :attr:`cost_units_per_job` 是否冲突。
+    """``charge_note`` 是否与结构化策略矛盾。
 
-    只在文案明确写了"扣 N 次"时才可能冲突；纯描述性的一句话（"分析较慢，
-    会消耗额度"）不参与判断，不会被丢掉。
+    两类要拦：
+
+    * 声称**免费** —— 免费档位已焊死，收费模型自称免费一定是在骗商户。
+    * 次数对不上 —— 文案写「扣 1 次」而策略是 3 次时，以策略为准。
+
+    纯描述性的一句话（"分析较慢，会消耗额度"）不参与判断，不会被丢掉。
     """
-    match = _CHARGE_UNITS_PATTERN.search(note)
+    text = str(note or "")
+    if _claims_to_be_free(text):
+        return True
+    match = _CHARGE_UNITS_PATTERN.search(text)
     return bool(match) and int(match.group(1)) != int(units)
 
 
@@ -284,14 +321,22 @@ class ModelEntry:
         运营确实可以自己写 ``charge_note``；但只要它写的次数与结构化策略里的
         数字对不上，就**以策略为准**并丢掉这句文案。展示文案可以改，扣费依据
         不能被一段中文悄悄改掉。
+
+        **计价单位是美元，不是"次数"。** 下面那句"扣 N 次额度"是历史口径：
+        商户当时买的是一个抽象额度，用掉一部分而已。现在的实际扣费是按
+        供应商真实用量折算的金额（见 :mod:`pyweixin.pricing`），**同一个模型
+        每条消息的成本并不相同** —— 消息越长，模型读的越多，扣得越多。
+
+        所以这里只说清两件商户真正需要知道的事：**会扣费**，以及**扣多少取决于
+        这条消息有多长**。不写死一个数字，因为那个数字本来就是假的。
         """
-        units = max(1, int(self.policy.cost_units_per_job))
-        unit_text = {1: "1 次额度", 2: "2 次额度"}.get(units, f"{units} 次额度")
-        canonical = f"该模型会消耗分析额度，每分析一条消息扣 {unit_text}"
         note = str(self.policy.charge_note or "").strip()
-        if note and not _note_contradicts(note, units):
+        if note and not _note_contradicts(note, self.policy.cost_units_per_job):
             return note
-        return canonical
+        return (
+            "该模型会消耗分析额度，按这条消息的实际长度计费"
+            "（消息越长，模型读取的内容越多，扣费越多）"
+        )
 
     def free_quota_day(self, now: float | None = None) -> str:
         """免费额度记在哪一天。跨午夜的任务按**预留**那天算，不是结算那天。

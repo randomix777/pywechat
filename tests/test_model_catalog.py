@@ -176,7 +176,10 @@ class ClientViewTests(unittest.TestCase):
         self.assertNotIn("free", paid,
                      "免费标记已从客户端视图里删除：无论设为何值都会被下发，它只会让界面多出无意义的免费")
         self.assertIn("该模型会消耗分析额度", paid["charge_line"])
-        self.assertIn("每分析一条消息扣 1 次额度", paid["charge_line"])
+        self.assertIn("实际长度", paid["charge_line"],
+                      "美元计价下成本随消息长度变化，必须说清，不能承诺固定次数")
+        self.assertNotIn("每分析一条消息扣", paid["charge_line"],
+                         "旧的固定次数口径已经不存在了，再写就是在骗商户")
 
     def test_paid_model_never_claims_to_be_free(self):
         catalog = verified(built(), DEEP)

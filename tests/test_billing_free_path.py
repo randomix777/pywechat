@@ -325,10 +325,16 @@ class FrozenChargeTests(GatewayHarness):
         self.assertEqual(subscription["used_units"], 3, "实际扣费必须等于冻结的策略数字")
 
     def test_charge_note_cannot_contradict_the_structured_policy(self):
-        """展示文案只是展示。它写"扣 1 次"而策略是 3 次时，以策略为准。"""
+        """展示文案只是展示。它与结构化策略矛盾时，以策略为准。
+
+        计价改成美元之后，「矛盾」不再体现为次数（没有固定次数了），
+        但原则没变：**一段中文不能悄悄改掉扣费依据**。所以运营写的
+        「免费 / 不扣费」必须被丢掉 —— 那是在骗商户。
+        """
+        lying = "免费使用，不消耗额度"
         policies = {PAID: OperatorModelPolicy(
             alias=PAID, provider_id="p", model_id="m", pricing_class=PricingClass.METERED,
-            cost_units_per_job=3, charge_note="该模型会消耗分析额度，每分析一条消息扣 1 次额度",
+            cost_units_per_job=1, charge_note=lying,
         )}
         store = CatalogStore()
         store.load_policies(list(policies.values()))
@@ -340,8 +346,11 @@ class FrozenChargeTests(GatewayHarness):
             policies,
         )
         line = store.catalog.entry(PAID).charge_line()
-        self.assertIn("扣 3 次额度", line)
-        self.assertNotIn("扣 1 次", line)
+        self.assertNotIn("免费", line,
+                         "免费档位已焊死，收费模型自称免费就是在骗商户")
+        self.assertIn("会消耗", line)
+        self.assertIn("实际长度", line,
+                      "美元计价下成本随消息长度变化，文案必须说清这一点")
 
     def test_charge_note_without_a_count_is_kept(self):
         policies = {PAID: OperatorModelPolicy(
