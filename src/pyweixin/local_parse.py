@@ -265,8 +265,22 @@ class LocalParseService:
 
     def _send(self, entry: Mapping[str, Any], emit) -> ParseProgress | None:
         emit(ParseProgress(LOCAL_QUEUED, "解析排队中", message_id=self._message_id(entry)))
+        # 重试前刷新 ``pricing_version``。
+        #
+        # 队列里存的是**入队那一刻**的请求快照。商户点完「确认这次费用」之后，
+        # ``self.pricing_version`` 才拿到新版本号 —— 但那份快照里还是空的，
+        # 于是重试**再��次**被网关以 ``pricing_version_required`` 拒掉。
+        #
+        # 后果是商户确认了价格却永远走不出去：确认 → 重试 → 又要确认，
+        # 循环往复，而界面上只会显示「提交前需要先确认这次分析的费用」。
+        #
+        # 别的字段（消息内容、商品、历史）保持快照原样 —— 那些在排队期间
+        # 不该变，尤其是消息原文不能被悄悄改掉。
+        request = dict(entry["request"])
+        if self.pricing_version:
+            request["pricing_version"] = self.pricing_version
         try:
-            body = self.client.submit_parse(entry["request"], entry["idempotency_key"])
+            body = self.client.submit_parse(request, entry["idempotency_key"])
         except GatewayError as exc:
             if exc.code in PRICING_CONFIRM_ERRORS:
                 # 缺版本 / 版本过期：把新事实记下来交界面展示，**不自动重发**。

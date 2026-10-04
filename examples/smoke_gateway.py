@@ -317,6 +317,11 @@ def main() -> int:
                 # 所以每一次分析都会先被拒绝一次，就算商户确认了价格。
                 if local_progress.state == "blocked":
                     service.confirm_pricing()
+                    # 被价格确认拦下的消息会被 **延迟 5 秒重试**（见 local_parse 的
+                    # mark_retry(delay=5.0)）——这给商户留确认时间，也防止系统替商户
+                    # 同意。但意味着**不能立刻重提**：消息还在重试队列里，
+                    # 提交会直接返回「没有待处理的解析」。
+                    time.sleep(5.5)
                     local_progress = service.submit(row["id"])
                 # submit 本身已经提交并结算过一次；只有还没到终态时才继续轮询，
                 # 否则第二次 settle 会返回"没有待处理的解析"把好结果盖掉。
