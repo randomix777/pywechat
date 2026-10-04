@@ -33,15 +33,58 @@
 于是价格差 2000 倍的模型扣的额度一模一样 —— 额度成了定价开关。换成微美元
 之后差异回来了：
 
-    $0.000012 上游 ->      120 \u00b5$
-    $0.001100 \u4e0a\u6e38 -> 11,001 \u00b5$
-    $0.066600 \u4e0a\u6e38 -> 666,000 \u00b5$
+    $0.000012 上游 ->      120 µ$
+    $0.001100 上游 -> 11,001 µ$
+    $0.066600 上游 -> 666,000 µ$
 
-## \u4e0d\u77e5\u9053\u5355\u4ef7\u65f6\u600e\u4e48\u529e
+## 定价数据从哪来：JYI 拉，客户端只收
 
-**\u4e0d\u731c\u3002** :func:`merchant_micro_usd_for` \u5728\u5355\u4ef7\u672a\u77e5\u65f6\u8fd4\u56de ``None``\uff0c\u8c03\u7528\u65b9\u5fc5\u987b
-\u81ea\u5df1\u51b3\u5b9a\u600e\u4e48\u529e \u2014\u2014 \u901a\u5e38\u662f\u9000\u56de\u8fd0\u8425\u914d\u7f6e\u7684\u56fa\u5b9a\u5355\u4ef7\uff0c\u800c\u4e0d\u662f\u62ff
-\u4e00\u4e2a\u7f16\u51fa\u6765\u7684\u4ef7\u683c\u53bb\u6263\u94b1\u3002
+**客户端不自己去拉 OpenRouter 的定价。**
+
+理由不是省流量，是责任：定价是一个要**定时更新、缓存、处理价格变动**的
+东西 —— 上游调价了怎么办？拉取失败时用旧的还是停售？这些都要有人负责。
+而客户端有几千台，每台各自拉一遍，既浪费，也会各自拿到不同的价。最后商户看到
+的价格，取决于他那台机器什么时候拉过 —— 同一个商户不同时候看到不同价钱，
+这不是定价，是平台无法配置。
+
+所以分工是：
+
+* **JYI（服务端）** 负责从 OpenRouter 拉 ``/api/v1/models`` 里的
+  ``pricing.prompt`` / ``pricing.completion``（美元/百万 token），做缓存与
+  变动策略，然后把单价下发给客户端。
+* **客户端（本模块）** 只消费已经拿到的单价：读策略里冻结下来的
+  ``input_price_per_million`` / ``output_price_per_million``，据此预留与结算。
+
+### 客户端需要 JYI 给出什么
+
+每个模型的策略里必须带这两个字段（单位：美元/百万 token）：
+
+    {
+      "alias": "standard",
+      "provider_id": "openrouter",
+      "model_id": "vendor/model",
+      "pricing_class": "metered",
+      "input_price_per_million": 0.003,
+      "output_price_per_million": 0.015
+    }
+
+**缺了不等于免费。** 读不到就退回固定的 ``cost_units_per_job``，而不是按 0
+结算 —— 免费档位已经焊死，按 0 结算等于白送商户一次解析。
+
+### 价格变了怎么办
+
+价格**在提交时冻结进任务快照**，运营事后改价不会影响已经在跑的任务。
+
+这是有意的：商户确认过的就是那个价，改了却按新价扣，商户确认过的和最后被扣的就不是一回事
+—— 那是最伤信任的一种错。
+
+所以 JYI 调价后：**新提交的任务**用新价，**已提交未完成的**继续用冻结的旧价。
+客户端这边不需要额外处理，但它要求 JYI 遵守这条：**不要中途改价去影响在途任务**。
+
+## 不知道单价时怎么办
+
+**不猜。** :func:`merchant_micro_usd_for` 的调用方在单价未知时必须自己决定怎么办 ——
+通常是退回运营配置的固定单价，而不是拿一个编出来的价格去扣钱。
 """
 from __future__ import annotations
 
@@ -83,7 +126,7 @@ def estimate_input_tokens(text: str) -> int:
     raw = str(text or "")
     if not raw:
         return 0
-    cjk = sum(1 for ch in raw if "\u4e00" <= ch <= "\u9fff")
+    cjk = sum(1 for ch in raw if "一" <= ch <= "鿿")
     other = len(raw) - cjk
     return int(math.ceil(cjk * _TOKENS_PER_CHAR + other / _ENGLISH_CHARS_PER_TOKEN))
 

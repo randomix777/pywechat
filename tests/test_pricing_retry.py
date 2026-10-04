@@ -109,7 +109,7 @@ class RetryAfterConfirmationTests(unittest.TestCase):
         """消息原文不能在排队期间被悄悄改掉。"""
         service, client = _service()
         service.pricing_version = "v9"
-        original = {"pricing_version": "", "message": {"id": "m1", "content": "\u539f\u6587"},
+        original = {"pricing_version": "", "message": {"id": "m1", "content": "原文"},
                     "products": [{"sku": "S1"}]}
         service.queue.enqueue(dict(original), idempotency_key="msg-m1")
         captured: list[dict] = []
@@ -122,7 +122,7 @@ class RetryAfterConfirmationTests(unittest.TestCase):
         service.pump()
         self.assertTrue(captured)
         self.assertEqual(captured[0]["pricing_version"], "v9")
-        self.assertEqual(captured[0]["message"]["content"], "\u539f\u6587")
+        self.assertEqual(captured[0]["message"]["content"], "原文")
         self.assertEqual(captured[0]["products"], [{"sku": "S1"}])
         # 入队的那份不能被就地改掉 —— 否则会污染重试历史。
         self.assertEqual(original["pricing_version"], "")

@@ -1791,14 +1791,14 @@ class ProductStore:
                      "解析完成结算", now, self._day_key(), charged),
                 )
             elif not result and state not in UNSETTLED_JOB_STATES:
-                # \u53ea\u6709**\u786e\u5b9a\u6ca1\u6210\u529f**\u624d\u91ca\u653e\u9884\u7559\u3002
+                # 只有**确定没成功**才释放预留。
                 #
-                # ``outcome_unknown`` \u4e0d\u5728\u8fd9\u91cc\uff1a\u8d85\u65f6\u53ea\u8bf4\u660e\u6211\u4eec\u6ca1\u5f97\u5230\u7ed3\u679c\uff0c
-                # \u4e0d\u8bf4\u660e\u4e0a\u6e38\u5230\u5e95\u6267\u884c\u6ca1\u6267\u884c\u3002\u6b64\u65f6\u91ca\u653e\u9884\u7559\uff0c\u5c31\u7b49\u4e8e
-                # \u5411\u5546\u6237\u5148\u9000\u4e86\u94b1\uff0c\u800c\u771f\u5b9e\u7ed3\u8bba\u53ef\u80fd\u662f\u6210\u529f\u2014\u2014
-                # \u5bf9\u8d26\u65f6\u5c31\u4f1a\u5c11\u7b97\u4e00\u7b14\uff0c\u6216\u8005\u66f4\u7cdf\uff1a\u9884\u7559\u88ab\u91ca\u653e\u540e\u53c8\u88ab\u91cd\u65b0\u6263\u56de\u3002
+                # ``outcome_unknown`` 不在这里：超时只说明我们没得到结果，
+                # 不说明上游到底执行没执行。此时释放预留，就等于
+                # 向商户先退了钱，而真实结论可能是成功——
+                # 对账时就会少算一笔，或者更糟：预留被释放后又被重新扣回。
                 #
-                # \u9884\u7559\u5c31\u662f\u4e3a\u4e86\u8fd9\u4e2a\u65f6\u5019\u7559\u7684\u3002
+                # 预留就是为了这个时候留的。
                 self._release_reservation(job_id, int(row["reserved_units"] or 0), error_code or "failed")
             # **数据最小化**：任务一旦有结论，提交上来的原文就不再需要了。
             #
@@ -1978,7 +1978,7 @@ class ProductStore:
             (account_id, key),
         ).fetchall()
         charged = self._connection.execute(
-            # \u540c\u4e0a\uff1a\u9884\u7559\u4e0d\u662f\u6263\u8d39\uff0c\u53ea\u7b97 settle\u3002
+            # 同上：预留不是扣费，只算 settle。
             "SELECT COALESCE(SUM(charged_units),0) AS charged FROM usage_ledger"
             " WHERE account_id=? AND day=? AND kind='settle'",
             (account_id, key),

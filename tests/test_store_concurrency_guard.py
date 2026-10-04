@@ -99,7 +99,7 @@ class SharedConnectionGuardTests(unittest.TestCase):
         errors: list[Exception] = []
 
         def writer():
-            # \u65e0\u610f\u5730\u7a7f\u8fc7 ProductStore \u7684\u4e8b\u52a1\u7559\u4e0b\u4e00\u4e2a BEGIN\u3002
+            # 无意地穿过 ProductStore 的事务留下一个 BEGIN。
             import sqlite3
             store = self.store
             store._connection.execute("BEGIN IMMEDIATE")
@@ -118,7 +118,7 @@ class SharedConnectionGuardTests(unittest.TestCase):
         t.start()
         started.wait(timeout=5)
 
-        # \u8fd9\u91cc\u7684\u8bfb\u5fc5\u987b\u88ab\u9501\u4e32\u884c\u5316\uff0c\u4e0d\u80fd\u76f4\u63a5\u78b0\u8fde\u63a5\u3002
+        # 这里的读必须被锁串行化，不能直接碰连接。
         readers = [lambda: self.store.get_subscription(self.account["account_id"]) for _ in range(8)]
         read_results = _run_concurrently(readers, workers=8)
 
@@ -126,8 +126,8 @@ class SharedConnectionGuardTests(unittest.TestCase):
         t.join(timeout=10)
 
         read_errors = [r[1] for r in read_results if r[0] == "err"]
-        self.assertEqual(errors, [], f"\u5199\u4fa7\u88ab\u8bfb\u53d7\u6253\u4e71\uff1a{errors}")
-        self.assertEqual(read_errors, [], f"\u8bfb\u53d7\u6253\u4e71\uff1a{read_errors[:3]}")
+        self.assertEqual(errors, [], f"写侧被读受打乱：{errors}")
+        self.assertEqual(read_errors, [], f"读受打乱：{read_errors[:3]}")
 
     def test_the_guard_does_not_deadlock_inside_a_transaction(self):
         """_lock 是 RLock：在 _transaction 里再加一层包装不能自锁。"""
@@ -136,13 +136,13 @@ class SharedConnectionGuardTests(unittest.TestCase):
 
         def work():
             with self.store._transaction(immediate=True):
-                # \u8fd9\u4e00\u884c\u5185\u90e8\u4f1a\u518d\u6b21\u62ff\u9501\uff08\u8d85\u8fc7 5 \u79d2\u5c31\u7b97\u81ea\u9501\u4e86\uff09
+                # 这一行内部会再次拿锁（超过 5 秒就算自锁了）
                 result.append(self.store.get_subscription(self.account["account_id"]))
             done.set()
 
         t = threading.Thread(target=work, daemon=True)
         t.start()
-        self.assertTrue(done.wait(timeout=5), "RLock \u5e94\u8be5\u5141\u8bb8\u91cd\u5165\uff0c\u5426\u5219\u5c31\u662f\u81ea\u9501")
+        self.assertTrue(done.wait(timeout=5), "RLock 应该允许重入，否则就是自锁")
         self.assertEqual(len(result), 1)
 
 
