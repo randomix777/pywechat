@@ -814,6 +814,48 @@ class MerchantWindow:
         self._set_reading(False)
         self._render_read_state(result)
 
+    def _accumulated_coverage(self, result: Any) -> dict[str, tuple[int, str, str]]:
+        """这些会话**积累下来**的总量：条数、最早、最晚。
+
+        ## 为什么要查这个
+
+        「读取全部」报的是**总量**，「更新历史」报的是**增量** —— 两者写在
+        界面上同一个位置，商户看到的是两个不同的量，却难以分辨。
+
+        更糟的是「上次已读完」时表格显示 0 条，看起来像这个群什么都没有，
+        而库里其实有几百条。
+
+        所以查一下库里到底有多少，让那一列始终代表**总量**。
+        查不到就返回空字典，界面退回原来的写法 —— 一次查询失败不该让
+        读取结果看不见。
+
+        这里用 ``getattr`` 取 ``app`` 而不是直接点：渲染逻辑会被单测用桩对象
+        直接驱动，桩上没有 ``app``。真实运行时它一定在。
+        """
+        app = getattr(self, "app", None)
+        store = getattr(app, "orders", None)
+        tenant = getattr(app, "tenant", "")
+        groups: list[str] = []
+        for item in getattr(result, "coverage", None) or []:
+            conversation = getattr(item, "conversation", None)
+            name = getattr(conversation, "name", "") if conversation is not None else ""
+            if name and name not in groups:
+                groups.append(str(name))
+        if store is None or not groups:
+            return {}
+        marks = ",".join("?" for _ in groups)
+        try:
+            rows = store.db.execute(
+                "SELECT group_id, COUNT(*) AS n,"
+                " MIN(COALESCE(sent_at, observed_at)) AS lo,"
+                " MAX(COALESCE(sent_at, observed_at)) AS hi"
+                " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
+                " GROUP BY group_id", [tenant, *groups]).fetchall()
+        except Exception:
+            return {}
+        return {str(r["group_id"]): (int(r["n"]), str(r["lo"] or ""), str(r["hi"] or ""))
+                for r in rows}
+
     def _render_read_state(self, result: Any) -> None:
         """把读取结果画出来。页面重建后也会被调用，所以它必须是**幂等**的。"""
         state = self._widgets.get("read_state")
@@ -854,7 +896,28 @@ class MerchantWindow:
                     int(getattr(item, "message_count", 0) or 0)
                     for item in getattr(result, "coverage", ())
                 )
-                if read_anywhere > 0:
+                # 库里已经有多少。更新时「没有新消息」是**正常结果**，不是
+                # 「没读到」。不分辨的话，商户刚读完一个有 500 条的群，再点
+                # 一次更新就会看到「这次没有读到任何消息」，而且「下一步」
+                # 还被藏了 —— 他会以为软件坏了。
+                already_have = sum(
+                    n for n, _, _ in self._accumulated_coverage(result).values()
+                )
+                if not read_anywhere and already_have and \
+                        getattr(result, "mode", "") == ReadMode.UPDATE:
+                    state.configure(
+                        text=f"没有新消息。这些群里已经读到的 {already_have} 条"
+                             "一条都没少，可以直接进行下一步，也可以继续等新消息。",
+                        foreground="#5a6572",
+                    )
+                    if nxt is not None and self._alive(nxt):
+                        nxt.pack(side="left", padx=(8, 0))
+                    self._show_empty_exit(False)
+                    # 明细表也要画出来：顶部说「没有新消息」而底下一片空白，
+                    # 商户看不出这个群里其实有多少条。
+                    self._render_coverage_rows(result)
+                    return
+                elif read_anywhere > 0:
                     state.configure(
                         text=f"刚才读到了 {read_anywhere} 条，但没有一条能入库，"
                              "本地订单里还是空的。请再点一次「开始读取」；"
@@ -875,6 +938,16 @@ class MerchantWindow:
                 self._show_empty_exit(True)
                 return
             parts = [result.headline()]
+            # 更新模式的 headline 只有增量。补一行**累积总量**，让两种模式
+            # 在这个位置回答的是同一个问题：这个群我现在有多少。
+            if getattr(result, "mode", "") == ReadMode.UPDATE:
+                accumulated = self._accumulated_coverage(result)
+                totals = [n for n, _, _ in accumulated.values()]
+                if totals:
+                    lo = min((x for _, x, _ in accumulated.values() if x), default="")
+                    hi = max((x for _, _, x in accumulated.values() if x), default="")
+                    span = f"，时间范围 {lo[:10]} 至 {hi[:10]}" if lo and hi else ""
+                    parts.append(f"这些群现在共 {sum(totals)} 条{span}")
             for gap in result.gaps:
                 parts.append(f"注意：{gap}")
             if result.cancelled:
@@ -891,26 +964,46 @@ class MerchantWindow:
 
         # 逐会话明细。没有结果时不摆这张空表 —— 空表头只是占地方。
         summary = self._widgets.get("read_summary")
-        tree = self._widgets.get("read_summary_tree")
-        if tree is not None and self._alive(tree):
-            tree.delete(*tree.get_children())
-            for item in getattr(result, "coverage", ()) if result is not None else ():
-                earliest = item.earliest.date().isoformat() if item.earliest else "—"
-                latest = item.latest.date().isoformat() if item.latest else "—"
-                note_text = "　（读失败）" if item.error else ("　（上次已读完）" if item.skipped else "")
-                tree.insert(
-                    "", "end",
-                    values=(
-                        item.conversation.name,
-                        f"{item.message_count} 条",
-                        f"{earliest} 至 {latest}{note_text}",
-                    ),
-                )
+        self._render_coverage_rows(result)
         if summary is not None and self._alive(summary):
             if result is not None and getattr(result, "coverage", None):
                 summary.pack(fill="both", expand=True, pady=(14, 0))
             else:
                 summary.pack_forget()
+
+    def _render_coverage_rows(self, result: Any) -> None:
+        """逐会话明细表。
+
+        抽成方法是为了让「更新后没有新消息」那条分支也能画 —— 那条分支
+        原来直接 ``return`` 了，表格空着，于是顶部说「没有新消息」而底下
+        一片空白，商户看不出这个群里其实有多少条。
+        """
+        tree = self._widgets.get("read_summary_tree")
+        if tree is None or not self._alive(tree):
+            return
+        tree.delete(*tree.get_children())
+        # 列始终是**总量**，增量单独写在括号里。
+        # 否则同一列在「读取全部」下是总量、在「更新」下是增量，
+        # 商户没法判断这个群到底有多少条。
+        accumulated = self._accumulated_coverage(result)
+        for item in getattr(result, "coverage", ()) if result is not None else ():
+            name = item.conversation.name
+            total = accumulated.get(str(name))
+            if total is not None:
+                count_text = f"共 {total[0]} 条"
+                if item.message_count:
+                    count_text += f"（本次 +{item.message_count}）"
+                earliest = total[1][:10] if total[1] else "—"
+                latest = total[2][:10] if total[2] else "—"
+            else:
+                count_text = f"{item.message_count} 条"
+                earliest = item.earliest.date().isoformat() if item.earliest else "—"
+                latest = item.latest.date().isoformat() if item.latest else "—"
+            note_text = "　（读失败）" if item.error else ("　（上次已读完）" if item.skipped else "")
+            tree.insert(
+                "", "end",
+                values=(name, count_text, f"{earliest} 至 {latest}{note_text}"),
+            )
 
     def _show_empty_exit(self, show: bool) -> None:
         """「先看看已经读到的内容」这个出口的显隐。
