@@ -125,6 +125,7 @@ class MerchantApplication:
         launcher: Any = None,
         conversation_source: ConversationSource | None = None,
         history_reader_fn: Callable[..., Any] | None = None,
+        group_members_fn: Callable[[Any], Sequence[str]] | None = None,
         gateway_url: str = "",
         client_factory: Callable[[Any], Any] | None = None,
         sender: Callable[[str, str], Any] | None = None,
@@ -181,6 +182,9 @@ class MerchantApplication:
             history_reader_fn or self._default_history_reader,
             ui_lock=self.ui_lock,
             cursor=self.cursor,
+            # 与 history_reader_fn 一样可注入：取群成员要开微信界面（实测一次
+            # 2 秒上下），测试拿假读取器却走真解析器，时序会被它拖垮。
+            group_members=group_members_fn or self._default_group_members,
         )
 
         self.client = None
@@ -1010,6 +1014,30 @@ class MerchantApplication:
         from .WeChatAuto import Messages
 
         return list(Messages.dump_chat_history(**kwargs) or [])
+
+    @staticmethod
+    def _default_group_members(conversation: Any) -> list[str]:
+        """群成员的昵称列表。读取群聊历史时用来认出发送人。
+
+        ## 为什么必须传
+
+        不传的话读取器靠「两次遍历对比」反推发送人，对不上时会把发送人写成
+        「红包或转账(无法获取发送人)」这个固定占位串 —— 商户拿到一堆
+        不知道是谁说的话。传了成员就**直接解析**，不依赖那次对比。
+
+        ## 失败不抛
+
+        取成员要打开微信界面，可能超时、可能失败。**取不到只是发送人认不出来，
+        消息本身还能读** —— 为此中断整次读取是拿小的换大的。
+        """
+        try:
+            from .WeChatAuto import Contacts
+
+            return [str(name) for name in (Contacts.get_groupMembers_info(
+                conversation.name, is_maximize=False, close_weixin=False) or []) if name]
+        except Exception:
+            LOGGER.exception("failed to load group members for %s", getattr(conversation, "name", ""))
+            return []
 
     def close(self) -> None:
         self.stop()

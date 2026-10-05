@@ -399,6 +399,7 @@ class HistoryReader:
         ui_lock: Any = None,
         cursor: HistoryCursor | None = None,
         clock: Callable[[], float] = time.time,
+        group_members: Callable[[Any], Sequence[str]] | None = None,
     ):
         self._reader = reader
         self._ui_lock = ui_lock
@@ -408,6 +409,11 @@ class HistoryReader:
         self.progress = HistoryProgress()
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
+        #: 给群聊取成员昵称列表。取到了读取器就能**直接认出发送人**；
+        #: 取不到只能靠两次遍历反推，而对不上时发送人会变成占位串。
+        self._group_members = group_members
+        #: 按会话缓存，避免每次读取都重新去取一遍群成员。
+        self._members_cache: dict[str, tuple[str, ...]] = {}
 
     # ------------------------------------------------------------- controls
 
@@ -692,10 +698,20 @@ class HistoryReader:
     ) -> list[dict[str, Any]]:
         # 不把 since 传给 reader：dump_chat_history 和各测试替身都没有这个参数，
         # 「只要上次之后的消息」在 read() 里过滤，不要去改底层签名。
+        # 群聊必须把成员昵称一起传下去。
+        #
+        # 不传的话，读取器只能靠「开多选遍历一次、不开再遍历一次」两份结果
+        # 对比来反推发送人；那一步对不上就返回 None，发送人变成
+        # 「红包或转账(无法获取发送人)」这个固定占位串 —— 商户看到的是
+        # 一堆不知道谁说的话。读取器自己文档里写着：传了成员就
+        # 「直接解析发送人（无需遍历二次）」。
+        #
+        # 取成员要开微信界面，所以放在 ui_lock 里面，并且按会话缓存。
+        members = self._members_for(conversation)
         kwargs = dict(
             friend=conversation.name,
             number=max_messages,
-            groupMembers=[],
+            groupMembers=list(members),
             is_json=False,
             save_detail=False,
             close_weixin=False,
@@ -708,6 +724,27 @@ class HistoryReader:
             return list(self._reader(**kwargs) or [])
         with self._ui_lock:
             return list(self._reader(**kwargs) or [])
+
+    def _members_for(self, conversation: Any) -> tuple[str, ...]:
+        """这个会话的群成员昵称。非群聊、没配解析器、取失败都返回空。
+
+        **取失败不能让整次读取失败**：没有成员名单只是发送人认不出来，
+        消息本身还能读；为此中断读取是拿小的换大的。
+        """
+        if self._group_members is None:
+            return ()
+        if getattr(conversation, "kind", "") != "group":
+            return ()
+        key = str(getattr(conversation, "identity", "") or conversation.name)
+        if key in self._members_cache:
+            return self._members_cache[key]
+        members: tuple[str, ...] = ()
+        try:
+            members = tuple(str(x) for x in (self._group_members(conversation) or []) if x)
+        except Exception:
+            members = ()
+        self._members_cache[key] = members
+        return members
 
     @staticmethod
     def _filter(

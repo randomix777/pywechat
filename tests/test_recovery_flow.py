@@ -85,6 +85,10 @@ class RecoveryHarness(unittest.TestCase):
             # 否则测试结果取决于这个默认值而不是被测的行为。
             history_reader_fn=kwargs.pop("history_reader_fn",
                                           SimulatedHistory(default_count=0)),
+            # 群成员解析器必须一起注入。默认实现要**开微信界面**去取（实测一次
+            # 2 秒上下，在没有微信的环境里直接失败），测试拿假读取器却走真解析器
+            # 会被它拖垮时序。默认给空 —— 需要发送人的测试自己覆盖。
+            group_members_fn=kwargs.pop("group_members_fn", lambda conv: []),
             sender=kwargs.pop("sender", lambda t, x: None),
             simulated=True,
         )
