@@ -1101,6 +1101,75 @@ class OrderStore:
         reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
         return self.import_products(tenant, [dict(row) for row in reader])
 
+    #: 交给模型的商品条数上限。目录很大时不把整本塞进去。
+    CATALOG_LIMIT = 500
+    #: 交给模型的客户条数上限。
+    ROSTER_LIMIT = 500
+
+    def _catalog_for_model(self, tenant: str) -> list[dict[str, Any]]:
+        """给模型的商品目录，**带别名**。
+
+        ## 为什么必须带别名
+
+        别名是商家自己教会系统的（导入时给的、纠正时学的）。
+        不带的话，商家费劲教会了「李记酱油 → 海天生抽」，模型看到的却只有
+        「海天生抽」四个字 —— 它依然匹配不上，商家会觉得教了也没用。
+
+        别名用 ``|`` 拼成一串，和 ``_match_items_to_products`` 的格式一致，
+        两边看的是同一份东西。
+        """
+        rows = self.db.execute(
+            "SELECT p.sku, p.name, p.unit, p.price_cents,"
+            " group_concat(pa.alias, '|') AS aliases"
+            " FROM products p LEFT JOIN product_aliases pa ON pa.product_id = p.id"
+            " WHERE p.merchant_id=? GROUP BY p.id ORDER BY p.name LIMIT ?",
+            (tenant, self.CATALOG_LIMIT)).fetchall()
+        catalog: list[dict[str, Any]] = []
+        for row in rows:
+            entry: dict[str, Any] = {"sku": row["sku"], "name": row["name"], "unit": row["unit"]}
+            # name 和 sku 在**上一层的字段里已经有了**，别名里再出现一次纯属浪费
+            # token。add_product / import_products 会把两者都塞进别名表，
+            # 那是给本地匹配用的（本地只看别名串），对模型则是重复。
+            redundant = {str(row["name"]), str(row["sku"])}
+            aliases = [a for a in str(row["aliases"] or "").split("|") if a and a not in redundant]
+            if aliases:
+                entry["aliases"] = aliases
+            catalog.append(entry)
+        return catalog
+
+    def _roster_for_model(self, tenant: str, group: str) -> list[dict[str, Any]]:
+        """给模型的客户名单（商家上传的那份）。
+
+        ## 为什么需要
+
+        商家上传了客户数据，但解析时模型只看得到**当前这一条消息已经绑定的**
+        那个客户。客户身份没认出来的时候，模型手里没有任何候选，
+        它只能编一个名字，或者干脆不填。
+
+        把名单给它，它才有得选；选不出来时也能明确说「这个称呼我不认识」，
+        而不是编一个。
+
+        ## 按群过滤，但不止于本群
+
+        ``group_id`` 为空的别名是通配的（导入时没指定群），本群也能用。
+        所以查的是「本群的 + 通配的」。
+        """
+        rows = self.db.execute(
+            "SELECT c.id, c.name, group_concat(a.alias, '|') AS aliases"
+            " FROM customers c LEFT JOIN aliases a ON a.customer_id = c.id"
+            " AND a.merchant_id = c.merchant_id AND a.valid_to IS NULL"
+            " AND (a.group_id = ? OR a.group_id = '')"
+            " WHERE c.merchant_id=? GROUP BY c.id ORDER BY c.name LIMIT ?",
+            (group, tenant, self.ROSTER_LIMIT)).fetchall()
+        roster: list[dict[str, Any]] = []
+        for row in rows:
+            entry: dict[str, Any] = {"id": row["id"], "name": row["name"]}
+            aliases = [a for a in str(row["aliases"] or "").split("|") if a and a != row["name"]]
+            if aliases:
+                entry["aliases"] = aliases
+            roster.append(entry)
+        return roster
+
     def add_import(self, tenant: str, group: str, messages: list[Mapping[str,Any]], source: str, source_type: str="demo", known_gap: str="") -> dict[str,Any]:
         self._plan(tenant); iid="i_"+hashlib.sha256(f"{tenant}:{source}".encode()).hexdigest()[:16]
         normalized=[];overlap_candidates=0;weak_identity_count=0
@@ -1453,7 +1522,7 @@ class OrderStore:
             if msg["sent_at_epoch"] is not None:
                 recent=[dict(r) for r in self.db.execute("SELECT id,sender,content,sent_at FROM messages WHERE merchant_id=? AND group_id=? AND customer_id=? AND sent_at_epoch<=? AND sent_at_epoch>=? ORDER BY sent_at_epoch",(tenant,group,msg["customer_id"],msg["sent_at_epoch"],msg["sent_at_epoch"]-90))]
             open_orders=[self.order_detail(tenant,r["id"]) for r in self.db.execute("SELECT id FROM orders WHERE merchant_id=? AND customer_id=? AND status IN ('draft','review') ORDER BY created_at DESC LIMIT 5",(tenant,msg["customer_id"]))]
-            context={"message":{"id":msg["id"],"sender":msg["sender"],"content":msg["content"],"sent_at":msg["sent_at"],"group_id":group},"recent_customer_messages":recent,"open_orders":open_orders,"customer":{"id":msg["customer_id"],"name":self.db.execute("SELECT name FROM customers WHERE id=?",(msg["customer_id"],)).fetchone()[0]},"products":[{"sku":p["sku"],"name":p["name"],"unit":p["unit"]} for p in products],"last_confirmed_order":self.order_detail(tenant,prior["id"]) if prior else None,"rules":{"prices_are_server_owned":True,"history_cutoff":msg["sent_at"] or msg["observed_at"],"untrusted_message_data":True}}
+            context={"message":{"id":msg["id"],"sender":msg["sender"],"content":msg["content"],"sent_at":msg["sent_at"],"group_id":group},"recent_customer_messages":recent,"open_orders":open_orders,"customer":{"id":msg["customer_id"],"name":self.db.execute("SELECT name FROM customers WHERE id=?",(msg["customer_id"],)).fetchone()[0]},"products":self._catalog_for_model(tenant),"customers":self._roster_for_model(tenant,group),"last_confirmed_order":self.order_detail(tenant,prior["id"]) if prior else None,"rules":{"prices_are_server_owned":True,"history_cutoff":msg["sent_at"] or msg["observed_at"],"untrusted_message_data":True}}
             try:
                 if is_running and prior_run["result_json"]:
                     parsed=json.loads(prior_run["result_json"])
