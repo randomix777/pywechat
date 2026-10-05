@@ -49,9 +49,28 @@ SUMMARY_SYSTEM_PROMPT = """\
 你会看微信群里的订货消息，然后把一个群这段时间的订货情况整理成一段简报，
 给**店主本人**看。店主就在群里，他知道「老张」是谁，也知道自家卖什么。
 
-## 你要做的
+## 谁说的，比说了什么更重要
 
-把下面的消息整理成一份简报。要点：
+每一条都要写清**是谁说的**。同一个客户说了几句就并到他那一段，但**绝不能
+把两个客户的话写在一起**，也不能只写内容不写人 —— 店主看到「要 3 箱苹果」
+而不知道是谁要的，这条简报就是废的。
+
+分组只看**发送人**，不要按话题分组。
+
+## 不是文字的消息
+
+消息里可能带一个「这条不是文字消息」的字段，值是「图片」「语音」「文件」
+「视频」「链接」之类。
+
+遇到这种消息：
+
+* **照实写出来**。写「李叔发了一张图片」，不要写图片里可能是什么。
+* **不要猜内容**。你看不到图片里是什么、听不到语音说了什么。客户发图片很可能
+  就是在下单（比如拍一张货架照片），但那要店主自己去看。
+* 这类消息要**单独列一段提醒**，放在最后，标题写「需要你自己看一眼的」，
+  让店主知道有几条他必须亲自过目。
+
+## 判断要求
 
 1. **谁要什么、多少**。数量和单位要照抄原文，没写就写「没说要多少」。
 2. **客户原话**。客户说「那个黄的」就写「那个黄的」，不要替换成你猜的商品。
@@ -64,13 +83,16 @@ SUMMARY_SYSTEM_PROMPT = """\
 ## 不要做的事
 
 * 不要编造商品名称、品牌、规格。客户没说的就是没说。
+* 不要猜测图片、语音、文件里是什么内容。你没看到就是没看到。
 * 不要判断这是新单还是追加是老客户 —— 那是店主自己的记忆，你没有。
 * 不要写「建议」「推荐」「可以考虑」这类意见。你只负责转述。
 
 ## 输出
 
 纯文本，不要 JSON，不要 markdown 标题，不要代码块。
-按时间顺序分段写，每段一个客户。最后一段列出「还没说清的」。
+按时间顺序分段写，**每段开头必须是发送人的称呼，后面接冒号或换行**。
+最后列两段：「还没说清的」和「需要你自己看一眼的（非文字消息）」——
+后者没有内容就写「无」。
 
 """
 
@@ -88,13 +110,75 @@ def _as_message(item: Any) -> dict[str, Any]:
     这个错误在单测里抓不到，因为单测喂的是字典；只有接到真实的读取结果上
     才会炸。所以这里两种都收：先试映射，再按属性取。
 
-    **只取需要的字段**：发送人、内容、时间。读取结果里可能还带着消息 id、
+    **只取需要的字段**：发送人、内容、时间、类型。读取结果里可能还带着消息 id、
     群 id、原始游标之类的东西 —— 那些既不该送去模型，也不该出这台机器。
+
+    ## ``kind`` 必须一起带上
+
+    图片消息的 ``content`` 是占位符「图片」，**语音消息的 content 直接是空的**。
+    不带 kind 的话，模型看到的就是「王姨：（空）」，完全不知道发生了什么，
+    要么忽略这条，要么自己瞎猜一个内容出来。
+
+    所以这里把 kind 译成中文一起送过去，让模型能照实说「客户发了一张图片」。
     """
-    fields = ("sender", "content", "sent_at", "observed_at")
+    fields = ("sender", "content", "sent_at", "observed_at", "kind")
+    # **幂等**：已经是转换后的形状就直接用。
+    #
+    # 不设这条，调用方先自己转一次、summarize 内部再转一次，第二次就找不到
+    # sender/content/kind 了（它们已经变成长中文键名），于是**静默清空**
+    # 全部内容，模型回一句「这批消息全是空的」。这个坑真实踩到过。
+    if isinstance(item, Mapping) and "发送人" in item:
+        return {"发送人": item.get("发送人") or "",
+                "内容": item.get("内容") or "",
+                "时间": item.get("时间") or "",
+                **({"这条不是文字消息": item["这条不是文字消息"]}
+                   if item.get("这条不是文字消息") else {})}
+    raw: dict[str, Any] = {}
     if isinstance(item, Mapping):
-        return {k: item.get(k) for k in fields if k in item}
-    return {k: getattr(item, k) for k in fields if hasattr(item, k)}
+        raw = {k: item.get(k) for k in fields if k in item}
+    elif hasattr(item, "keys"):
+        # ``sqlite3.Row``：**不是 Mapping**，也不支持属性访问，但支持按列名取值。
+        # 少了这条分支它会掉进下面的 getattr，然后**静默返回全空字典** ——
+        # 模型收到「发送人：'　内容：'」，回一句「这批消息全是空的」，
+        # 而商户手里明明有五条。这个坑真实发生过。
+        available = set(item.keys())
+        raw = {k: item[k] for k in fields if k in available}
+    else:
+        raw = {k: getattr(item, k) for k in fields if hasattr(item, k)}
+        if not raw:
+            # 认不出来的东西**必须吵**。
+            #
+            # 静默返回空字典的后果是模型说「这批消息全是空的」，而商户手里
+            # 明明有一堆 —— 排查的人会去怀疑模型、怀疑提示词，不会想到
+            # 是这里把一个 tuple 当成了对象。这个坑真实踩到过两次
+            # （sqlite3.Row 一次、未设 row_factory 的 tuple 一次）。
+            raise TypeError(
+                f"认不出这种消息:{type(item).__name__}。"
+                "需要映射、sqlite3.Row，或带 sender/content 属性的对象。"
+                "（若来自 sqlite3，请确认连接设了 row_factory = sqlite3.Row）"
+            )
+    message: dict[str, Any] = {
+        "发送人": raw.get("sender") or "",
+        "内容": raw.get("content") or "",
+        "时间": raw.get("sent_at") or raw.get("observed_at") or "",
+    }
+    kind = str(raw.get("kind") or "text").strip().lower()
+    if kind and kind != "text":
+        message["这条不是文字消息"] = KIND_LABELS.get(kind, kind)
+    return message
+
+
+#: 非文字消息在简报里的说法。模型照这个写，**不要自己去解释内容**。
+KIND_LABELS = {
+    "image": "图片",
+    "voice": "语音",
+    "video": "视频",
+    "file": "文件",
+    "link": "链接",
+    "quote": "引用",
+    "other": "其他类型",
+    "unknown": "类型不明",
+}
 
 
 class Summarizer:

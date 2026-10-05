@@ -1191,23 +1191,23 @@ class MerchantWindow:
                 return []
             marks = ",".join("?" for _ in import_ids)
             rows = store.db.execute(
-                "SELECT sender, content, COALESCE(sent_at, observed_at) AS sent_at"
+                "SELECT sender, content, kind, COALESCE(sent_at, observed_at) AS sent_at"
                 " FROM messages WHERE merchant_id=? AND import_id IN (" + marks + ")"
                 " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id",
                 [tenant, *import_ids]).fetchall()
-            return [{"sender": r["sender"], "content": r["content"], "sent_at": r["sent_at"]}
-                    for r in rows]
+            return [{"sender": r["sender"], "content": r["content"],
+                     "kind": r["kind"], "sent_at": r["sent_at"]} for r in rows]
 
         marks = ",".join("?" for _ in groups)
         rows = store.db.execute(
-            "SELECT sender, content, COALESCE(sent_at, observed_at) AS sent_at"
+            "SELECT sender, content, kind, COALESCE(sent_at, observed_at) AS sent_at"
             " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
             " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)) DESC, id DESC"
             " LIMIT ?",
             [tenant, *groups, SUMMARY_MESSAGE_LIMIT]).fetchall()
         # 上面按时间**倒序**取最近的，交给模型时要正过来。
-        return [{"sender": r["sender"], "content": r["content"], "sent_at": r["sent_at"]}
-                for r in reversed(rows)]
+        return [{"sender": r["sender"], "content": r["content"],
+                 "kind": r["kind"], "sent_at": r["sent_at"]} for r in reversed(rows)]
 
     def _run_summary(self, result: Any) -> dict:
         """真正去调模型。在后台线程里跑，不能碰 Tk。"""
