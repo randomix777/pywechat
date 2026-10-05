@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Iterable, Mapping, Sequence
@@ -185,13 +186,19 @@ class Summarizer:
     """把消息汇总成一段可读文本。"""
 
     def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 60,
-                 max_tokens: int = 2000):
+                 max_tokens: int = 800):
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
-        #: **必须设**。OpenRouter 上的模型默认要 65536 的 max_tokens，
-        #: 账户余额不够会直接 402 —— 这不是配额问题，是请求本身就超了。
+        #: **必须设**，而且**不能设大**。
+        #:
+        #: 不设会被上游默认成 65536 —— 请求本身就超了余额，直接 402。
+        #:
+        #: 设**太大**同样 402：上游按「你最多可能用多少」预扣，要得比需要的多
+        #: 就白白抬高门槛。一份群消息简报通常几百个字，800 够用；
+        #: 原来设 2000，在余额紧的账号上必然失败（实测提示
+        #: 「你需要 2000 tokens，但只付得起 473」）。
         self.max_tokens = max_tokens
 
     def summarize(self, messages: Sequence[Mapping[str, Any]],
@@ -217,6 +224,21 @@ class Summarizer:
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False, default=str)},
             ],
         }
+        result = self._call(body, len(messages))
+        # 402 且上游告诉了「你只付得起多少」时，**按它说的重试一次**。
+        #
+        # 这个错误里带着能用的数字，白白扔掉不如用上 —— 余额紧的账号上
+        # 这决定了「能出一份短一点的简报」还是「什么都出不来」。
+        affordable = result.pop("_affordable", None)
+        if affordable and result.get("error"):
+            body["max_tokens"] = affordable
+            retry = self._call(body, len(messages))
+            if not retry.get("error"):
+                return retry
+            result = retry
+        return result
+
+    def _call(self, body: dict[str, Any], count: int) -> dict[str, Any]:
         request = urllib.request.Request(
             self.url, data=json.dumps(body).encode("utf-8"),
             headers={"Authorization": "Bearer " + self.api_key,
@@ -226,21 +248,71 @@ class Summarizer:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            return {"summary": "", "error": f"HTTP {exc.code}", "cost": None,
-                    "message_count": len(messages)}
+            return self._http_error(exc, count, int(body.get("max_tokens") or 0))
         except Exception as exc:  # pragma: no cover - network
-            return {"summary": "", "error": type(exc).__name__, "cost": None,
-                    "message_count": len(messages)}
+            return {"summary": "", "error": f"连接模型失败（{type(exc).__name__}）",
+                    "cost": None, "message_count": count}
         message = (data.get("choices") or [{}])[0].get("message", {})
         return {"summary": (message.get("content") or "").strip(),
                 "error": None,
                 "cost": (data.get("usage") or {}).get("cost"),
-                "message_count": len(messages)}
+                "message_count": count}
+
+    @staticmethod
+    def _http_error(exc: urllib.error.HTTPError, count: int, asked: int) -> dict[str, Any]:
+        """把上游的错误翻成**商户能照着做**的一句话。
+
+        原来是 ``f"HTTP {exc.code}"`` —— 「整理失败：HTTP 402」。
+        商户看到这个学不到任何东西：不知道是自己余额不够、还是软件坏了、
+        还是该去交钱。而真实原因就写在响应体里。
+
+        余额不足这条尤其要说清：它**不是**软件故障，降低一次要的量就能出结果，
+        所以连可用的额度一起带回去让调用方重试。
+        """
+        detail = ""
+        affordable = None
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            error = payload.get("error") or {}
+            detail = str(error.get("message") or "")
+            # 上游会说「You requested up to 2000 tokens, but can only afford 473」。
+            match = re.search(r"can only afford\s+(\d+)", detail)
+            if match:
+                affordable = int(match.group(1))
+            # 真正的首条原因可能被埋在 previous_errors 的末尾（上游重试链）。
+            for previous in (error.get("metadata") or {}).get("previous_errors") or []:
+                if previous.get("message"):
+                    detail = str(previous["message"])
+                    match = re.search(r"can only afford\s+(\d+)", detail)
+                    if match:
+                        affordable = int(match.group(1))
+                    break
+        except Exception:
+            pass
+
+        if exc.code == 402 or affordable is not None:
+            if affordable:
+                return {"summary": "", "cost": None, "message_count": count,
+                        "error": f"模型账户余额不足：这次最多只能用 {affordable} 个 token，"
+                                 f"而请求要 {asked} 个。正在按可用额度重试一次。",
+                        "_affordable": max(64, affordable)}
+            return {"summary": "", "cost": None, "message_count": count,
+                    "error": "模型账户余额不足，需要充值后才能继续。"
+                             "这不是软件问题 —— 已经读到的东西一条都没少。"}
+        if exc.code == 429:
+            return {"summary": "", "cost": None, "message_count": count,
+                    "error": "模型这边临时限流，等一会儿再点一次就好。"}
+        if exc.code in (401, 403):
+            return {"summary": "", "cost": None, "message_count": count,
+                    "error": "模型密钥无效或已失效，需要重新配置。"}
+        tail = f"（{detail[:120]}）" if detail else ""
+        return {"summary": "", "cost": None, "message_count": count,
+                "error": f"模型调用失败，错误码 {exc.code}{tail}"}
 
 
 def summarize_messages(messages: Iterable[Mapping[str, Any]], *,
                        base_url: str, api_key: str, model: str,
                        catalog: Sequence[Mapping[str, Any]] = (),
                        timeout: float = 60,
-                       max_tokens: int = 2000) -> dict[str, Any]:
+                       max_tokens: int = 800) -> dict[str, Any]:
     return Summarizer(base_url, api_key, model, timeout, max_tokens).summarize(list(messages), catalog)

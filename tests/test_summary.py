@@ -93,9 +93,17 @@ class RequestShapeTests(unittest.TestCase):
             self.summarizer.summarize([{"sender": "张", "content": "要苹果"}])
         return json.loads(opener.call_args[0][0].data.decode("utf-8"))
 
-    def test_max_tokens_is_always_set(self):
-        """不设会被默认成 65536，余额不够直接 402 —— 这是实测踩到的。"""
-        self.assertEqual(self._body()["max_tokens"], 2000)
+    def test_max_tokens_is_set_and_not_inflated(self):
+        """两边都不能错：
+
+        * 不设 → 上游默认 65536，请求本身就超了余额
+        * 设太大 → 上游按「最多可能用多少」预扣，白白抬高门槛
+
+        原来断言的是 2000 —— 而那正是余额紧时必 402 的值。
+        """
+        asked = self._body()["max_tokens"]
+        self.assertGreater(asked, 0, "不设会被默认成 65536")
+        self.assertLessEqual(asked, 1000, "要得比需要的多会白撞 402")
 
     def test_no_response_format_is_requested(self):
         """摘要不是结构化输出，别去约束 json_schema。"""
@@ -143,7 +151,10 @@ class BehaviourTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen",
                         side_effect=urllib.error.HTTPError("u", 402, "no credit", {}, None)):
             result = self.summarizer.summarize([{"sender": "张", "content": "要苹果"}])
-        self.assertEqual(result["error"], "HTTP 402")
+        # **不是** `HTTP 402` —— 商户看到那个学不到任何东西。
+        # 要说清是余额不足、不是软件问题。
+        self.assertIn("余额", result["error"])
+        self.assertNotEqual(result["error"], "HTTP 402")
         self.assertEqual(result["summary"], "", "失败时不要返回半截文字冒充结果")
 
 
