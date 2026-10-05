@@ -26,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pyweixin.history_read import HistoryReader, TimeWindow  # noqa: E402
 from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.utils import parse_group_chat_history  # noqa: E402
+from pyweixin.utils import (  # noqa: E402
+    UNRESOLVED_SENDER, UNRESOLVED_TIMESTAMP, parse_group_chat_history)
 from pyweixin.wechat_time import local_timezone, parse_timestamp, sent_epoch  # noqa: E402
 
 #: 真机上 ``dump_chat_history`` 原样返回的时间戳。日的位数不固定。
@@ -70,7 +71,7 @@ class RealTimestampShapeTests(unittest.TestCase):
         self.assertEqual(parsed.utcoffset(), timedelta(0))
 
     def test_unparseable_input_is_none_not_an_exception(self):
-        for value in ("", "   ", None, "红包或转账(无法获取时间戳)", "12:30", "not a time"):
+        for value in ("", "   ", None, UNRESOLVED_TIMESTAMP, "12:30", "not a time"):
             with self.subTest(value=value):
                 self.assertIsNone(parse_timestamp(value))
 
@@ -143,7 +144,7 @@ class GroupSenderTests(unittest.TestCase):
     NAMED_ITEM = "张老板 两箱苹果 2026-10-2 12:21"
     VIEW = "mmui::ChatTextItemView"
 
-    UNKNOWN = "红包或转账(无法获取发送人)"
+    UNKNOWN = UNRESOLVED_SENDER
 
     def test_sender_is_never_none_even_when_wechat_exposes_no_nickname(self):
         details_with_name = [(self.REAL_ITEM, self.VIEW)]

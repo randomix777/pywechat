@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .conversations import Conversation
+from .utils import sender_is_resolved
 from .wechat_time import parse_timestamp
 
 LOGGER = logging.getLogger(__name__)
@@ -140,6 +141,10 @@ class ConversationCoverage:
     earliest: datetime | None = None
     latest: datetime | None = None
     truncated: bool = False
+    #: 这次读到的消息里发送人**没认出来**的条数。为 0 才是好事。
+    #: 不记下来就没了 —— “读到 107 条”和“读到 107 条但每条的发送人
+    #: 都是占位符”在界面上完全一样，商户会以为成功了。
+    unresolved_senders: int = 0
     error: str = ""
     skipped: bool = False
 
@@ -606,6 +611,11 @@ class HistoryReader:
                     self._clock(),
                 )
 
+            # 这一次读到的消息里，有多少条的发送人**没认出来**。
+            # 不记下来就没了：“读到 107 条”与“读到 107 条但每一条的发送人都是占位符”
+            # 在界面上完全一样，商户会以为成功了，转头去查“为什么发送人都是那句话”。
+            unresolved = sum(1 for row in kept
+                              if not sender_is_resolved(row.get("sender")))
             result.coverage.append(
                 ConversationCoverage(
                     conversation=conversation,
@@ -614,6 +624,7 @@ class HistoryReader:
                     earliest=earliest,
                     latest=latest,
                     truncated=truncated or hit_ceiling,
+                    unresolved_senders=unresolved,
                 )
             )
             with self._lock:

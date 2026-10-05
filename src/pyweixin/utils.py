@@ -478,10 +478,10 @@ def parse_chat_history(friend:str,myName:str,details_with_name:list[str])->tuple
     chat_history_label=Special_Labels.ChatHistory
     emoji_label=Special_Labels.Emoji
     for text,class_name,chat_history in details_with_name:
-        timestamp=timestamp_pattern.search(text).group(0) if timestamp_pattern.search(text) else '红包或转账(无法获取时间戳)'
+        timestamp=timestamp_pattern.search(text).group(0) if timestamp_pattern.search(text) else UNRESOLVED_TIMESTAMP
         text=timestamp_pattern.sub('',text)
-        if timestamp=='红包或转账(无法获取时间戳)':
-            sender='红包或转账(无法获取发送人)'
+        if timestamp==UNRESOLVED_TIMESTAMP:
+            sender=UNRESOLVED_SENDER
             content=text.strip()
         else:
             sender=friend if re.search(rf'^{friend}\s',text) is not None else myName
@@ -651,6 +651,27 @@ def _split_group_detail(item:tuple,matched:tuple|None)->tuple[str,str|None]:
     return content,None
 
 
+#: 解析不出发送人 / 时间戳时写进去的**占位串**。
+#:
+#: 原来这里写的是「红包或转账(无法获取发送人)」。**那是错的，而且是会误导人的错。**
+#: 实测一个 424 人的水果群，读到 107 条消息，发送人 100% 是这个占位串，
+#: 而那批消息里**红包 0 条** —— 全是「非常香，肉嫩好吃」这类普通聊天和图片。
+#: 商户看到「红包或转账」会以为这批消息全是红包，于是得出一个完全错误的结论；
+#: 「这批消息的发送人没认出来」才是事实，商户才知道该去查什么。
+UNRESOLVED_SENDER = "（发送人未识别）"
+UNRESOLVED_TIMESTAMP = "（时间未识别）"
+
+#: 旧字符串。**只用于识别历史数据，不用于写入。**
+#: 已经落库的订单里可能留着它，判断「这条消息有没有认出发送人」时两个都要认。
+LEGACY_UNRESOLVED_SENDER = "红包或转账(无法获取发送人)"
+LEGACY_UNRESOLVED_TIMESTAMP = "红包或转账(无法获取时间戳)"
+
+#: 发送人算不算「认出来了」。历史占位串一律算没认出来。
+def sender_is_resolved(sender: str | None) -> bool:
+    text = str(sender or "").strip()
+    return bool(text) and text not in (UNRESOLVED_SENDER, LEGACY_UNRESOLVED_SENDER)
+
+
 def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_without_name:list[tuple[str,str]]=[],groupMembers:list[str]=[])->tuple[list,list,list,list]:
     '''群聊内的聊天记录解析
     Args:
@@ -667,7 +688,7 @@ def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_with
     if groupMembers:
         for item in details_with_name or []:
             text,class_name=item[0],item[1]
-            timestamp=_history_timestamp(text) or '红包或转账(无法获取时间戳)'
+            timestamp=_history_timestamp(text) or UNRESOLVED_TIMESTAMP
             content=timestamp_pattern_sub(text)
             sender=None
             for group_member in sorted(groupMembers,key=lambda value:len(value),reverse=True):
@@ -676,7 +697,7 @@ def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_with
                     content=content[len(group_member):].strip()
                     break
             if sender is None:
-                sender='红包或转账(无法获取发送人)'
+                sender=UNRESOLVED_SENDER
             message_type=_group_message_type(class_name,content)
             if len(item)>2 and item[2]:
                 content=item[2]
@@ -688,12 +709,12 @@ def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_with
     aligned=_align_group_details(details_with_name,details_without_name)
     for item,matched in aligned:
         text,class_name=item[0],item[1]
-        timestamp=_history_timestamp(str(matched[0] if matched is not None else text)) or '红包或转账(无法获取时间戳)'
+        timestamp=_history_timestamp(str(matched[0] if matched is not None else text)) or UNRESOLVED_TIMESTAMP
         content,sender=_split_group_detail(item,matched)
         message_type=_group_message_type(class_name,content)
         if len(item)>2 and item[2]:
             content=item[2]
-        senders.append(sender or '红包或转账(无法获取发送人)')
+        senders.append(sender or UNRESOLVED_SENDER)
         contents.append(content)
         timestamps.append(timestamp)
         message_types.append(message_type)
@@ -770,14 +791,14 @@ def parse_group_messages(details_with_name:list[tuple[str]],details_without_name
                     sender=group_member
                     content=content[len(group_member):].strip()
                     break
-            senders.append(sender or '红包或转账(无法获取发送人)')
+            senders.append(sender or UNRESOLVED_SENDER)
             contents.append(content)
             message_types.append(_group_message_type(class_name,content))
         return contents,senders,message_types
     for item,matched in _align_group_details(details_with_name,details_without_name):
         class_name=item[1]
         content,sender=_split_group_detail(item,matched)
-        senders.append(sender or '红包或转账(无法获取发送人)')
+        senders.append(sender or UNRESOLVED_SENDER)
         contents.append(content)
         message_types.append(_group_message_type(class_name,content))
     return contents,senders,message_types

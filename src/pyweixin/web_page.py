@@ -258,6 +258,9 @@ function render(data) {
       if (row.skipped) status = "已跳过";
       if (row.error) status = row.error;
       if (row.truncated) status += "（读满了）";
+      // 发送人没认出来必须显式说出来，否则页面上的「读到 N 条」
+      // 会让商户以为成功了。
+      if (row.unresolved) status += "（" + row.unresolved + " 条发送人没认出来）";
       html += "<tr><td>" + esc(row.name) + "</td><td>" + row.count +
               "</td><td>" + esc(status) + "</td></tr>";
     }

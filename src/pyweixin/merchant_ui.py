@@ -962,7 +962,15 @@ class MerchantWindow:
                 count_text = f"{item.message_count} 条"
                 earliest = item.earliest.date().isoformat() if item.earliest else "—"
                 latest = item.latest.date().isoformat() if item.latest else "—"
+            # 发送人没认出来**必须写在这一行**，不能只记在库里。
+            # 「读到 107 条」和「读到 107 条但每条发送人都是占位符」在界面上
+            # 曾经一模一样，商户于是以为成功了，转头去查「为什么发件人都是那句话」。
+            # 那批消息里红包 0 条，全是普通聊天 —— 占位符原来写的是
+            # 「红包或转账」，商户会得出一个完全错误的结论。
             note_text = "　（读失败）" if item.error else ("　（上次已读完）" if item.skipped else "")
+            unresolved = int(getattr(item, "unresolved_senders", 0) or 0)
+            if unresolved and not item.error:
+                note_text += f"　（{unresolved} 条发送人没认出来）"
             tree.insert(
                 "", "end",
                 values=(name, count_text, f"{earliest} 至 {latest}{note_text}"),

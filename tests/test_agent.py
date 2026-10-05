@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+from pyweixin.utils import UNRESOLVED_SENDER
 
 from pyweixin.agent import AgentCommand, AgentConfig, AgentStore, LocalAgent
 from pyweixin.Errors import NoSuchFriendError
@@ -35,7 +36,10 @@ class AgentTests(unittest.TestCase):
         # 微信在聊天记录列表里不暴露昵称，切不出发送人。这里曾经断言 is None ——
         # 那是把缺陷当成了期望值：真机读到的 20 条消息发送人全是 None，无从归属
         # 客户。现在四个分支统一回落到同一个占位符。
-        self.assertEqual(senders[0], "红包或转账(无法获取发送人)")
+        self.assertEqual(senders[0], UNRESOLVED_SENDER)
+        # 原来写的是「红包或转账(无法获取发送人)」。**那是说假话**：
+        # 实测一个群里 107 条消息全是这个占位串，而**红包 0 条**。
+        self.assertNotIn("红包", senders[0])
         self.assertTrue(all(senders))
         self.assertEqual(timestamps[0], "2026-9-25 11:47")
         self.assertEqual(message_types[0], "文本")
