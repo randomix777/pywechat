@@ -104,6 +104,10 @@ MERCHANT_USD_PER_VENDOR_USD = 10.0
 #: 不该因为他解析了 3000 条消息就少一分钱。
 US_PER_USD = 1_000_000
 
+#: 1 百万。OpenRouter 的单价是**每 token**，内部一律用每百万，
+#: 不给「这里每 token、那里每百万」留出错的机会。
+US_PER_MILLION = 1_000_000
+
 #: 一次解析的输出 token 上限估计。模型一般在这个量级内收尾；
 #: 估高了商户多付，估低了平台贴钱，所以偏保守。
 DEFAULT_OUTPUT_TOKENS = 800
@@ -193,8 +197,29 @@ class ModelPrice:
 def price_from_mapping(raw: Mapping[str, Any] | None) -> ModelPrice | None:
     """从 OpenRouter 的模型条目里取出单价。
 
-    读不到就返回 ``None`` —— **不猜价格**。宁可用运营配置的固定额度，
-    也不要拿一个编出来的单价去扣商户的钱。
+    ## 单位：OpenRouter 给的是**每个 token 多少美元**
+
+    真实返回长这样（2026-10 取自 ``/api/v1/models``）::
+
+        "pricing": {"prompt": "2e-06", "completion": "1e-05"}
+
+    也就是 **每百万 token 2 美元 / 10 美元**，不是「每百万 2e-06 美元」。
+    读错单位会少算 **100 万倍** —— 而少算意味着平台每次倒贴钱。
+
+    所以这里读进来之后**立刻换算成每百万**，让内部一律用同一个单位，
+    不给「这里是每 token、那里是每百万」留出错的机会。
+
+    ## 读不到就返回 None，不猜
+
+    实测有两类条目必须当「未知」而不是「免费」：
+
+    * ``"prompt": "0"`` —— 22 个模型是 0 价（多���免费层）。按 0 结算
+      等于白送。
+    * ``"prompt": "-1"`` —— router 类模型（``openrouter/auto-beta``、
+      ``nvidia/switchyard``）用 -1 表示"按实际路由计费"，不是负数。
+      照算会得出**负成本**，商户的额度会反过来增加。
+
+    两种都退回运营配置的固定额度，那至少是可预期的。
     """
     if not raw:
         return None
@@ -202,16 +227,19 @@ def price_from_mapping(raw: Mapping[str, Any] | None) -> ModelPrice | None:
     if not isinstance(pricing, Mapping):
         return None
     try:
-        in_price = float(pricing.get("prompt") or pricing.get("input") or 0)
-        out_price = float(pricing.get("completion") or pricing.get("output") or 0)
+        per_token_in = float(pricing.get("prompt") or pricing.get("input") or 0)
+        per_token_out = float(pricing.get("completion") or pricing.get("output") or 0)
     except (TypeError, ValueError):
         return None
-    if in_price <= 0 and out_price <= 0:
+    # \u975e\u6b63\u5355\u4ef7\uff08\u542b 0 \u4e0e -1\uff09\u90fd\u662f\u300c\u4e0d\u77e5\u9053\u300d\uff0c\u4e0d\u662f\u300c\u514d\u8d39\u300d\u3002
+    if per_token_in < 0 or per_token_out < 0:
+        return None
+    if per_token_in == 0 and per_token_out == 0:
         return None
     return ModelPrice(
         model=str(raw.get("id") or raw.get("name") or ""),
-        input_per_million=in_price,
-        output_per_million=out_price,
+        input_per_million=per_token_in * US_PER_MILLION,
+        output_per_million=per_token_out * US_PER_MILLION,
     )
 
 

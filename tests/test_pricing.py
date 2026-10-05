@@ -121,13 +121,23 @@ class HonestWhenUnknownTests(unittest.TestCase):
         self.assertIsNone(price_from_mapping({"pricing": {"prompt": "0", "completion": "0"}}))
 
     def test_a_real_pricing_block_is_read(self):
+        """真实数据（2026-10 取自 OpenRouter ``/api/v1/models``）。
+
+        注意单位：``prompt`` 是**每 token** 多少美元，所以 ``2e-06`` 应当
+        读成**每百万 2 美元**。
+
+        这条断言以前写的是 ``input_per_million == 0.000003`` —— 也就是把
+        每 token 的价当成了每百万的价。它保护了**错误的单位**：少算 100 万倍
+        而不会报错，平台每次调用倒贴钱。现已改成真实单位。
+        """
         price = price_from_mapping({
-            "id": "vendor/model",
-            "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+            "id": "anthropic/claude-sonnet-5.5",
+            "pricing": {"prompt": "2e-06", "completion": "1e-05"},
         })
         self.assertIsNotNone(price)
-        self.assertEqual(price.model, "vendor/model")
-        self.assertAlmostEqual(price.input_per_million, 0.000003)
+        self.assertEqual(price.model, "anthropic/claude-sonnet-5.5")
+        self.assertAlmostEqual(price.input_per_million, 2.0)
+        self.assertAlmostEqual(price.output_per_million, 10.0)
 
 
 class VendorCostTests(unittest.TestCase):
