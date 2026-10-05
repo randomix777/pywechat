@@ -34,6 +34,7 @@ from .live_listen import (
     LISTEN_STOPPED,
 )
 from .runmode import RunMode
+from . import summary_task
 from .wechat_state import STATE_COPY, WeChatState
 from .wizard import WizardStep
 
@@ -47,7 +48,7 @@ FORBIDDEN_TERMS = ("token", "apikey", "api key", "provider", "session", "bearer"
 #: 摘要最多送多少条消息给模型。
 #: 模型上下文和钱都有限，不能把整个群的历史全塞进去。
 #: 超出时取**最近**的，并在界面上说明。
-SUMMARY_MESSAGE_LIMIT = 200
+SUMMARY_MESSAGE_LIMIT = summary_task.SUMMARY_MESSAGE_LIMIT
 
 #: 表格一列最多显示多少字。超出的部分用省略号收尾 —— 不加省略号的话，
 #: 商户看到的是一句**被拦腰切断**的话，看不出订单到底写了什么。
@@ -815,46 +816,8 @@ class MerchantWindow:
         self._render_read_state(result)
 
     def _accumulated_coverage(self, result: Any) -> dict[str, tuple[int, str, str]]:
-        """这些会话**积累下来**的总量：条数、最早、最晚。
-
-        ## 为什么要查这个
-
-        「读取全部」报的是**总量**，「更新历史」报的是**增量** —— 两者写在
-        界面上同一个位置，商户看到的是两个不同的量，却难以分辨。
-
-        更糟的是「上次已读完」时表格显示 0 条，看起来像这个群什么都没有，
-        而库里其实有几百条。
-
-        所以查一下库里到底有多少，让那一列始终代表**总量**。
-        查不到就返回空字典，界面退回原来的写法 —— 一次查询失败不该让
-        读取结果看不见。
-
-        这里用 ``getattr`` 取 ``app`` 而不是直接点：渲染逻辑会被单测用桩对象
-        直接驱动，桩上没有 ``app``。真实运行时它一定在。
-        """
-        app = getattr(self, "app", None)
-        store = getattr(app, "orders", None)
-        tenant = getattr(app, "tenant", "")
-        groups: list[str] = []
-        for item in getattr(result, "coverage", None) or []:
-            conversation = getattr(item, "conversation", None)
-            name = getattr(conversation, "name", "") if conversation is not None else ""
-            if name and name not in groups:
-                groups.append(str(name))
-        if store is None or not groups:
-            return {}
-        marks = ",".join("?" for _ in groups)
-        try:
-            rows = store.db.execute(
-                "SELECT group_id, COUNT(*) AS n,"
-                " MIN(COALESCE(sent_at, observed_at)) AS lo,"
-                " MAX(COALESCE(sent_at, observed_at)) AS hi"
-                " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
-                " GROUP BY group_id", [tenant, *groups]).fetchall()
-        except Exception:
-            return {}
-        return {str(r["group_id"]): (int(r["n"]), str(r["lo"] or ""), str(r["hi"] or ""))
-                for r in rows}
+        """转发到共用逻辑。判据只有一份，两个界面都从这里取。"""
+        return summary_task.accumulated_coverage(self, result)
 
     def _render_read_state(self, result: Any) -> None:
         """把读取结果画出来。页面重建后也会被调用，所以它必须是**幂等**的。"""
@@ -1021,19 +984,10 @@ class MerchantWindow:
 
 
     def _has_messages_for(self, result: Any) -> bool:
-        """这个群到底有没有可用的消息。
-
-        **不能只看 ``result.total_messages``。** 那个数是**本次**读到的条数，
-        更新时发现没有新消息就是 0 —— 但库里可能已经积累了几百条。
-
-        只看它，就会出现这种自相矛盾的界面：按钮明明放出来了，一点却弹
-        「还没有读到消息，请先点开始读取」，而商户刚刚才读完一大群。
-        """
-        if result is None:
-            return False
-        if getattr(result, "total_messages", 0):
-            return True
-        return any(n for n, _, _ in self._accumulated_coverage(result).values())
+        """放行的唯一判据（共用逻辑）。
+        本早有两处各自判断——一处放行、一处拦回去，
+        界面就自相矛盾了。"""
+        return summary_task.has_messages_for(self, result)
 
     def _go_next_from_history(self) -> None:
         """「下一步：智能整理」按钮。真的没有消息时才拦 —— 那是死路。"""
@@ -1146,93 +1100,12 @@ class MerchantWindow:
         self._summary_status = ttk.Label(bar, text="", foreground="#7b8794")
 
     def _messages_for_summary(self, result: Any) -> list[dict[str, Any]]:
-        """把这次读到的**会话**的消息取出来。
+        """取哪些消息给模型（共用逻辑）。详见 ``summary_task``。"""
+        return summary_task.messages_for_summary(self, result)
 
-        ## 为什么不能只取最近一批导入
-
-        读取分两种：「读取全部」会导入一大批，
-        「更新历史」只导入新增的几条。
-
-        一开始我只按**最后一次**导入的 import_ids 取数，于是：
-
-            【读取全部】后点摘要 -> 10 条
-            【更新后】点摘要     -> 2 条   ← 前面 10 条不见了
-
-        商户刚才明明读到了 12 条，一点摘要只剩 2 条 ——
-        界面和他刚做的事对不上。
-
-        ## 现在的取法
-
-        按 result.coverage 里的**会话**取（对应 messages.group_id），
-        覆盖这个会话积累下来的全部消息。这才是商户心里
-        「这个群我读过什么」的范围。
-
-        ## 为什么要截断
-
-        模型的上下文和钱都有限。只取**最近** ``SUMMARY_MESSAGE_LIMIT`` 条，
-        并在超出时明说，而不是静默地只给一部分。
-        """
-        store = getattr(self.app, "orders", None)
-        tenant = getattr(self.app, "tenant", "")
-        if store is None:
-            return []
-
-        groups: list[str] = []
-        for item in getattr(result, "coverage", None) or []:
-            conversation = getattr(item, "conversation", None)
-            name = getattr(conversation, "name", "") if conversation is not None else ""
-            if name and name not in groups:
-                groups.append(str(name))
-
-        if not groups:
-            # 拿不到会话（比如旧的结果对象）时退回按导入批次取。
-            import_ids = [str(x) for x in (getattr(result, "import_ids", None) or []) if x]
-            if not import_ids:
-                return []
-            marks = ",".join("?" for _ in import_ids)
-            rows = store.db.execute(
-                "SELECT sender, content, kind, COALESCE(sent_at, observed_at) AS sent_at"
-                " FROM messages WHERE merchant_id=? AND import_id IN (" + marks + ")"
-                " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id",
-                [tenant, *import_ids]).fetchall()
-            return [{"sender": r["sender"], "content": r["content"],
-                     "kind": r["kind"], "sent_at": r["sent_at"]} for r in rows]
-
-        marks = ",".join("?" for _ in groups)
-        rows = store.db.execute(
-            "SELECT sender, content, kind, COALESCE(sent_at, observed_at) AS sent_at"
-            " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
-            " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)) DESC, id DESC"
-            " LIMIT ?",
-            [tenant, *groups, SUMMARY_MESSAGE_LIMIT]).fetchall()
-        # 上面按时间**倒序**取最近的，交给模型时要正过来。
-        return [{"sender": r["sender"], "content": r["content"],
-                 "kind": r["kind"], "sent_at": r["sent_at"]} for r in reversed(rows)]
-
-    def _run_summary(self, result: Any) -> dict:
-        """真正去调模型。在后台线程里跑，不能碰 Tk。"""
-        from .summary import DEFAULT_SUMMARY_MODEL, summarize_messages
-        messages = self._messages_for_summary(result)
-        session = getattr(self.app, "session", None)
-        if not messages:
-            return {"summary": "", "error": "没读到消息", "cost": None,
-                    "message_count": 0}
-        # Session 里**没有 api_key** —— 它只有 access_token。模型调用需要的是
-        # 上游密钥，它属于运营配置，不应跟着商户的登录 token 进界面。
-        api_key = _local_api_key()
-        if not api_key:
-            return {"summary": "", "error": "还没配置模型密钥，联系不上模型",
-                    "cost": None, "message_count": len(messages)}
-        try:
-            return summarize_messages(
-                messages,
-                base_url="https://openrouter.ai/api/v1",
-                api_key=api_key,
-                model=DEFAULT_SUMMARY_MODEL,
-            )
-        except Exception as exc:  # 网络不可预期，不让线程死掉
-            return {"summary": "", "error": type(exc).__name__, "cost": None,
-                    "message_count": len(messages)}
+    def _run_summary(self, result: Any) -> dict[str, Any]:
+        """真正去调模型（共用逻辑）。在后台线程里跑，不能碰 Tk。"""
+        return summary_task.run_summary(self, result)
 
     def _summary_tick(self) -> None:
         """每半秒刷一次已等待时长。给的是**真实秒数**。"""
@@ -2425,26 +2298,5 @@ __all__ = [
 
 
 def _local_api_key() -> str:
-    """本地配置的上游密钥。
-
-    不从 Session 取 —— Session 里只有商户的 access_token，没有 api_key。
-    也不把密钥写进界面或日志：它只在这里读一次，用完不留下。
-    """
-    import os
-    import pathlib
-    key = os.environ.get("PYWEIXIN_OPENROUTER_API_KEY", "")
-    if key.strip():
-        return key.strip()
-    # 本地开发时把密钥放在一个文件里，不要求每次手工设环境变量。
-    # 文件放在商户数据目录下，不进仓库。
-    for path in (pathlib.Path.home() / ".pyweixin_dev" / "openrouter.key",):
-        try:
-            if path.is_file():
-                return path.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-    try:
-        from .openrouter_adapter import api_key_from_env
-        return api_key_from_env()
-    except Exception:
-        return ""
+    """共用逻辑：本地配置的上游密钥。详见 ``summary_task``。"""
+    return summary_task.local_api_key()

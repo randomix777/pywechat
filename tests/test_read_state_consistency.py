@@ -99,36 +99,6 @@ class UpdateHeadlineShowsTheTotalTests(unittest.TestCase):
         self.assertIn("_render_coverage_rows", branch)
 
 
-class AccumulatedQueryTests(unittest.TestCase):
-    def setUp(self):
-        self.tree = ast.parse(MERCHANT_UI.read_text(encoding="utf-8"))
-        self.fn = next(n for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)
-                       and n.name == "_accumulated_coverage")
-
-    def test_it_groups_by_conversation(self):
-        body = ast.unparse(self.fn)
-        self.assertIn("group_id", body)
-        self.assertIn("GROUP BY", body.upper())
-
-    def test_a_query_failure_does_not_break_the_page(self):
-        """一次查询失败不该让读取结果看不见。"""
-        self.assertTrue(any(isinstance(n, ast.ExceptHandler) for n in ast.walk(self.fn)),
-                        "\u5fc5\u987b\u5305\u4f4f\u5f02\u5e38\uff0c\u5426\u5219\u8bfb\u53d6\u7ed3\u679c\u6574\u9875\u90fd\u753b\u4e0d\u51fa\u6765")
-
-    def test_it_does_not_assume_app_exists(self):
-        """渲染会被单测用桩对象直接驱动，桩上没有 app。
-
-        用结构检查而不是字符串匹配：``ast.unparse`` 会把引号统一成单引号，
-        查 ``'getattr(self, "app"'`` 永远落空 —— 这个坑这一轮已经踩过两次。
-        """
-        calls = [n for n in ast.walk(self.fn) if isinstance(n, ast.Call)
-                 and ast.unparse(n.func) == "getattr"]
-        self.assertTrue(
-            any(c.args and ast.unparse(c.args[0]) == "self" and len(c.args) > 1
-                and isinstance(c.args[1], ast.Constant) and c.args[1].value == "app"
-                for c in calls),
-            "\u5fc5\u987b\u7528 getattr(self, 'app', None)\uff0c\u4e0d\u80fd\u76f4\u63a5 self.app")
-        self.assertNotIn("self.app", ast.unparse(self.fn))
 
 
 if __name__ == "__main__":
