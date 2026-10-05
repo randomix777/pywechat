@@ -4061,14 +4061,50 @@ class Messages():
                 f'这是**读取失败**，不是"没有聊天记录"，重试通常就能读出来。'
             )
         win32gui.SendMessage(chat_history_window.handle,win32con.WM_SYSCOMMAND,win32con.SC_MAXIMIZE,0)
-        details_with_name=traverse_chat_history(chat_history_window,select=save_detail,number=number,save_detail=save_detail,target_folder=target_folder,on_progress=on_progress,cancelled=cancelled)
+        # **details_with_name 必须真的开多选，不能跟着 save_detail 走。**
+        #
+        # 原来的写法是 `select=save_detail`。而 pyweixin 调用时传的是
+        # `save_detail=False`（我们要发送人，不要图片视频），于是这一遍也是
+        # 非多选模式 —— 下面那次遍历同样是非多选。
+        #
+        # 两遍拿到的是同一种东西，「两次遍历对比反推发送人」这条路就废了：
+        # 对齐拿两份相同列表，每行前缀都是空的，于是每一行都是占位符。
+        # 实测一个 424 人的群，发送人 100% 是占位符，原因就是这个。
+        #
+        # select 只决定要不要按回车把图片视频存下来（`select and save_detail`），
+        # **不影响文本内容**。所以这里可以单独开多选而不存媒体 ——
+        # 两者本来就是两件事，被一个参数绑在一起才是问题。
+        details_with_name=traverse_chat_history(chat_history_window,select=True,number=number,save_detail=save_detail,target_folder=target_folder,on_progress=on_progress,cancelled=cancelled)
         if not is_group_chat:
             contents,senders,timestamps,message_types=parse_chat_history(friend,myName,details_with_name)
         if is_group_chat:
             if groupMembers:details_without_name=[]
             if not groupMembers:
+                # 上一遍把列表留在多选状态了。不先退出，第二遍可能还是多选 ——
+                # 那又变成两份一样的东西。ESC 就是退出多选（见 utils 里
+                # 被注释掉的那段旧代码）。
+                try:
+                    pyautogui.press('esc')
+                except Exception:
+                    LOGGER.debug('退出多选状态失败，照常继续',exc_info=True)
                 details_without_name=traverse_chat_history(chat_history_window,select=False,number=number)
-            contents,senders,timestamps,message_types=parse_group_chat_history(details_with_name,details_without_name,groupMembers)
+            # **多选那一遍失败，不能让整个读取挂掉。**
+            #
+            # 多选模式下如果一条消息都选不中（只有系统消息的会话会这样），
+            # traverse_chat_history 会抛 ValueError。那种会话本来也没有发送人
+            # 可认 —— 抛出去会让商户看到「读取失败」，而实际上它只是空会话。
+            #
+            # 所以这里退回去走「成员名单」那条路；没有成员名单就按没有发送人处理，
+            # 但**一定要让读取本身完成**。
+            if not details_with_name:
+                LOGGER.info('会话「%s」多选遍历没有取到消息（可能只有系统消息）',friend)
+                if groupMembers:
+                    contents,senders,timestamps,message_types=parse_group_chat_history(
+                        details_without_name,[],groupMembers)
+                else:
+                    contents,senders,timestamps,message_types=[],[],[],[]
+            else:
+                contents,senders,timestamps,message_types=parse_group_chat_history(details_with_name,details_without_name,groupMembers)
         chat_history_window.close()
         chat_history=[{'消息发送人':chat[0],'消息内容':chat[1],'消息类型':chat[2],'消息发送时间':chat[3]} for chat in zip(senders,contents,message_types,timestamps)]
         if save_detail:
