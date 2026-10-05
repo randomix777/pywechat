@@ -75,7 +75,7 @@ def answer(**overrides) -> dict:
         "intent": "new_order",
         "customer_alias": "张姐",
         "target_order": None,
-        "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+        "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
         "delivery_date": "2026-09-26",
         "evidence": ["苹果两箱"],
         "missing_fields": [],
@@ -125,7 +125,7 @@ class OutputContractTests(unittest.TestCase):
 
     def test_boolean_is_not_a_quantity(self):
         with self.assertRaises(OutputInvalid):
-            validate_output(answer(items=[{"sku": "APL", "quantity": True, "unit": "箱", "evidence": []}]))
+            validate_output(answer(items=[{"said": "测试商品", "brand": None, "category": None, "sku": "APL", "quantity": True, "unit": "箱", "evidence": []}]))
 
 
 class AutoRecordingTests(unittest.TestCase):
@@ -147,7 +147,7 @@ class AutoRecordingTests(unittest.TestCase):
         self.assertIn(DUPLICATE_CANDIDATE_OPEN, {a.code for a in result.ambiguities})
 
     def test_a_sku_outside_the_catalogue_blocks_recording(self):
-        result = run("来十箱龙虾", answer(items=[{"sku": "LOB", "quantity": 10, "unit": "箱", "evidence": ["十箱龙虾"]}]))
+        result = run("来十箱龙虾", answer(items=[{"said": '十箱龙虾', "brand": None, "category": None, "sku": "LOB", "quantity": 10, "unit": "箱", "evidence": ["十箱龙虾"]}]))
         self.assertEqual(result.status, RunStatus.NEEDS_REVIEW)
         self.assertIn(SKU_NOT_IN_CATALOG, {a.code for a in result.ambiguities})
 
@@ -177,14 +177,14 @@ class AutoRecordingTests(unittest.TestCase):
     def test_a_modify_with_a_known_target_is_recorded(self):
         result = run(
             "改成三箱",
-            answer(intent="modify", target_order="o1", evidence=["三箱"], items=[{"sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["三箱"]}]),
+            answer(intent="modify", target_order="o1", evidence=["三箱"], items=[{"said": '三箱', "brand": None, "category": None, "sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["三箱"]}]),
             attributes={"known_order_ids": ("o1",)},
         )
         self.assertEqual(result.status, RunStatus.SUCCEEDED)
 
     def test_an_oversized_quantity_is_escalated(self):
         result = AgentCore(
-            backend=FakeBackend(responses=[answer(items=[{"sku": "APL", "quantity": 5000, "unit": "箱", "evidence": []}])]),
+            backend=FakeBackend(responses=[answer(items=[{"said": "测试商品", "brand": None, "category": None, "sku": "APL", "quantity": 5000, "unit": "箱", "evidence": []}])]),
             plugin=OrderPlugin(limits=RecordingLimits(max_line_quantity=100)),
         ).run(request_for("苹果五千箱"))
         self.assertEqual(result.status, RunStatus.NEEDS_REVIEW)

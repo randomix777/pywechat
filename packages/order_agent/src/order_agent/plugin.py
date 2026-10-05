@@ -16,7 +16,10 @@ from business_agent.contracts.result import Ambiguity, Evidence, MemoryProposal,
 from business_agent.core.validation import verify_quotes
 
 from . import policy as P
-from .contract import INTENTS, INFORMATIONAL_INTENTS, ORDER_INTENTS, OUTPUT_SCHEMA, validate_output
+from .contract import (
+    INTENTS, INFORMATIONAL_INTENTS, ORDER_INTENTS,
+    OUTPUT_KEYS, OUTPUT_SCHEMA, validate_output,
+)
 
 #: Bump when the prompt text changes in a way that could alter results, so a
 #: stored result can be explained later.
@@ -40,10 +43,21 @@ SYSTEM_PROMPT = """\
 
 你没有工具。不要尝试读取文件、执行命令、访问网页或搜索。你只能输出文本。
 
+## 群里客户是怎么下单的（这条最重要）
+
+客户**不会报 SKU**。他们随手就说：「要两箱苹果」「上次那种」「某某牌子的酱油」
+「那种大瓶的」。所以：
+
+- `said` 填**客户原话里对商品的描述**，照抄，不要润色、不要补全。
+- `brand` / `category` 是你从 `said` 里拆出来的品牌与品类。拆不出来就填 null，
+  **不要硬编一个看起来合理的品牌**。
+- `sku` **一律填 null**。SKU 由商家本地按目录匹配后填，你猜错会让商家发错货，
+  而猜错的代价比留空大得多。
+
 ## 判断要求
 
 1. 意图要区分清楚：新单、追加、改量、取消、询价、跟单、付款声称、闲聊。
-2. 商品只能来自 `context.product_catalog`。目录里没有的一律填 null，并写进 ambiguities。
+2. 每一条商品都必须有 `said`。没有 `said` 的条目对商家没有任何用处。
 3. 数量和单位必须来自原文。原文没写就填 null 并写进 missing_fields。
 4. evidence 里每一段必须是输入中真实出现过的原文，不得改写、拼接或翻译。
 5. 「老样子」「跟昨天一样」这类引用，只有在 `context.order_history` 里确实有可对应的
@@ -53,12 +67,77 @@ SYSTEM_PROMPT = """\
 8. 你不计算金额。金额由商家本地系统按当前单价计算。
 9. 客户说自己付款了用 payment_claim，绝不当作已到账。
 
-## 不做的事
+## 输出格式
 
-- 不发货、不扣库存、不记账、不认定到账。
-- 不修改商家已确认的订单。
-- 不与商家之外的任何人沟通。
+只输出一个 JSON 对象，顶层字段如下。**不要多写，也不要少写**：
+
+{output_fields}
+
+其中 `items` 的每一项：
+
+{item_shape}
+
+输入里的商品目录在 `context.products`（每个商品有 sku / name / unit）。
+目录只是给你参考的，**你不会用到它的 sku 字段** —— 你要填的是客户说了什么。
 """
+
+
+def _describe_output() -> str:
+    """从 :data:`OUTPUT_SCHEMA` 生成给模型看的字段说明。
+
+    **必须由 schema 生成，不能手写。** 手写过的那次，提示词只说
+    「输出一段固定结构的 JSON 建议」却没给清单，模型只能自己猜，
+    猜出来的结构 100% 过不了校验 —— 而单测全绿，因为单测验证的是
+    「提示词被正确构造」，不是「模型能产出契约要求的结构」。
+
+    从 schema 生成，提示词和契约就不可能再漂移。
+    """
+    props = OUTPUT_SCHEMA["properties"]
+    lines = []
+    for key in OUTPUT_KEYS:
+        spec = props.get(key, {})
+        kind = spec.get("type", "")
+        kind = _type_name(spec)
+        extra = ""
+        if key == "items":
+            extra = "，每一项的字段见下"
+        lines.append(f'  - "{key}"（{kind}{extra}）')
+    # intent 的**枚举值必须写出来**。模型否则会填中文「新单」「追加」，
+    # 而契约要的是 new_order / append —— 单条字段对上，整份输出仍然作废。
+    enum = props.get("intent", {}).get("enum") or INTENTS
+    lines.append("")
+    lines.append('`intent` 只能从这��个值里选（用英文原文，不要翻译成中文）：')
+    lines.append("  " + " / ".join(enum))
+    return "\n".join(lines)
+
+
+def _item_shape() -> str:
+    """``items`` 每一项的字段说明。同样从 schema 生成。"""
+    props = OUTPUT_SCHEMA["properties"]["items"]["items"]["properties"]
+    return "\n".join(f'    - "{k}"（{_type_name(t)}）' for k, t in props.items())
+
+
+def _type_name(spec: Any) -> str:
+    """JSON Schema 的 type -> 给模型看的说法。
+
+    直接把 ``{'type': ['string', 'null']}`` 印给模型没有意义 —— 它看不懂
+    Python 字面量。翻成 "string 或 null" 才是给人（和模型）看的说法。
+    """
+    if isinstance(spec, Mapping):
+        return _type_name(spec.get("type", ""))
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, (list, tuple)):
+        return " 或 ".join(str(x) for x in spec)
+    return str(spec)
+
+
+#: 最终送进模型的提示词。字段清单由 :func:`_describe_output`
+#: 与 :func:`_item_shape` 从 schema 生成，所以提示词与契约不可能漂移。
+SYSTEM_PROMPT = SYSTEM_PROMPT.format(
+    output_fields=_describe_output(),
+    item_shape=_item_shape(),
+)
 
 
 class OrderPlugin:

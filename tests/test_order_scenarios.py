@@ -102,7 +102,7 @@ class OrderScenarioTests(ScenarioBase):
         message = self.add_message("苹果两箱", NOW - timedelta(hours=2), "s1")
         result = self.run_plugin(message, {
             "intent": "new_order", "customer_alias": "张姐", "target_order": None,
-            "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             "delivery_date": "2026-09-26", "evidence": ["苹果两箱"],
             "missing_fields": [], "ambiguities": [], "suggested_change": None,
         })
@@ -138,14 +138,14 @@ class OrderScenarioTests(ScenarioBase):
         history = (ContextEntry(
             key=f"order:{order_id}",
             value={"order_id": order_id, "status": "confirmed", "delivery_date": "2026-09-24",
-                   "items": [{"sku": "APL", "quantity": 2, "unit": "箱"}, {"sku": "EGG", "quantity": 1, "unit": "箱"}]},
+                   "items": [{"said": '老样子', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱"}, {"sku": "EGG", "quantity": 1, "unit": "箱"}]},
             source=SOURCE_HISTORY, confirmed=True, occurred_at=NOW - timedelta(days=1),
         ),)
         message = self.add_message("老样子，明天送", NOW - timedelta(hours=1), "s2")
         result = self.run_plugin(message, {
             "intent": "new_order", "customer_alias": "张姐", "target_order": order_id,
-            "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["老样子"]},
-                      {"sku": "EGG", "quantity": 1, "unit": "箱", "evidence": ["老样子"]}],
+            "items": [{"said": '老样子', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["老样子"]},
+                      {"said": '老样子', "brand": None, "category": None, "sku": "EGG", "quantity": 1, "unit": "箱", "evidence": ["老样子"]}],
             "delivery_date": "2026-09-26", "evidence": ["老样子"],
             "missing_fields": [], "ambiguities": [], "suggested_change": None,
         }, history=history)
@@ -159,7 +159,7 @@ class OrderScenarioTests(ScenarioBase):
         message = self.add_message("老样子", NOW - timedelta(hours=1), "s3")
         result = self.run_plugin(message, {
             "intent": "new_order", "customer_alias": "张姐", "target_order": None,
-            "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["老样子"]}],
+            "items": [{"said": '老样子', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["老样子"]}],
             "delivery_date": None, "evidence": ["老样子"],
             "missing_fields": [], "ambiguities": ["no_eligible_historical_order"], "suggested_change": None,
         })
@@ -172,7 +172,7 @@ class OrderScenarioTests(ScenarioBase):
         message = self.add_message("改成三箱", NOW - timedelta(hours=1), "s5")
         result = self.run_plugin(message, {
             "intent": "modify", "customer_alias": "张姐", "target_order": order_id,
-            "items": [{"sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["三箱"]}],
+            "items": [{"said": '三箱', "brand": None, "category": None, "sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["三箱"]}],
             "delivery_date": None, "evidence": ["三箱"],
             "missing_fields": [], "ambiguities": [], "suggested_change": None,
         })
@@ -192,7 +192,7 @@ class OrderScenarioTests(ScenarioBase):
         message = self.add_message("改成三箱", NOW - timedelta(hours=1), "s7")
         result = self.run_plugin(message, {
             "intent": "modify", "customer_alias": "张姐", "target_order": "编出来的订单号",
-            "items": [{"sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["三箱"]}],
+            "items": [{"said": '三箱', "brand": None, "category": None, "sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["三箱"]}],
             "delivery_date": None, "evidence": ["三箱"],
             "missing_fields": [], "ambiguities": [], "suggested_change": None,
         }, known_order_ids=(real_order,))
@@ -243,7 +243,7 @@ class OrderScenarioTests(ScenarioBase):
         message = self.add_message("来两箱那个", NOW - timedelta(hours=1), "s12")
         result = self.run_plugin(message, {
             "intent": "new_order", "customer_alias": "张姐", "target_order": None,
-            "items": [{"sku": None, "quantity": 2, "unit": "箱", "evidence": ["来两箱那个"]}],
+            "items": [{"said": '来两箱那个', "brand": None, "category": None, "sku": None, "quantity": 2, "unit": "箱", "evidence": ["来两箱那个"]}],
             "delivery_date": None, "evidence": ["来两箱那个"],
             "missing_fields": ["sku"], "ambiguities": ["sku_not_in_catalog"], "suggested_change": None,
         })
@@ -260,7 +260,7 @@ class OrderScenarioTests(ScenarioBase):
         message = self.add_message("改成四箱", NOW - timedelta(hours=1), "s14")
         result = self.run_plugin(message, {
             "intent": "modify", "customer_alias": "张姐", "target_order": order_id,
-            "items": [{"sku": "APL", "quantity": 4, "unit": "箱", "evidence": ["四箱"]}],
+            "items": [{"said": '四箱', "brand": None, "category": None, "sku": "APL", "quantity": 4, "unit": "箱", "evidence": ["四箱"]}],
             "delivery_date": None, "evidence": ["四箱"],
             "missing_fields": [], "ambiguities": [], "suggested_change": None,
         })
@@ -278,7 +278,7 @@ class OrderScenarioTests(ScenarioBase):
         message = self.add_message("苹果两箱", NOW - timedelta(hours=1), "s15")
         result = self.run_plugin(message, {
             "intent": "new_order", "customer_alias": "张姐", "target_order": None,
-            "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             "delivery_date": None, "evidence": ["苹果两箱"],
             "missing_fields": [], "ambiguities": [], "suggested_change": None,
         })
@@ -328,7 +328,7 @@ class OutcomeUnknownTests(ScenarioBase):
         message = self.add_message("苹果两箱", NOW - timedelta(hours=1), "u2")
         backend = FakeBackend(failures=[NetworkError("连不上"), None], responses=[{
             "intent": "new_order", "customer_alias": "张姐", "target_order": None,
-            "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             "delivery_date": None, "evidence": ["苹果两箱"],
             "missing_fields": [], "ambiguities": [], "suggested_change": None,
         }])
@@ -342,7 +342,7 @@ class OutcomeUnknownTests(ScenarioBase):
         message = self.add_message("苹果两箱", NOW - timedelta(hours=1), "u3")
         payload = {
             "intent": "new_order", "customer_alias": "张姐", "target_order": None,
-            "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             "delivery_date": None, "evidence": ["苹果两箱"],
             "missing_fields": [], "ambiguities": [], "suggested_change": None,
         }

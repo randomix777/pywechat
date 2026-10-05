@@ -140,7 +140,7 @@ class NewOrderLandingTests(BusinessLandingBase):
         message = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="n1")
         applied = self.deliver(message, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))
         self.assertEqual(applied["outcome"], "drafts")
@@ -165,7 +165,7 @@ class AppendLandingTests(BusinessLandingBase):
         first = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="a1")
         base = self.deliver(first, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))
         self.store.confirm(self.tenant, base["order_id"], "tester")
@@ -174,7 +174,7 @@ class AppendLandingTests(BusinessLandingBase):
                               sent_at="2026-01-03T09:00:00+00:00", source="a2")
         applied = self.deliver(second, suggestion(
             intent="append", customer_alias="张姐", target_order=base["order_id"],
-            items=[{"sku": APL, "quantity": 1, "unit": "箱", "evidence": ["再加一箱苹果"]}],
+            items=[{"said": '再加一箱苹果', "brand": None, "category": None, "sku": APL, "quantity": 1, "unit": "箱", "evidence": ["再加一箱苹果"]}],
             evidence=["再加一箱苹果"],
         ))
         self.assertEqual(applied["outcome"], "drafts")
@@ -190,14 +190,14 @@ class AppendLandingTests(BusinessLandingBase):
         mine = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="a3")
         mine_order = self.deliver(mine, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))["order_id"]
         theirs = add_message(self.store, self.tenant, "鲜果群", "再加一箱苹果", self.customers["chen"],
                              sent_at="2026-01-03T09:00:00+00:00", source="a4")
         applied = self.deliver(theirs, suggestion(
             intent="append", customer_alias="陈先生", target_order=mine_order,
-            items=[{"sku": APL, "quantity": 1, "unit": "箱", "evidence": ["再加一箱苹果"]}],
+            items=[{"said": '再加一箱苹果', "brand": None, "category": None, "sku": APL, "quantity": 1, "unit": "箱", "evidence": ["再加一箱苹果"]}],
             evidence=["再加一箱苹果"],
         ))
         self.assertIsNone(applied["order_id"], "不得把订单加到别的客户名下")
@@ -214,7 +214,7 @@ class ModifyLandingTests(BusinessLandingBase):
         first = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="m1")
         base = self.deliver(first, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))
         self.store.confirm(self.tenant, base["order_id"], "tester")
@@ -223,7 +223,7 @@ class ModifyLandingTests(BusinessLandingBase):
                               sent_at="2026-01-03T09:00:00+00:00", source="m2")
         applied = self.deliver(second, suggestion(
             intent="modify", customer_alias="张姐", target_order=base["order_id"],
-            items=[{"sku": APL, "quantity": 4, "unit": "箱", "evidence": ["改成四箱"]}],
+            items=[{"said": '改成四箱', "brand": None, "category": None, "sku": APL, "quantity": 4, "unit": "箱", "evidence": ["改成四箱"]}],
             evidence=["改成四箱"],
         ))
         new_id = applied["order_id"]
@@ -243,7 +243,7 @@ class CancelLandingTests(BusinessLandingBase):
         message = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="c1")
         order_id = self.deliver(message, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))["order_id"]
         self.store.confirm(self.tenant, order_id, "tester")
@@ -281,7 +281,7 @@ class HistoryReferenceLandingTests(BusinessLandingBase):
                               sent_at=sent_at, source=source)
         order_id = self.deliver(message, suggestion(
             customer_alias="陈先生",
-            items=[{"sku": APL, "quantity": quantity, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": quantity, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))["order_id"]
         self.store.confirm(self.tenant, order_id, "tester")
@@ -296,7 +296,7 @@ class HistoryReferenceLandingTests(BusinessLandingBase):
         self.assertTrue(visible)
         applied = self.deliver(later, suggestion(
             customer_alias="陈先生", target_order=history_order,
-            items=[{"sku": APL, "quantity": 3, "unit": "箱", "evidence": ["老样子"]}],
+            items=[{"said": '老样子', "brand": None, "category": None, "sku": APL, "quantity": 3, "unit": "箱", "evidence": ["老样子"]}],
             evidence=["老样子"],
         ))
         self.assertEqual(applied["outcome"], "drafts")
@@ -311,7 +311,7 @@ class HistoryReferenceLandingTests(BusinessLandingBase):
                             sent_at="2026-01-05T09:00:00+00:00", source="h3")
         applied = self.deliver(later, suggestion(
             customer_alias="陈先生",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["老样子"]}],
+            items=[{"said": '老样子', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["老样子"]}],
             evidence=["老样子"],
         ))
         self.assertEqual(applied["outcome"], "clarify")
@@ -357,7 +357,7 @@ class PaymentClaimLandingTests(BusinessLandingBase):
         base_msg = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="p1")
         order_id = self.deliver(base_msg, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))["order_id"]
         self.store.confirm(self.tenant, order_id, "tester")
@@ -408,7 +408,7 @@ class InterleavedCustomersLandingTests(BusinessLandingBase):
                 self.store, self.tenant, "鲜果群", text, customer,
                 sent_at=f"2026-01-0{index + 2}T09:00:00+00:00", source=source,
             )
-            items = [{"sku": sku, "quantity": qty, "unit": "箱", "evidence": [text]}
+            items = [{"said": text, "brand": None, "category": None, "sku": sku, "quantity": qty, "unit": "箱", "evidence": [text]}
                      for sku, qty in lines.items()]
             applied = self.deliver(message, suggestion(
                 customer_alias=who, items=items, evidence=[text],
@@ -441,7 +441,7 @@ class PendingChangeAndIdempotencyTests(BusinessLandingBase):
         base_msg = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="d1")
         base = self.deliver(base_msg, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))["order_id"]
         self.store.confirm(self.tenant, base, "tester")
@@ -451,7 +451,7 @@ class PendingChangeAndIdempotencyTests(BusinessLandingBase):
                                  sent_at="2026-01-03T09:00:00+00:00", source="d2")
         changed = self.deliver(change_msg, suggestion(
             intent="modify", customer_alias="张姐", target_order=base,
-            items=[{"sku": APL, "quantity": 4, "unit": "箱", "evidence": ["改成四箱"]}],
+            items=[{"said": '改成四箱', "brand": None, "category": None, "sku": APL, "quantity": 4, "unit": "箱", "evidence": ["改成四箱"]}],
             evidence=["改成四箱"],
         ))["order_id"]
         # 待生效：备货这一行仍在（不得消失），且只算一次
@@ -470,7 +470,7 @@ class PendingChangeAndIdempotencyTests(BusinessLandingBase):
         message = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="d3")
         result = suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         )
         first = self.deliver(message, result)
@@ -496,7 +496,7 @@ class PendingChangeAndIdempotencyTests(BusinessLandingBase):
         self.assertEqual(len(rows), 1, "重复导入不得产生第二条消息")
         result = suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         )
         for row in rows:
@@ -510,7 +510,7 @@ class PendingChangeAndIdempotencyTests(BusinessLandingBase):
         message = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="d5")
         self.deliver(message, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))
         self.store.close()
@@ -528,7 +528,7 @@ class PendingChangeAndIdempotencyTests(BusinessLandingBase):
         base_msg = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="d6")
         base = self.deliver(base_msg, suggestion(
             customer_alias="张姐",
-            items=[{"sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))["order_id"]
         self.store.confirm(self.tenant, base, "tester")
@@ -536,7 +536,7 @@ class PendingChangeAndIdempotencyTests(BusinessLandingBase):
         run = self.store.start_reanalysis(self.tenant, base_msg["id"], "paid-deep", "p2")
         self.store.finish_reanalysis(self.tenant, run["parse_run_id"], suggestion(
             intent="modify", customer_alias="张姐", target_order=base,
-            items=[{"sku": APL, "quantity": 5, "unit": "箱", "evidence": ["苹果两箱"]}],
+            items=[{"said": '苹果两箱', "brand": None, "category": None, "sku": APL, "quantity": 5, "unit": "箱", "evidence": ["苹果两箱"]}],
             evidence=["苹果两箱"],
         ))
         pending = self.store.pending_reanalysis_suggestions(self.tenant)
@@ -567,7 +567,7 @@ class ScriptedBackendTests(unittest.TestCase):
     def test_scripted_backend_reports_no_upstream_model(self):
         backend = ScriptedBackend({"苹果两箱": {
             "intent": "new_order", "customer_alias": "张姐", "target_order": None,
-            "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
             "delivery_date": None, "evidence": ["苹果两箱"], "missing_fields": [],
             "ambiguities": [], "suggested_change": None,
         }})

@@ -87,7 +87,7 @@ class SecondDomainTests(unittest.TestCase):
                         "intent": "new_order",
                         "customer_alias": "张姐",
                         "target_order": None,
-                        "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+                        "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
                         "delivery_date": None,
                         "evidence": ["苹果两箱"],
                         "missing_fields": [],

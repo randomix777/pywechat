@@ -224,7 +224,7 @@ class OrderWorkflowTests(unittest.TestCase):
             def __init__(self):self.calls=0
             def parse(self,context):
                 self.calls+=1
-                return ({"intent":"new_order","customer_alias":"张姐","target_order":None,"items":[{"sku":"A","quantity":2,"unit":"箱","evidence":["苹果两箱"]}],"delivery_date":None,"evidence":["苹果两箱"],"missing_fields":[],"ambiguities":[],"suggested_change":None},{"input":100,"output":20})
+                return ({"said": '苹果两箱', "brand": None, "category": None, "said": '苹果两箱', "brand": None, "category": None, "intent":"new_order","customer_alias":"张姐","target_order":None,"items":[{"said": '苹果两箱', "brand": None, "category": None, "sku": "A", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],"delivery_date":None,"evidence":["苹果两箱"],"missing_fields":[],"ambiguities":[],"suggested_change":None},{"input":100,"output":20})
         parser=Parser();self.store.parser=parser
         with self.store.db:self.store.db.execute("UPDATE merchant_settings SET parser_mode='model' WHERE merchant_id=?",(self.tenant,))
         imported=self.store.add_import(self.tenant,"鲜果群",[{"sender":"张姐","content":"苹果两箱","sent_at":"2026-09-24T10:00:00-04:00","source_id":"model-1"}],"model")
@@ -267,7 +267,7 @@ class OrderWorkflowTests(unittest.TestCase):
             self.assertTrue(failures[0]["retryable"])
             class Recovered:
                 model="fixture-model"
-                def parse(self,context):return ({"intent":"new_order","customer_alias":"张姐","target_order":None,"items":[{"sku":"A","quantity":2,"unit":"箱","evidence":["苹果两箱"]}],"delivery_date":None,"evidence":["苹果两箱"],"missing_fields":[],"ambiguities":[],"suggested_change":None},{"input":10,"output":2})
+                def parse(self,context):return ({"said": '苹果两箱', "brand": None, "category": None, "said": '苹果两箱', "brand": None, "category": None, "intent":"new_order","customer_alias":"张姐","target_order":None,"items":[{"said": '苹果两箱', "brand": None, "category": None, "sku": "A", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],"delivery_date":None,"evidence":["苹果两箱"],"missing_fields":[],"ambiguities":[],"suggested_change":None},{"input":10,"output":2})
             store.parser=Recovered()
             retried=store.parse_import(tenant,"鲜果群",imported["import_id"])
             self.assertEqual(retried["drafts"],1)
@@ -288,7 +288,7 @@ class OrderWorkflowTests(unittest.TestCase):
             imported=store.add_import(tenant,"鲜果群",[{"sender":"张姐","content":"苹果两箱","sent_at":"2026-09-24T10:00:00-04:00","source_id":"partial-1"}],"partial")
             message=store.db.execute("SELECT id FROM messages WHERE import_id=?",(imported["import_id"],)).fetchone()["id"]
             run_id="run-partial-order";parse_key=f"{tenant}:{message}:model-v1"
-            parsed={"intent":"new_order","customer_alias":"张姐","target_order":None,"items":[{"sku":"A","quantity":2,"unit":"箱","evidence":["苹果两箱"]}],"delivery_date":None,"evidence":["苹果两箱"],"missing_fields":[],"ambiguities":[],"suggested_change":None}
+            parsed={"said": '苹果两箱', "brand": None, "category": None, "said": '苹果两箱', "brand": None, "category": None, "intent":"new_order","customer_alias":"张姐","target_order":None,"items":[{"said": '苹果两箱', "brand": None, "category": None, "sku": "A", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],"delivery_date":None,"evidence":["苹果两箱"],"missing_fields":[],"ambiguities":[],"suggested_change":None}
             with store.db:
                 store.db.execute("INSERT INTO parse_runs(id,merchant_id,message_id,adapter,status,usage_units,error,created_at,result_json) VALUES(?,?,?,'model-v1','running',12,NULL,?,?)",(run_id,tenant,message,"2000-01-01T00:00:00+00:00",json.dumps(parsed,ensure_ascii=False)))
                 store.db.execute("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?)",("usage-partial",tenant,parse_key,"fixture-model",10,2,store.now()))

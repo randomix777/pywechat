@@ -49,6 +49,13 @@ INFORMATIONAL_INTENTS = ("inquiry", "follow_up", "chitchat")
 MAX_ITEMS = 100
 MAX_EVIDENCE = 64
 
+#: ``items`` 每一项的字段清单。**唯一定义** ——
+#: 校验、JSON Schema、提示词、以及产品层（``orders.py``）都从这里取。
+#:
+#: 以前产品层自己硬编码了一份，于是契约一改它就静默地把全部模型输出拒掉，
+#: 报错还只说「不符合要求的结构」，没人看得出是哪一边过时了。
+ITEM_KEYS = ("said", "brand", "category", "sku", "quantity", "unit", "evidence")
+
 OUTPUT_KEYS = (
     "intent",
     "customer_alias",
@@ -75,8 +82,22 @@ OUTPUT_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["sku", "quantity", "unit", "evidence"],
+                "required": list(ITEM_KEYS),
                 "properties": {
+                    # **客户原话里对商品的描述**，必填。
+                    #
+                    # 群里客户下单很随便，不会报 SKU，通常只说「某牌子的酱油」
+                    # 「上次那种」「那种大瓶的」。这句话是唯一**确定来自客户**的
+                    # 商品信息，丢不得 —— 匹配不上时商户还要靠它人工辨认。
+                    "said": {"type": "string"},
+                    # 从 said 里拆出的品牌与品类，可空。拆出来是为了能拿去和
+                    # 商品目录的别名做匹配；拆不出来就留空，不要硬编。
+                    "brand": {"type": ["string", "null"]},
+                    "category": {"type": ["string", "null"]},
+                    # SKU **由宿主按商户目录匹配后填入，模型一律留 null**。
+                    #
+                    # 模型猜错 SKU 的代价比留空大得多：猜错了商户会照着发错货，
+                    # 而留空至少草稿还在、商户能在确认卡上补。
                     "sku": {"type": ["string", "null"]},
                     "quantity": {"type": ["number", "null"]},
                     "unit": {"type": ["string", "null"]},
@@ -116,7 +137,13 @@ def validate_output(payload: Mapping[str, Any]) -> dict[str, Any]:
     for item in items:
         if not isinstance(item, Mapping):
             raise OutputInvalid("each item must be an object")
-        require_keys(item, ("sku", "quantity", "unit", "evidence"))
+        require_keys(item, ITEM_KEYS)
+        # ``said`` 是客户原话，必须是非空字符串 —— 没有它，匹配不上时
+        # 商户就完全看不出客户要的是什么，草稿等于作废。
+        if not isinstance(item.get("said"), str) or not item["said"].strip():
+            raise OutputInvalid("said must record what the customer actually wrote")
+        optional_string(item, "brand")
+        optional_string(item, "category")
         optional_string(item, "sku")
         optional_string(item, "unit")
         optional_number(item, "quantity")

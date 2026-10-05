@@ -31,7 +31,7 @@ VALID_PARSE_RESULT = {
     "intent": "new_order",
     "customer_alias": "张老板",
     "target_order": None,
-    "items": [{"sku": "SKU-1", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]}],
+    "items": [{"said": '来两箱苹果', "brand": None, "category": None, "sku": "SKU-1", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]}],
     "delivery_date": "2026-01-02",
     "evidence": ["来两箱苹果"],
     "missing_fields": [],
@@ -956,7 +956,7 @@ class AdapterUnitTests(unittest.TestCase):
             {**VALID_PARSE_RESULT, "intent": "drop_table"},
             {**VALID_PARSE_RESULT, "items": "not-a-list"},
             {k: v for k, v in VALID_PARSE_RESULT.items() if k != "evidence"},
-            {**VALID_PARSE_RESULT, "items": [{"sku": "S", "quantity": True, "unit": "箱", "evidence": []}]},
+            {**VALID_PARSE_RESULT, "items": [{"said": "测试商品", "brand": None, "category": None, "sku": "S", "quantity": True, "unit": "箱", "evidence": []}]},
             {**VALID_PARSE_RESULT, "customer_alias": 5},
         ):
             with self.assertRaises(InvalidParseOutput):

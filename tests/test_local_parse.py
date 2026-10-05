@@ -60,7 +60,7 @@ class SuggestionValidationTests(unittest.TestCase):
             {**VALID_PARSE_RESULT, "intent": "drop_database"},
             {**VALID_PARSE_RESULT, "items": "nope"},
             {k: v for k, v in VALID_PARSE_RESULT.items() if k != "evidence"},
-            {**VALID_PARSE_RESULT, "items": [{"sku": "S", "quantity": True, "unit": "箱", "evidence": []}]},
+            {**VALID_PARSE_RESULT, "items": [{"said": "测试商品", "brand": None, "category": None, "sku": "S", "quantity": True, "unit": "箱", "evidence": []}]},
             {**VALID_PARSE_RESULT, "customer_alias": 5},
             {**VALID_PARSE_RESULT, "suggested_change": []},
             {**VALID_PARSE_RESULT, "evidence": [1, 2]},
@@ -148,7 +148,7 @@ class ApplyCloudSuggestionTests(unittest.TestCase):
             **VALID_PARSE_RESULT,
             "intent": "modify",
             "target_order": order_id,
-            "items": [{"sku": "SKU-1", "quantity": 3, "unit": "箱", "evidence": ["改成三箱"]}],
+            "items": [{"said": '改成三箱', "brand": None, "category": None, "sku": "SKU-1", "quantity": 3, "unit": "箱", "evidence": ["改成三箱"]}],
         }
         applied = self.orders.apply_cloud_suggestion(self.tenant, "群A", change["id"], suggestion)
         self.assertEqual(applied["outcome"], "drafts")

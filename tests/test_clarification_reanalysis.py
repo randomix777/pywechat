@@ -26,7 +26,7 @@ from pyweixin.orders import OrderStore  # noqa: E402
 
 VALID = {
     "intent": "new_order", "customer_alias": "张姐", "target_order": None,
-    "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]}],
+    "items": [{"said": '来两箱苹果', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]}],
     "delivery_date": None, "evidence": ["来两箱苹果"], "missing_fields": [],
     "ambiguities": [], "suggested_change": None,
 }
@@ -102,7 +102,7 @@ class ClarificationTests(unittest.TestCase):
         applied = self.store.apply_cloud_suggestion(
             self.tenant, "群A", second["id"],
             {**VALID, "intent": "append", "target_order": None,
-             "items": [{"sku": "APL", "quantity": 1, "unit": "箱", "evidence": ["再加一箱"]}],
+             "items": [{"said": '再加一箱', "brand": None, "category": None, "sku": "APL", "quantity": 1, "unit": "箱", "evidence": ["再加一箱"]}],
              "evidence": ["再加一箱"]},
         )
         self.assertEqual(applied["outcome"], "clarify")
@@ -329,8 +329,8 @@ class ReanalysisDiffTests(unittest.TestCase):
 
     def test_adding_and_removing_items_are_reported(self):
         added = {**VALID, "items": [
-            {"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]},
-            {"sku": "ORG", "quantity": 1, "unit": "箱", "evidence": ["来两箱苹果"]},
+            {"said": '来两箱苹果', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]},
+            {"said": '来两箱苹果', "brand": None, "category": None, "sku": "ORG", "quantity": 1, "unit": "箱", "evidence": ["来两箱苹果"]},
         ]}
         _run, sid = self._reanalyze(added)
         self.assertEqual(self.store.reanalysis_suggestion(self.tenant, sid)["diff"]["items_added"], ["ORG"])
@@ -376,7 +376,7 @@ class ReanalysisDiffTests(unittest.TestCase):
         self.store.apply_cloud_suggestion(
             self.tenant, "群A", later["id"],
             {**VALID, "intent": "modify", "target_order": self.order_id,
-             "items": [{"sku": "APL", "quantity": 6, "unit": "箱", "evidence": ["改成六箱"]}],
+             "items": [{"said": '改成六箱', "brand": None, "category": None, "sku": "APL", "quantity": 6, "unit": "箱", "evidence": ["改成六箱"]}],
              "evidence": ["改成六箱"]},
         )
         result = self.store.apply_reanalysis_suggestion(self.tenant, sid)

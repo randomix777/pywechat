@@ -1,12 +1,26 @@
-"""真实模型分析一条群订单消息。
+"""真实模型分析一条群订单消息 —— 用产品真实的载荷形状。
 
+    $env:PYTHONIOENCODING="utf-8"
     .\.venv\Scripts\python.exe -X utf8 examples/real_analysis_probe.py
 
-**不打印密钥**：从 DSH 凭据文件读进内存，只报告长度。
+## 为什么强调「真实的载荷形状」
+
+第一次跑这个脚本时传的是 ``{"message": {...}}``，而 :func:`_build_prompt`
+读的是 ``payload["messages"]``。于是模型收到一个**空**任务，回报
+``intent=unclear, items=[]``。
+
+而这个输出**能通过契约校验** —— 校验只看结构，不看内容。脚本于是显示
+「3/3 条由真实模型解析成功」。
+
+**那是假通过。** 一个什么都没解析出来的结果，长得和正常结果一模一样。
+
+所以这里必须用 ``orders.py:1132`` 里的真实形状，而且除了「结构合法」之外
+还要断言**真的解析出了东西** —— 否则换一套更宽松的校验就会掩盖问题。
+
+**不打印密钥。**
 """
 from __future__ import annotations
 
-import json
 import os
 import pathlib
 import sys
@@ -17,7 +31,7 @@ for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
 
-def load_openrouter_key() -> str:
+def load_key() -> str:
     text = pathlib.Path(os.path.expanduser("~/.dsh/.credentials.yaml")).read_text(
         encoding="utf-8"
     )
@@ -27,78 +41,93 @@ def load_openrouter_key() -> str:
     return ""
 
 
+#: 模拟一个只有两三个商品的商户目录。客户说的多半不在里面 ——
+#: 真实场景就是这样，群里客户不会照着目录报。
+CATALOG = [
+    {"sku": "P-APPLE", "name": "红富士苹果", "unit": "箱"},
+    {"sku": "P-SOY", "name": "酱油", "unit": "瓶"},
+]
 
-def _last_raw() -> str:
-    """取上一次请求的原始输出。
-
-    validate_parse_result 拒绝时只说「格式异常」，看不到模型究竟返回了什么。
-    """
-    from business_agent.backends.deepseek import DeepSeekBackend
-
-    return str(getattr(DeepSeekBackend, "_probe_last_raw", "") or "")
-
-
-MESSAGES = [
-    "\u5f20\u59d0\uff1a\u660e\u5929\u4e0b\u5348\u8981 3 \u7bb1\u82b1\u5de5\uff0c\u7ea6 300 \u5143\uff0c\u8fd0\u5230\u5c71\u4e1c\u5e02\u573a",
-    "\u674e\u53d4\uff1a\u8d60\u7d20\u82b1 2 \u7bb1 \u8305\u88c5\u597d\u9001\u8fc7\u6765\uff0c\u4e0b\u5348\u5230",
-    "\u738b\u59d0\uff1a\u8c46\u4e1c 5 \u888b\uff0c\u90a3\u4e2a\u65b0\u7684\uff0c\u5148\u4e0d\u8981\u53d1",
+CASES = [
+    ("张姐：明天下午要 3 箱红富士苹果，约 300 元，运到山东市场", "new_order"),
+    ("李叔：李记酱油 2 瓶，下午送过来", "new_order"),
+    ("王姐：那个上次买的，先不要发", None),
 ]
 
 
 def main() -> int:
     from pyweixin.openrouter_adapter import DEFAULT_BASE_URL, OpenRouterAdapter
 
-    key = load_openrouter_key()
+    key = load_key()
     if not key:
         print("找不到 OpenRouter 凭据，无法做真实验证。")
         return 1
-    print(f"OpenRouter 凭据已加载（长度 {len(key)}，不打印内容）")
-    print(f"上游 {DEFAULT_BASE_URL}")
-
     model = os.environ.get("PYWEIXIN_OPENROUTER_MODEL", "openai/gpt-4o-mini")
-    print(f"模型 {model}\n")
+    print(f"OpenRouter 凭据已加载（长度 {len(key)}，不打印内容）")
+    print(f"上游 {DEFAULT_BASE_URL} | 模型 {model}")
+    print(f"商品目录：{[p['name'] for p in CATALOG]}")
     print("=" * 74)
 
-    failures = 0
-    for index, text in enumerate(MESSAGES, 1):
-        adapter = OpenRouterAdapter(api_key=key, model=model, timeout=90)
+    structural_ok = 0
+    meaningful_ok = 0
+    for index, (text, expect) in enumerate(CASES, 1):
+        # 产品真实的载荷形状：见 orders.py:1132
         payload = {
-            "message": {
-                "id": f"m{index}", "sender": "\u5ba2\u6237",
-                "content": text, "kind": "text",
-                "sent_at": "2026-01-01T10:00:00+08:00",
+            "messages": [{"role": "user", "content": text}],
+            "context": {
+                "message": {
+                    "id": f"m{index}", "sender": "客户", "content": text,
+                    "sent_at": "2026-01-01T10:00:00+08:00", "group_id": "g1",
+                },
+                "recent_customer_messages": [],
+                "open_orders": [],
+                "customer": {"id": "c1", "name": "客户"},
+                "products": CATALOG,
+                "last_confirmed_order": None,
+                "rules": {
+                    "prices_are_server_owned": True,
+                    "history_cutoff": "2026-01-01T10:00:00+08:00",
+                    "untrusted_message_data": True,
+                },
             },
-            "customer": {"id": "c1", "name": "\u5ba2\u6237", "alias": "\u5ba2\u6237", "address": ""},
-            "products": [
-                {"sku": "SKU-HUA", "name": "\u82b1\u5de5", "unit": "\u7bb1", "aliases": "\u82b1\u5de5,\u82b1"},
-                {"sku": "SKU-DOU", "name": "\u8c46\u4e1c", "unit": "\u888b", "aliases": "\u8c46\u4e1c,\u8c46"},
-            ],
+            "merchant_id": "m1",
         }
+        adapter = OpenRouterAdapter(api_key=key, model=model, timeout=90)
         print(f"\n【{index}】{text}")
         started = time.time()
         try:
-            outcome = adapter.run_parse("s", payload, f"job-real-{index}", time.time() + 120)
+            outcome = adapter.run_parse("s", payload, f"job-{index}", time.time() + 120)
         except Exception as exc:
-            failures += 1
-            print(f"  失败：{type(exc).__name__}: {str(exc)[:200]}")
-            print(f"  耗时 {time.time() - started:.1f}s")
-            raw = _last_raw()
-            if raw:
-                print("  模型原始输出：")
-                print("  " + raw[:1200].replace("\n", "\n  "))
-            print()
+            print(f"  结构校验失败：{type(exc).__name__}: {str(exc)[:160]}")
+            print(f"  耗时 {time.time() - started:.1f}s\n")
             continue
-        elapsed = time.time() - started
-        print(f"  耗时 {elapsed:.1f}s | 输入 {outcome.input_tokens} tok | 输出 {outcome.output_tokens} tok")
-        print(f"  模型标识：{outcome.model_requested or '（未返回）'}")
-        print(f"  结果：{json.dumps(outcome.result, ensure_ascii=False)}")
+        structural_ok += 1
+        result = outcome.result
+        items = result.get("items") or []
+        print(f"  耗时 {time.time() - started:.1f}s | {outcome.input_tokens}->{outcome.output_tokens} tok")
+        print(f"  intent={result.get('intent')}  items={len(items)}")
+        for item in items:
+            print(f"    - said={item.get('said')!r} brand={item.get('brand')!r} "
+                  f"category={item.get('category')!r} qty={item.get('quantity')}{item.get('unit') or ''} "
+                  f"sku={item.get('sku')!r}")
+        if expect is None:
+            meaningful_ok += 1
+            print("    （非订单输入，不校验 intent）")
+        elif result.get("intent") == expect and items:
+            meaningful_ok += 1
+            print(f"    符合预期 intent={expect}")
+        else:
+            print(f"    不符合预期：期望 intent={expect} 且至少一个商品")
 
+    total = len(CASES)
     print("\n" + "=" * 74)
-    if failures:
-        print(f"{failures}/{len(MESSAGES)} 条失败 —— **不算通过**")
-        return 1
-    print(f"{len(MESSAGES)}/{len(MESSAGES)} 条由真实模型解析成功")
-    return 0
+    print(f"结构合法 {structural_ok}/{total}")
+    print(f"解析出实际内容 {meaningful_ok}/{total}")
+    if structural_ok == total and meaningful_ok == total:
+        print("真实调用通过")
+        return 0
+    print("**不算通过** —— 结构合法不代表解析出了东西")
+    return 1
 
 
 if __name__ == "__main__":
