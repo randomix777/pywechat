@@ -115,6 +115,7 @@ class MerchantWindow:
         self._summary_bar: Any = None
         self._summary_elapsed: Any = None
         self._summary_started: float = 0.0
+        self._summary_elapsed_label: Any = None
         self._summary_text: Any = None
         self._summary_status: Any = None
 
@@ -1039,9 +1040,11 @@ class MerchantWindow:
         if not messages:
             return {"summary": "", "error": "没读到消息", "cost": None,
                     "message_count": 0}
-        api_key = getattr(session, "api_key", None) if session is not None else None
+        # Session 里**没有 api_key** —— 它只有 access_token。模型调用需要的是
+        # 上游密钥，它属于运营配置，不应跟着商户的登录 token 进界面。
+        api_key = _local_api_key()
         if not api_key:
-            return {"summary": "", "error": "还没登录账号，不能调模型",
+            return {"summary": "", "error": "还没配置模型密钥，联系不上模型",
                     "cost": None, "message_count": len(messages)}
         try:
             return summarize_messages(
@@ -1060,7 +1063,7 @@ class MerchantWindow:
             return
         waited = int(time.monotonic() - self._summary_started)
         self._summary_elapsed.set(f"已等待 {waited} 秒")
-        self.after(500, self._summary_tick)
+        self.root.after(500, self._summary_tick)
 
     def _set_summary(self, text: str) -> None:
         if not self._alive(self._summary_text):
@@ -1090,7 +1093,7 @@ class MerchantWindow:
         self._summary_tick()
         def work():
             outcome = self._run_summary(result)
-            self.after(0, lambda: self._summary_finished(outcome))
+            self.root.after(0, lambda: self._summary_finished(outcome))
         threading.Thread(target=work, daemon=True).start()
 
     def _summary_finished(self, outcome: dict) -> None:
@@ -2108,3 +2111,29 @@ __all__ = [
     "audit_text",
     "merchant_labels",
 ]
+
+
+def _local_api_key() -> str:
+    """本地配置的上游密钥。
+
+    不从 Session 取 —— Session 里只有商户的 access_token，没有 api_key。
+    也不把密钥写进界面或日志：它只在这里读一次，用完不留下。
+    """
+    import os
+    import pathlib
+    key = os.environ.get("PYWEIXIN_OPENROUTER_API_KEY", "")
+    if key.strip():
+        return key.strip()
+    # 本地开发时把密钥放在一个文件里，不要求每次手工设环境变量。
+    # 文件放在商户数据目录下，不进仓库。
+    for path in (pathlib.Path.home() / ".pyweixin_dev" / "openrouter.key",):
+        try:
+            if path.is_file():
+                return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+    try:
+        from .openrouter_adapter import api_key_from_env
+        return api_key_from_env()
+    except Exception:
+        return ""
