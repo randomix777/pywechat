@@ -210,6 +210,65 @@ def _customer_differs(current: Mapping[str, Any] | None, suggestion: Mapping[str
     return named not in known
 
 
+def _match_items_to_products(items: Sequence[Mapping[str, Any]], products: Sequence[Mapping[str, Any]]) -> list[str]:
+    """把「客户说了什么」匹配到商户目录里的商品，返回每条匹配到的 sku。
+
+    ## 为什么需要这一步
+
+    群里客户**不报 SKU**，只说「李记酱油」「上次那种」「那种大瓶的」。模型
+    按契约把原话放在 ``said``、拆出的品牌品类放在 ``brand``/``category``，
+    **sku 一律留 null** —— 因为猜错的代价比留空大得多：猜错了商户会照着发错货。
+
+    所以 sku 必须由本地按目录匹配后填上。匹配不上就留空，走「转人工确认」。
+
+    ## 匹配顺序
+
+    先按 ``said``（客户原话，最具体），再按 ``category``（品类，较宽）。
+    先精确等于别名，再退到"别名出现在原话里"。
+
+    ## 什么时候**不**填
+
+    * 匹配到**多于一个**商品 —— 猜一个就可能发错货，留空让商户选。
+    * 一个都没匹配上 —— 留空并在 ambiguities 里说明，商户在确认卡上补。
+    * 商品**已经有 sku** —— 不覆盖。契约要求模型留 null，但别的来源
+      （本地规则、历史草稿）可能已经填好了。
+
+    任何一种情况都保留 ``said``：那是客户原话，商户补 sku 时要看着它认。
+    """
+    resolved: list[str] = []
+    for item in items:
+        if item.get("sku"):
+            resolved.append(str(item["sku"]))
+            continue
+        aliases_by_sku: dict[str, list[str]] = {}
+        for product in products:
+            raw = product["aliases"] or ""
+            names = [a for a in raw.split("|") if a] if raw else []
+            if product.get("name"):
+                names.append(str(product["name"]))
+            if product.get("sku"):
+                names.append(str(product["sku"]))
+            aliases_by_sku.setdefault(str(product["sku"]), []).extend(names)
+
+        matches: list[str] = []
+        for probe in (str(item.get("said") or "").strip(),
+                      str(item.get("category") or "").strip()):
+            if not probe:
+                continue
+            exact = [sku for sku, names in aliases_by_sku.items() if probe in names]
+            if exact:
+                matches = sorted(exact)
+                break
+            loose = sorted(sku for sku, names in aliases_by_sku.items()
+                           if any(name in probe for name in names))
+            if loose:
+                matches = loose
+                break
+        # \u591a\u4e2a\u5019\u9009\u65f6\u4e0d\u731c\u3002\u7559\u7a7a\u624d\u662f\u5b89\u5168\u7684\u9009\u62e9\uff1a\u5546\u6237\u8865\u624b\u7ea6\u4e00\u4e0b\u5c31\u884c\u3002
+        resolved.append(matches[0] if len(matches) == 1 else "")
+    return resolved
+
+
 class OrderStore:
     def __init__(self, path: str | Path = "orders.db", parser: OpenAICompatibleParser | None = None):
         self.path = str(path)
@@ -1366,6 +1425,15 @@ class OrderStore:
             return self._record_payment_claim(tenant,group,msg,parsed,run_id,tokens,prior,
                                              list(parsed["ambiguities"])+list(parsed["missing_fields"])+["customer_payment_claim_not_receipt"])
         ambiguities=list(parsed["ambiguities"])+list(parsed["missing_fields"])
+        # \u6a21\u578b\u4e0d\u731c sku\uff08\u5ba2\u6237\u4e0d\u62a5\u8f93\u7801\uff0c\u731c\u9519\u4f1a\u8ba9\u5546\u6237\u53d1\u9519\u8d27\uff09\uff0c
+        # \u6240\u4ee5\u8fd9\u91cc\u6309\u300c\u5ba2\u6237\u8bf4\u4e86\u4ec0\u4e48\u300d\u53bb\u5546\u6237\u76ee\u5f55\u91cc\u5339\u914d\u3002\u5339\u4e0d\u4e0a\u5c31\u7559\u7a7a\u3002
+        _resolved = _match_items_to_products(parsed["items"], products)
+        for _item, _sku in zip(parsed["items"], _resolved):
+            if _sku:
+                _item["sku"] = _sku
+            elif not _item.get("sku"):
+                # \u7559\u7a7a = \u5339\u914d\u4e0d\u4e0a\u6216\u5339\u914d\u5230\u591a\u4e2a\uff0c\u4e24\u79cd\u90fd\u8be5\u8f6c\u4eba\u5de5\u786e\u8ba4\u3002
+                ambiguities.append("product_not_resolved_locally")
         if intent=="payment_claim":ambiguities.append("customer_payment_claim_not_receipt")
         if any(term in msg["content"] for term in ("老样子","跟昨天一样","跟上次一样")) and prior is None:ambiguities.append("no_eligible_historical_order_at_message_time")
         candidate=next((p for p in products if p["sku"] in {item.get("sku") for item in parsed["items"]}),None)
