@@ -54,7 +54,7 @@ def sample_request(message: str = "来两箱苹果", **extra):
         "history": {
             "recent_messages": [{"sender": "张老板", "content": "昨天要了一箱", "sent_at": "2025-12-31T10:00:00+08:00"}],
             "customer_facts": [{"kind": "preference", "value": "偏好红富士"}],
-            "recent_orders": [{"order_id": "o1", "status": "confirmed", "items": [{"sku": "SKU-1", "quantity": 1, "unit": "箱"}]}],
+            "recent_orders": [{"order_id": "o1", "status": "confirmed", "items": [{"said": '测试商品', "brand": None, "category": None, "sku": "SKU-1", "quantity": 1, "unit": "箱"}]}],
         },
         "order_state": {"status": "draft"},
         "pricing_version": CURRENT_PRICING_VERSION["value"],

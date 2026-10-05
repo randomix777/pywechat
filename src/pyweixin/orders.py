@@ -27,6 +27,9 @@ try:
     from order_agent.contract import INTENTS, ITEM_KEYS, OUTPUT_SCHEMA
     from order_agent.plugin import SYSTEM_PROMPT as PARSER_SYSTEM_PROMPT
 except ImportError:  # pragma: no cover
+    # 降级兜底必须和契约**一致** —— 不一致就等于在降级时制造一个
+    # 永远不能用的契约。此分支被 tests/test_contract_single_source.py
+    # 的静态检查监督，改字面量时必须同时改 contract 里那一份。
     ITEM_KEYS = ("said", "brand", "category", "sku", "quantity", "unit", "evidence")
     OUTPUT_SCHEMA = {"type": "object", "required": []}
     PARSER_SYSTEM_PROMPT = ""

@@ -132,7 +132,7 @@ class ClarificationTests(unittest.TestCase):
         clear = self.msg("苹果两箱", self.customer, sent_at="2026-01-03T10:00:00+00:00", source="c4")
         applied = self.store.apply_cloud_suggestion(
             self.tenant, "群A", clear["id"],
-            {**VALID, "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            {**VALID, "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
              "evidence": ["苹果两箱"]},
         )
         self.assertEqual(applied["outcome"], "drafts")
@@ -161,7 +161,7 @@ class ClarificationTests(unittest.TestCase):
         clear = self.msg("苹果两箱", self.customer, sent_at="2026-01-04T10:00:00+00:00", source="c7")
         self.store.apply_cloud_suggestion(
             self.tenant, "群A", clear["id"],
-            {**VALID, "items": [{"sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
+            {**VALID, "items": [{"said": '苹果两箱', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱", "evidence": ["苹果两箱"]}],
              "evidence": ["苹果两箱"]},
         )
         self.assertEqual(len(self.store.open_clarifications(self.tenant)), 2,
@@ -313,7 +313,7 @@ class ReanalysisDiffTests(unittest.TestCase):
         self.assertEqual(len(self.store.list_orders(self.tenant)), 1, "无差异不得改动订单")
 
     def test_quantity_difference_is_reported_not_applied(self):
-        changed = {**VALID, "items": [{"sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["来三箱苹果"]}],
+        changed = {**VALID, "items": [{"said": '来三箱苹果', "brand": None, "category": None, "sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["来三箱苹果"]}],
                    "evidence": ["来三箱苹果"]}
         _run, suggestion_id = self._reanalyze(changed)
         view = self.store.reanalysis_suggestion(self.tenant, suggestion_id)
@@ -344,7 +344,7 @@ class ReanalysisDiffTests(unittest.TestCase):
         self.assertTrue(diff["delivery_date_changed"])
 
     def test_applying_a_suggestion_creates_a_new_reviewable_version(self):
-        changed = {**VALID, "items": [{"sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["来三箱苹果"]}],
+        changed = {**VALID, "items": [{"said": '来三箱苹果', "brand": None, "category": None, "sku": "APL", "quantity": 3, "unit": "箱", "evidence": ["来三箱苹果"]}],
                    "evidence": ["来三箱苹果"]}
         _run, sid = self._reanalyze(changed)
         result = self.store.apply_reanalysis_suggestion(self.tenant, sid)
@@ -355,7 +355,7 @@ class ReanalysisDiffTests(unittest.TestCase):
         self.assertEqual(float(self.store.order_detail(self.tenant, new_id)["items"][0]["quantity"]), 3.0)
 
     def test_applying_the_same_suggestion_twice_changes_nothing(self):
-        changed = {**VALID, "items": [{"sku": "APL", "quantity": 4, "unit": "箱", "evidence": ["来四箱苹果"]}],
+        changed = {**VALID, "items": [{"said": '来四箱苹果', "brand": None, "category": None, "sku": "APL", "quantity": 4, "unit": "箱", "evidence": ["来四箱苹果"]}],
                    "evidence": ["来四箱苹果"]}
         _run, sid = self._reanalyze(changed)
         self.store.apply_reanalysis_suggestion(self.tenant, sid)
@@ -367,7 +367,7 @@ class ReanalysisDiffTests(unittest.TestCase):
 
     def test_stale_base_version_is_refused(self):
         """订单在比较之后变了：必须重新比较，不能拿旧建议覆盖。"""
-        changed = {**VALID, "items": [{"sku": "APL", "quantity": 5, "unit": "箱", "evidence": ["来五箱苹果"]}],
+        changed = {**VALID, "items": [{"said": '来五箱苹果', "brand": None, "category": None, "sku": "APL", "quantity": 5, "unit": "箱", "evidence": ["来五箱苹果"]}],
                    "evidence": ["来五箱苹果"]}
         _run, sid = self._reanalyze(changed)
         # 客户自己又改了一单 → 版本前进
@@ -386,7 +386,7 @@ class ReanalysisDiffTests(unittest.TestCase):
         self.assertEqual(len(self.store.pending_reanalysis_suggestions(self.tenant)), 0)
 
     def test_dismissed_suggestion_is_recorded_and_applies_nothing(self):
-        changed = {**VALID, "items": [{"sku": "APL", "quantity": 9, "unit": "箱", "evidence": ["来九箱苹果"]}],
+        changed = {**VALID, "items": [{"said": '来九箱苹果', "brand": None, "category": None, "sku": "APL", "quantity": 9, "unit": "箱", "evidence": ["来九箱苹果"]}],
                    "evidence": ["来九箱苹果"]}
         _run, sid = self._reanalyze(changed)
         view = self.store.dismiss_reanalysis_suggestion(self.tenant, sid, "不采纳")

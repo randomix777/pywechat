@@ -92,7 +92,7 @@ class ApplyCloudSuggestionTests(unittest.TestCase):
     def test_suggestion_becomes_a_local_draft_priced_from_the_local_catalogue(self):
         message = add_message(self.orders, self.tenant, "群A", "来两箱苹果", self.customer)
         # The cloud suggests a wildly wrong price; it must not be used at all.
-        suggestion = {**VALID_PARSE_RESULT, "items": [{"sku": "SKU-1", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]}]}
+        suggestion = {**VALID_PARSE_RESULT, "items": [{"said": '来两箱苹果', "brand": None, "category": None, "sku": "SKU-1", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]}]}
         applied = self.orders.apply_cloud_suggestion(self.tenant, "群A", message["id"], suggestion, job_id="job_x")
         self.assertEqual(applied["outcome"], "drafts")
         detail = self.orders.order_detail(self.tenant, applied["order_id"])
@@ -106,7 +106,7 @@ class ApplyCloudSuggestionTests(unittest.TestCase):
     def test_sku_outside_the_local_catalogue_becomes_a_clarification_not_an_order(self):
         """目录里没有的商品：**不建空订单**，开一条独立澄清任务。"""
         message = add_message(self.orders, self.tenant, "群A", "来两箱榴莲", self.customer)
-        suggestion = {**VALID_PARSE_RESULT, "items": [{"sku": "SKU-UNKNOWN", "quantity": 2, "unit": "箱", "evidence": ["来两箱榴莲"]}]}
+        suggestion = {**VALID_PARSE_RESULT, "items": [{"said": '来两箱榴莲', "brand": None, "category": None, "sku": "SKU-UNKNOWN", "quantity": 2, "unit": "箱", "evidence": ["来两箱榴莲"]}]}
         applied = self.orders.apply_cloud_suggestion(self.tenant, "群A", message["id"], suggestion)
         self.assertEqual(applied["outcome"], "clarify")
         self.assertIsNone(applied["order_id"], "缺商品信息时不得建单")
@@ -212,7 +212,7 @@ class ApplyCloudSuggestionTests(unittest.TestCase):
         """能唯一定位到订单时：挂在那张单上，标成"声称已付款"。"""
         first = add_message(self.orders, self.tenant, "群A", "来两箱苹果", self.customer, source="p-base")
         created = self.orders.apply_cloud_suggestion(
-            self.tenant, "群A", first["id"], {**VALID_PARSE_RESULT, "items": [{"sku": "SKU-1", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]}]}
+            self.tenant, "群A", first["id"], {**VALID_PARSE_RESULT, "items": [{"said": '来两箱苹果', "brand": None, "category": None, "sku": "SKU-1", "quantity": 2, "unit": "箱", "evidence": ["来两箱苹果"]}]}
         )
         self.orders.confirm(self.tenant, created["order_id"], "tester")
         claim = add_message(

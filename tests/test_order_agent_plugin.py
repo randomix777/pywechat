@@ -63,7 +63,7 @@ CATALOG = (
 CUSTOMER = ContextEntry(key="customer", value={"id": "c1", "name": "张姐"}, source=SOURCE_CUSTOMER, confirmed=True)
 HISTORY = ContextEntry(
     key="order:o1",
-    value={"order_id": "o1", "status": "confirmed", "delivery_date": "2026-09-24", "items": [{"sku": "APL", "quantity": 2, "unit": "箱"}]},
+    value={"order_id": "o1", "status": "confirmed", "delivery_date": "2026-09-24", "items": [{"said": '测试商品', "brand": None, "category": None, "sku": "APL", "quantity": 2, "unit": "箱"}]},
     source=SOURCE_HISTORY,
     confirmed=True,
     occurred_at=NOW - timedelta(days=1),
