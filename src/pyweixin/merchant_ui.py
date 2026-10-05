@@ -109,6 +109,10 @@ class MerchantWindow:
         #: 最近一次读取结果。跨页面重建存活 —— 否则商户从别处返回第 3 步，
         #: 会看到一句写死的「准备中」，明明早就读完了。界面不能说假话。
         self._last_read_result: Any = None
+        #: 汇总卡。已经在整理中：重复点会花两次钱。
+        self._summary_running = False
+        self._summary_text: Any = None
+        self._summary_status: Any = None
 
         app.events = AppEvents(
             on_home=lambda view: self._post("home", view=view),
@@ -946,6 +950,7 @@ class MerchantWindow:
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="第 4 步　智能整理", style="Section.TLabel").pack(anchor="w", pady=(4, 8))
 
+        self._build_summary_card(frame)
         self._build_history_summary(frame)
         self._build_quota_block(frame)
 
@@ -983,6 +988,103 @@ class MerchantWindow:
         self._refresh_analyze_button()
         self._spawn("quota", self._refresh_quota)
         self._spawn("models", self.app.load_models)
+
+    def _build_summary_card(self, parent: Any) -> None:
+        """「把这些消息整理成一段话」—— 只转述，不判断。
+
+        ## 为什么后面还要「智能整理」
+
+        两者是不同的东西，不互相覆盖：
+
+        * **智能整理**（上面那个）建订单、算价钱、匹配商品 —— 需要目录里有商品。
+          客户不报商品时它会猜，猜错便羞会发错货。
+        * **这里**只把原话整理成一段人话。客户说「那个黄的」就写
+          「那个黄的」，不试成目录里的编码。店主本人就在群里，他知道那是什么。
+        """
+        box = ttk.LabelFrame(parent, text="汇总一段话（不建单、不报价、不猜商品）",
+                             padding=10)
+        box.pack(fill="x", pady=(0, 10))
+        self._widgets["summary_box"] = box
+        self._summary_text = tk.Text(box, height=14, wrap="word", relief="flat")
+        self._summary_text.pack(fill="both", expand=True)
+        self._summary_text.configure(state="disabled")
+        self._summary_text.insert("1.0", "读完历史后点「整理成一段话」。")
+        bar = ttk.Frame(box)
+        bar.pack(fill="x", pady=(8, 0))
+        ttk.Button(bar, text="整理成一段话", style="Big.TButton",
+                   command=self._on_summarize).pack(side="left")
+        self._summary_status = ttk.Label(bar, text="", foreground="#7b8794")
+        self._summary_status.pack(side="left", padx=(12, 0))
+
+    def _run_summary(self, result: Any) -> dict:
+        """真正去调模型。在后台线程里跑，不能碰 Tk。"""
+        from .summary import DEFAULT_SUMMARY_MODEL, summarize_messages
+        messages = list(getattr(result, "messages", None) or [])
+        session = getattr(self.app, "session", None)
+        if not messages:
+            return {"summary": "", "error": "没读到消息", "cost": None,
+                    "message_count": 0}
+        api_key = getattr(session, "api_key", None) if session is not None else None
+        if not api_key:
+            return {"summary": "", "error": "还没登录账号，不能调模型",
+                    "cost": None, "message_count": len(messages)}
+        try:
+            return summarize_messages(
+                messages,
+                base_url="https://openrouter.ai/api/v1",
+                api_key=api_key,
+                model=DEFAULT_SUMMARY_MODEL,
+            )
+        except Exception as exc:  # 网络不可预期，不让线程死掉
+            return {"summary": "", "error": type(exc).__name__, "cost": None,
+                    "message_count": len(messages)}
+
+    def _set_summary(self, text: str) -> None:
+        if not self._alive(self._summary_text):
+            return
+        self._summary_text.configure(state="normal")
+        self._summary_text.delete("1.0", "end")
+        self._summary_text.insert("1.0", text)
+        self._summary_text.configure(state="disabled")
+
+    def _on_summarize(self) -> None:
+        """汇总已读到的消息。
+
+        模型调用不能在主线程做：请求可能卡几十秒，主线程被占住
+        就是界面整个冻住，商户会认为程序卡死。
+        """
+        if self._summary_running:
+            return
+        result = self._last_read_result or self.app.wizard.history_result
+        if result is None or not getattr(result, "total_messages", 0):
+            messagebox.showinfo("还没读到消息",
+                                "请先回上一步读取历史消息。")
+            return
+        self._summary_running = True
+        self._summary_status.configure(text="正在整理……")
+        def work():
+            outcome = self._run_summary(result)
+            self.after(0, lambda: self._summary_finished(outcome))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _summary_finished(self, outcome: dict) -> None:
+        self._summary_running = False
+        if not self._alive(self._summary_status):
+            return
+        if outcome.get("error"):
+            self._summary_status.configure(text="整理失败：" + outcome["error"])
+            return
+        text = outcome.get("summary") or ""
+        if not text.strip():
+            self._summary_status.configure(text="没汇总出内容。")
+            return
+        self._set_summary(text)
+        count = outcome.get("message_count", 0)
+        cost = outcome.get("cost")
+        tail = f"已整理 {count} 条"
+        if cost is not None:
+            tail += f"，本次费用 ${cost:.6f}"
+        self._summary_status.configure(text=tail)
 
     def _build_history_summary(self, parent: Any) -> None:
         """读取结果与缺口。**放在最上面** —— 商户最先要确认的是"读到了什么"。"""
