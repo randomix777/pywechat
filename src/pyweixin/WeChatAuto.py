@@ -77,7 +77,7 @@ from .utils import traverse_chat_history,traverse_message
 from .utils import parse_chat_history,parse_group_chat_history
 from .utils import parse_messages,parse_group_messages
 from .utils import scan_for_new_messages,get_new_message_num,process_audios
-from .Warnings import LongTextWarning,NoChatHistoryWarning
+from .Warnings import ChatHistoryUnavailable, LongTextWarning,NoChatHistoryWarning
 from .WeChatTools import Tools,Navigator,mouse,Desktop
 from .WinSettings import SystemSettings
 from .Errors import TimeNotCorrectError
@@ -3368,6 +3368,33 @@ class Moments():
         return posts
 
 
+#: 聊天记录列表的等待预算（总计）。
+#:
+#: 原来只等 1 秒。微信的历史面板是**异步渲染**的：窗口出现不等于
+#: 消息列表就位。机器忙或微信冷启动时，1 秒不够——
+#: 而之前的后果是把「还没加载完」说成「这个会话没有聊天记录」。
+CHAT_HISTORY_LIST_WAIT_SECONDS = 8.0
+
+#: 重试次数与每次的增量等待。总预算由上面那个常量控制。
+_CHAT_HISTORY_LIST_RETRIES = 4
+
+
+def _wait_for_chat_history_list(chat_history_list, budget_seconds: float = CHAT_HISTORY_LIST_WAIT_SECONDS) -> bool:
+    """等聊天记录列表真的出现。
+
+    增量等待而不是一次等保底时间：微信在加载过程中会重新生成
+    这个控件，固定的一次 exists() 可能恰好落在重建的窗口里。
+    """
+    per_try = max(0.2, budget_seconds / (_CHAT_HISTORY_LIST_RETRIES + 1))
+    for attempt in range(_CHAT_HISTORY_LIST_RETRIES + 1):
+        if chat_history_list.exists(timeout=per_try):
+            return True
+        if attempt < _CHAT_HISTORY_LIST_RETRIES:
+            time.sleep(per_try)
+    return False
+
+
+
 class Messages():
 
     @staticmethod
@@ -4018,13 +4045,21 @@ class Messages():
             search_bar=chat_history_window.descendants(**Edits.SearchEdit)[0]
             search_bar.set_text(search_content)
         chat_history_list=chat_history_window.child_window(**Lists.ChatHistoryList)
-        if not chat_history_list.exists(timeout=1):
-            warn(message=f"你与{friend}的聊天记录为空,无法获取聊天记录!",category=NoChatHistoryWarning)
+        if not _wait_for_chat_history_list(chat_history_list):
             chat_history_window.close()
-            # 必须返回"消息字典的列表"这一种形状。原来这里返回 3 个空列表的元组，
-            # 调用方 list() 之后拿到 [[], [], []]，下游按字典取字段直接
-            # AttributeError —— 只有真机上打开一个**没有聊天记录**的会话才会走到。
-            return []
+            # **报失败，不报"读到 0 条"。**
+            #
+            # 聊天记录面板是**异步渲染**的：窗口出现了不等于消息列表就位。
+            # 原来这里只 exists(timeout=1)，机器忙或微信冷启动时列表还没渲染出来，
+            # 就被判定成"你与 X 的聊天记录为空" —— 商户看到的就是"读取到 0 条"，
+            # 而且没有任何提示他会以为这个群真的没消息。
+            #
+            # 「读取失败」和「读到 0 条」必须能被分辨：前者要让重试按钮有用、
+            # 要留下日志，后者才是真的没消息。所以这里抛错，让调用方记成失败。
+            raise ChatHistoryUnavailable(
+                f'没能打开与{friend}的聊天记录列表（可能微信还没加载完）。'
+                f'这是**读取失败**，不是"没有聊天记录"，重试通常就能读出来。'
+            )
         win32gui.SendMessage(chat_history_window.handle,win32con.WM_SYSCOMMAND,win32con.SC_MAXIMIZE,0)
         details_with_name=traverse_chat_history(chat_history_window,select=save_detail,number=number,save_detail=save_detail,target_folder=target_folder,on_progress=on_progress,cancelled=cancelled)
         if not is_group_chat:

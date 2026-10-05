@@ -8,6 +8,15 @@ class LongTextWarning(Warning):
 class NoChatHistoryWarning(Warning):
     '''聊天记录不足指定的个数'''
     pass
+class ChatHistoryUnavailable(RuntimeError):
+    '''聊天记录列表**没能就位** —— 读取失败，不是「没有聊天记录」。
+
+    这两件事必须能被分辨：前者要让商户看到「读取失败，重试」并留下日志，
+    后者才是真的这个会话没有消息。混为一谈会让商户以为群里没生意。
+
+    真实成因是微信的历史面板异步渲染：窗口出现了，消息列表还在加载。
+    '''
+    pass
 class LanguageDetectionFailedWarning(Warning):
     '''微信当前使用的语言探测失败'''
     pass
