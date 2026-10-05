@@ -233,6 +233,72 @@ class SummaryReadsTheRightPlaceTests(unittest.TestCase):
         self.assertIn("content", body)
 
 
+class UpdateReadStaysConsistentTests(unittest.TestCase):
+    """「更新历史」之后点摘要，不能只剩最新那批。
+
+    ## 出过什么事
+
+    读取分两种：读取全部导入一大批，更新历史只导入新增的几条。
+    我一开头**只按最后一次导入的 import_ids 取数**，于是：
+
+        【读取全部】后点摘要 -> 10 条
+        【更新后】点摘要     -> 2 条   ← 前面 10 条不见了
+
+    商户刚明明读到了 12 条，一点摘要只剩 2 条 —— 界面和他刚做的事对不上。
+
+    现在按 result.coverage 里的**会话**取（对应 messages.group_id），
+    覆盖这个会话积累下来的全部消息。
+    """
+
+    def setUp(self):
+        self.source = MERCHANT_UI.read_text(encoding="utf-8")
+        self.tree = ast.parse(self.source)
+        self.fn = next(n for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)
+                       and n.name == "_messages_for_summary")
+
+    def test_it_selects_by_conversation_not_by_import_batch(self):
+        """**结构检查**：要有一个真的在遍历 coverage 的循环。
+
+        这条一开始写成了 ``assertIn("coverage", ast.unparse(fn))``，
+        **根本抓不住 bug**：``ast.unparse`` **包含文档字符串**，
+        而我的 docstring 里就写着「按 result.coverage 取」。
+
+        于是把循环改成 ``for item in []:``（彻底不看 coverage）之后，
+        字符串里依然有 coverage，测试照样全绿。
+
+        改成看 AST 结构：必须真的存在一个迭代 coverage 的 For。
+        """
+        loops = [n for n in ast.walk(self.fn) if isinstance(n, ast.For)]
+        over_coverage = [n for n in loops
+                         if "coverage" in ast.unparse(n.iter) and n.body
+                         and not (len(n.body) == 1 and isinstance(n.body[0], ast.Pass))]
+        self.assertTrue(over_coverage,
+                        "没有任何一个真正遍历 coverage 的循环 —— "
+                        "摘要会只取最后一批导入")
+
+    def test_import_ids_are_only_a_fallback(self):
+        """拿不到会话时才退回按导入批次取 —— 不能是主路径。"""
+        body = ast.unparse(self.fn)
+        self.assertIn("import_ids", body, "应该保留兜底路径")
+
+    def test_there_is_a_limit(self):
+        """整个群的历史不能无上限地塞给模型。"""
+        body = ast.unparse(self.fn)
+        self.assertIn("LIMIT", body.upper())
+        self.assertIn("SUMMARY_MESSAGE_LIMIT", self.source)
+
+    def test_the_limit_takes_the_most_recent_messages(self):
+        """截断时必须取**最近**的，而不是最早的。"""
+        body = ast.unparse(self.fn)
+        self.assertIn("DESC", body.upper(),
+                      "必须按时间倒序取最近的")
+
+    def test_it_restores_chronological_order_before_sending(self):
+        """倒序取出来之后要正回来，否则模型看到的是倒着的历史。"""
+        body = ast.unparse(self.fn)
+        self.assertIn("reversed", body)
+
+
 class FieldsAreInitialisedTests(unittest.TestCase):
     """摘要用到的字段必须在 __init__ 里先建好。
 

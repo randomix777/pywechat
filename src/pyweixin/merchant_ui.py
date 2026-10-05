@@ -44,6 +44,11 @@ POLL_INTERVAL_MS = 3000
 #: 商家界面上允许出现的全部技术词，出现即视为回归。
 FORBIDDEN_TERMS = ("token", "apikey", "api key", "provider", "session", "bearer", "opencode", "model", "sqlite")
 
+#: 摘要最多送多少条消息给模型。
+#: 模型上下文和钱都有限，不能把整个群的历史全塞进去。
+#: 超出时取**最近**的，并在界面上说明。
+SUMMARY_MESSAGE_LIMIT = 200
+
 #: 表格一列最多显示多少字。超出的部分用省略号收尾 —— 不加省略号的话，
 #: 商户看到的是一句**被拦腰切断**的话，看不出订单到底写了什么。
 #:
@@ -1033,34 +1038,68 @@ class MerchantWindow:
         self._summary_status = ttk.Label(bar, text="", foreground="#7b8794")
 
     def _messages_for_summary(self, result: Any) -> list[dict[str, Any]]:
-        """把刚读到的消息从库里取出来。
+        """把这次读到的**会话**的消息取出来。
 
-        ## 为什么不能从 result 取
+        ## 为什么不能只取最近一批导入
 
-        ``HistoryResult`` 里**没有 messages 字段**。它只有
-        ``window`` / ``mode`` / ``coverage`` / ``imported`` / ``import_ids`` / ``cancelled``
-        和一个 ``total_messages`` 属性。
+        读取分两种：「读取全部」会导入一大批，
+        「更新历史」只导入新增的几条。
 
-        我第一版写的是 ``getattr(result, "messages", None) or []``，
-        于是**永远取到空列表** —— 点一下就立刻报「没读到消息」，
-        进度条刚转起来就停。
+        一开始我只按**最后一次**导入的 import_ids 取数，于是：
 
-        消息在读取时已经导入到库里了，所以这里按 ``import_ids`` 去查。
+            【读取全部】后点摘要 -> 10 条
+            【更新后】点摘要     -> 2 条   ← 前面 10 条不见了
+
+        商户刚才明明读到了 12 条，一点摘要只剩 2 条 ——
+        界面和他刚做的事对不上。
+
+        ## 现在的取法
+
+        按 result.coverage 里的**会话**取（对应 messages.group_id），
+        覆盖这个会话积累下来的全部消息。这才是商户心里
+        「这个群我读过什么」的范围。
+
+        ## 为什么要截断
+
+        模型的上下文和钱都有限。只取**最近** ``SUMMARY_MESSAGE_LIMIT`` 条，
+        并在超出时明说，而不是静默地只给一部分。
         """
-        import_ids = [str(i) for i in (getattr(result, "import_ids", None) or []) if i]
         store = getattr(self.app, "orders", None)
         tenant = getattr(self.app, "tenant", "")
-        if store is None or not import_ids:
+        if store is None:
             return []
-        placeholders = ",".join("?" for _ in import_ids)
+
+        groups: list[str] = []
+        for item in getattr(result, "coverage", None) or []:
+            conversation = getattr(item, "conversation", None)
+            name = getattr(conversation, "name", "") if conversation is not None else ""
+            if name and name not in groups:
+                groups.append(str(name))
+
+        if not groups:
+            # 拿不到会话（比如旧的结果对象）时退回按导入批次取。
+            import_ids = [str(x) for x in (getattr(result, "import_ids", None) or []) if x]
+            if not import_ids:
+                return []
+            marks = ",".join("?" for _ in import_ids)
+            rows = store.db.execute(
+                "SELECT sender, content, COALESCE(sent_at, observed_at) AS sent_at"
+                " FROM messages WHERE merchant_id=? AND import_id IN (" + marks + ")"
+                " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id",
+                [tenant, *import_ids]).fetchall()
+            return [{"sender": r["sender"], "content": r["content"], "sent_at": r["sent_at"]}
+                    for r in rows]
+
+        marks = ",".join("?" for _ in groups)
         rows = store.db.execute(
             "SELECT sender, content, COALESCE(sent_at, observed_at) AS sent_at"
-            " FROM messages WHERE merchant_id=? AND import_id IN (" + placeholders + ")"
-            " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id",
-            [tenant, *import_ids],
-        ).fetchall()
+            " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
+            " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)) DESC, id DESC"
+            " LIMIT ?",
+            [tenant, *groups, SUMMARY_MESSAGE_LIMIT]).fetchall()
+        # 上面按时间**倒序**取最近的，交给模型时要正过来。
         return [{"sender": r["sender"], "content": r["content"], "sent_at": r["sent_at"]}
-                for r in rows]
+                for r in reversed(rows)]
 
     def _run_summary(self, result: Any) -> dict:
         """真正去调模型。在后台线程里跑，不能碰 Tk。"""
