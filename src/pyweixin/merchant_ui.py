@@ -1032,10 +1032,40 @@ class MerchantWindow:
         self._summary_elapsed_label.pack(side="left", padx=(8, 0))
         self._summary_status = ttk.Label(bar, text="", foreground="#7b8794")
 
+    def _messages_for_summary(self, result: Any) -> list[dict[str, Any]]:
+        """把刚读到的消息从库里取出来。
+
+        ## 为什么不能从 result 取
+
+        ``HistoryResult`` 里**没有 messages 字段**。它只有
+        ``window`` / ``mode`` / ``coverage`` / ``imported`` / ``import_ids`` / ``cancelled``
+        和一个 ``total_messages`` 属性。
+
+        我第一版写的是 ``getattr(result, "messages", None) or []``，
+        于是**永远取到空列表** —— 点一下就立刻报「没读到消息」，
+        进度条刚转起来就停。
+
+        消息在读取时已经导入到库里了，所以这里按 ``import_ids`` 去查。
+        """
+        import_ids = [str(i) for i in (getattr(result, "import_ids", None) or []) if i]
+        store = getattr(self.app, "orders", None)
+        tenant = getattr(self.app, "tenant", "")
+        if store is None or not import_ids:
+            return []
+        placeholders = ",".join("?" for _ in import_ids)
+        rows = store.db.execute(
+            "SELECT sender, content, COALESCE(sent_at, observed_at) AS sent_at"
+            " FROM messages WHERE merchant_id=? AND import_id IN (" + placeholders + ")"
+            " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id",
+            [tenant, *import_ids],
+        ).fetchall()
+        return [{"sender": r["sender"], "content": r["content"], "sent_at": r["sent_at"]}
+                for r in rows]
+
     def _run_summary(self, result: Any) -> dict:
         """真正去调模型。在后台线程里跑，不能碰 Tk。"""
         from .summary import DEFAULT_SUMMARY_MODEL, summarize_messages
-        messages = list(getattr(result, "messages", None) or [])
+        messages = self._messages_for_summary(result)
         session = getattr(self.app, "session", None)
         if not messages:
             return {"summary": "", "error": "没读到消息", "cost": None,

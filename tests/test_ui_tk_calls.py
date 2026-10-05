@@ -160,6 +160,79 @@ class NoTkCallsFromWorkerThreadsTests(unittest.TestCase):
                          f"这些事件没有主线程处理器，会被丢掉：{missing}")
 
 
+class SummaryReadsTheRightPlaceTests(unittest.TestCase):
+    """摘要必须从**库**里取消息，不能从读取结果对象上取。
+
+    ## 出过什么事
+
+    ``HistoryResult`` 里**没有 messages 字段**：
+
+        window / mode / coverage / imported / import_ids / cancelled
+        + total_messages（属性）
+
+    我第一版写的是 ``getattr(result, "messages", None) or []`` ——
+    于是**永远取到空列表**，点一下立刻报「没读到消息」，
+    进度条刚转起来就停。
+
+    消息在读取时已经导入库了，所以应该按 ``import_ids`` 去查。
+    """
+
+    def setUp(self):
+        self.source = MERCHANT_UI.read_text(encoding="utf-8")
+        self.tree = ast.parse(self.source)
+
+    def test_history_result_really_has_no_messages_field(self):
+        """这条是**事实核查**：结果对象上确实没有 messages。
+
+        哪天 HistoryResult 加了 messages 字段，这条会红，提醒复核取数方式。
+        """
+        source = (ROOT / "src/pyweixin/history_read.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        result = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)
+                      and n.name == "HistoryResult")
+        fields = {t.target.id for t in result.body if isinstance(t, ast.AnnAssign)
+                  and isinstance(t.target, ast.Name)}
+        self.assertNotIn("messages", fields,
+                         "HistoryResult 现在有 messages 字段了 —— 请重新确认摘要从哪里取数")
+        self.assertIn("import_ids", fields,
+                      "库里取数靠的就是 import_ids")
+
+    def test_the_summary_goes_through_the_database(self):
+        fn = next(n for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)
+                  and n.name == "_messages_for_summary")
+        body = ast.unparse(fn)
+        self.assertIn("import_id", body)
+        self.assertIn(".db.execute", body,
+                      "必须查库，不能从 result 对象上取")
+
+    def test_it_takes_messages_from_the_helper_not_the_result(self):
+        """必须调 _messages_for_summary。
+
+        这条一开始写成了查 ``'"messages"' not in body``，结果
+        **假阴性**：``ast.unparse`` 输出的是**单引号**
+        ``getattr(result, 'messages', None)``，双引号查不到，
+        把 bug 放回去测试依然全绿。
+
+        改成查「真的调了那个帮助方法」：把 bug 放回去时
+        这个调用就消失了，必然变红。
+        """
+        fn = next(n for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)
+                  and n.name == "_run_summary")
+        body = ast.unparse(fn)
+        self.assertIn("_messages_for_summary", body,
+                      "摘要必须从库里取消息，不能从 result 对象上取")
+        self.assertNotIn("getattr(result", body,
+                         "不能在 result 上碰字段 —— 那个对象上没有 messages")
+
+    def test_only_the_three_needed_fields_go_to_the_model(self):
+        """发送人 / 内容 / 时间。消息 id、群 id、游标都不该送出去。"""
+        fn = next(n for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)
+                  and n.name == "_messages_for_summary")
+        body = ast.unparse(fn)
+        self.assertIn("sender", body)
+        self.assertIn("content", body)
+
+
 class FieldsAreInitialisedTests(unittest.TestCase):
     """摘要用到的字段必须在 __init__ 里先建好。
 
