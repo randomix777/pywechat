@@ -111,7 +111,11 @@ class ApplyCloudSuggestionTests(unittest.TestCase):
         self.assertEqual(applied["outcome"], "clarify")
         self.assertIsNone(applied["order_id"], "缺商品信息时不得建单")
         self.assertEqual(self.orders.list_orders(self.tenant), [], "澄清任务不是订单")
-        self.assertIn("sku_outside_merchant_catalog", applied["ambiguities"])
+        # 模型填了一个目录里没有的 sku —— 本地将它当没填过处理，
+        # 并记下原因。标记名从 sku_outside_merchant_catalog 改为
+        # model_sku_not_in_merchant_catalog，为了区分「模型自拟的编码」与
+        # 其他来源给的编码。
+        self.assertIn("model_sku_not_in_merchant_catalog", applied["ambiguities"])
         task = self.orders.clarification(self.tenant, applied["clarification_id"])
         self.assertFalse(task["counts_as_order"])
         self.assertTrue(task["suggested_question"], "澄清任务必须带一句要问的话")

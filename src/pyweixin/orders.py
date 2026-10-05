@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import re
 import sqlite3
@@ -257,7 +258,10 @@ def _match_items_to_products(items: Sequence[Mapping[str, Any]], products: Seque
             continue
         aliases_by_sku: dict[str, list[str]] = {}
         for product in products:
-            raw = product["aliases"] or ""
+            # products 是 ``SELECT * FROM products`` 的结果，**没有 aliases 列**。
+            # 别名在 product_aliases 里。用、不用它是不对的 ——
+            # 本来这里就是让模型来匹配的，本地只是兜底。
+            raw = product.get("aliases") or ""
             names = [a for a in raw.split("|") if a] if raw else []
             if product.get("name"):
                 names.append(str(product["name"]))
@@ -890,6 +894,103 @@ class OrderStore:
             for alias in set(aliases)|{name,sku}: self.db.execute("INSERT INTO product_aliases VALUES(?,?,?)",(uuid.uuid4().hex,pid,alias))
         return pid
 
+    def import_products(self, tenant: str, rows: Iterable[Mapping[str,Any]]) -> dict[str,Any]:
+        """批量导入商品数据。
+
+        模型是从商户目录里匹配的，所以目录里什么，
+        决定了自动匹配的命中率。手工逐条录入太慢，商户也不会手录。
+
+        ## 重复的商品如何处理
+
+        按 **sku** 去重：已存在则**更新价格与名称**，不再新增一条。
+        重复导入不应让目录膨胀 —— 那会让同一个商品在目录里出现
+        多次，模型匹配时会拿不到应该哪一个。
+
+        ## 别名
+
+        可以用「别名」或「别名1」列给多个（逗号、台号、等号分隔）。
+        它们会一并存进 product_aliases，模型匹配时用的就是它们。
+
+        ## 返回
+
+        不抛异常。一行看不懂就记在 skipped 里并说明原因，
+        其余的照常导入—— 一个脏单元格不应让整批失败。
+        """
+        self._plan(tenant)
+        created = updated = skipped = 0
+        problems: list[str] = []
+        for index, row in enumerate(rows, 1):
+            sku = str(row.get("sku") or row.get("编码") or "").strip()
+            name = str(row.get("name") or row.get("名称") or row.get("商品") or "").strip()
+            unit = str(row.get("unit") or row.get("单位") or "").strip()
+            raw_price = row.get("price_cents")
+            if raw_price in (None, ""):
+                yuan = row.get("price") or row.get("价格") or row.get("单价")
+                try:
+                    raw_price = int(round(float(yuan) * 100)) if yuan not in (None, "") else None
+                except (TypeError, ValueError):
+                    raw_price = None
+            try:
+                price = int(raw_price) if raw_price not in (None, "") else None
+            except (TypeError, ValueError):
+                price = None
+            aliases = []
+            for key in ("aliases", "别名"):
+                raw = row.get(key)
+                if not raw:
+                    continue
+                for piece in str(raw).replace("，", ",").replace("、", ",").split(","):
+                    piece = piece.strip()
+                    if piece:
+                        aliases.append(piece)
+            if not sku and not name:
+                skipped += 1
+                problems.append(f"第 {index} 行：既没有编码也没有名称")
+                continue
+            if not name:
+                skipped += 1
+                problems.append(f"第 {index} 行：缺少商品名称")
+                continue
+            if not sku:
+                # 既没编码又没名称的行进来了，那就不是商品。
+                # 不能拿名称充当 sku 存进去：会在目录里留下一个
+                # “编码就是中文名”的冒充商品，模型匹配时会很难很难分辨。
+                sku = "SKU-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:10].upper()
+            if price is None or price < 0:
+                skipped += 1
+                problems.append(f"第 {index} 行（{name}）：价格不合法，需要数字（单价可以留空）")
+                continue
+            existing = self.db.execute(
+                "SELECT id FROM products WHERE merchant_id=? AND sku=?", (tenant, sku)
+            ).fetchone() if sku else None
+            if existing is not None:
+                with self.db:
+                    self.db.execute("UPDATE products SET name=?,unit=?,price_cents=? WHERE id=?",
+                                    (name, unit, price, existing["id"]))
+                pid = existing["id"]
+                updated += 1
+            else:
+                pid = "p_" + uuid.uuid4().hex[:12]
+                with self.db:
+                    self.db.execute("INSERT INTO products VALUES(?,?,?,?,?,?)",
+                                    (pid, tenant, sku or name, name, unit, price))
+                created += 1
+            for alias in set(aliases) | {name, sku or name}:
+                if alias:
+                    with self.db:
+                        self.db.execute("INSERT OR IGNORE INTO product_aliases VALUES(?,?,?)",
+                                        (uuid.uuid4().hex, pid, alias))
+        return {"created": created, "updated": updated, "skipped": skipped, "problems": problems}
+
+    def import_products_csv(self, tenant: str, text: str) -> dict[str,Any]:
+        """从 CSV 文本导入商品。
+
+        表头认中文常用名：编码/SKU、名称/商品、单位、
+        价格/单价、别名。价格写元（如 12.50）自动换算到分。
+        """
+        reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+        return self.import_products(tenant, [dict(row) for row in reader])
+
     def add_import(self, tenant: str, group: str, messages: list[Mapping[str,Any]], source: str, source_type: str="demo", known_gap: str="") -> dict[str,Any]:
         self._plan(tenant); iid="i_"+hashlib.sha256(f"{tenant}:{source}".encode()).hexdigest()[:16]
         normalized=[];overlap_candidates=0;weak_identity_count=0
@@ -1295,6 +1396,13 @@ class OrderStore:
     MERCHANT_ONLY_REASONS = {
         "unsupported_media": "这条不是文字消息，本软件还不能解析，请人工看一下。",
         "possible_cross_batch_duplicate": "这条和另一条可能是重复的，请确认是不是新消息。",
+        # 模型给了一个目录里没有的编码 —— 已经按"没填过"处理了。
+        # 这是**商户**要看的：不是客户没说清，是软件不该编一个编码出来。
+        # 不列在这里的话 _clarify 会拿到空 reasons，整条任务变成"失败"而
+        # 不是"待人工确认" —— 失败会让人以为软件坏了，而实际只是要人看一眼。
+        "model_sku_not_in_merchant_catalog": "软件没能确定这是哪个商品，请确认一下。",
+        # 按「客户说了什么」本地匹配也没匹配上。同样是商户看一眼的事。
+        "product_not_resolved_locally": "商品还没对上目录，请确认一下是哪个。",
     }
 
     def open_clarification(
@@ -1443,8 +1551,17 @@ class OrderStore:
             return self._record_payment_claim(tenant,group,msg,parsed,run_id,tokens,prior,
                                              list(parsed["ambiguities"])+list(parsed["missing_fields"])+["customer_payment_claim_not_receipt"])
         ambiguities=list(parsed["ambiguities"])+list(parsed["missing_fields"])
-        # \u6a21\u578b\u4e0d\u731c sku\uff08\u5ba2\u6237\u4e0d\u62a5\u8f93\u7801\uff0c\u731c\u9519\u4f1a\u8ba9\u5546\u6237\u53d1\u9519\u8d27\uff09\uff0c
-        # \u6240\u4ee5\u8fd9\u91cc\u6309\u300c\u5ba2\u6237\u8bf4\u4e86\u4ec0\u4e48\u300d\u53bb\u5546\u6237\u76ee\u5f55\u91cc\u5339\u914d\u3002\u5339\u4e0d\u4e0a\u5c31\u7559\u7a7a\u3002
+        # 模型会尝试从商户目录里匹配。先验一道：
+        # **它填的 sku 必须真的在目录里。** 不在就当没填过——
+        # 一个编造出来的编码比空值更危险。
+        _catalog_skus={str(p["sku"]) for p in products}
+        for _item in parsed["items"]:
+            _claimed=str(_item.get("sku") or "")
+            if _claimed and _claimed not in _catalog_skus:
+                _item["sku"]=""
+                ambiguities.append("model_sku_not_in_merchant_catalog")
+        # 目录里找不到的，按「客户说了什么」再匹配一次。
+        # 模型只是转述者，最后一道不能靠它。
         _resolved = _match_items_to_products(parsed["items"], products)
         for _item, _sku in zip(parsed["items"], _resolved):
             if _sku:
@@ -1455,7 +1572,11 @@ class OrderStore:
         if intent=="payment_claim":ambiguities.append("customer_payment_claim_not_receipt")
         if any(term in msg["content"] for term in ("老样子","跟昨天一样","跟上次一样")) and prior is None:ambiguities.append("no_eligible_historical_order_at_message_time")
         candidate=next((p for p in products if p["sku"] in {item.get("sku") for item in parsed["items"]}),None)
-        if any(item.get("sku") and not any(p["sku"]==item["sku"] for p in products) for item in parsed["items"]):ambiguities.append("sku_outside_merchant_catalog")
+        # 模型自拟的编码已在上面被剔除（并记下 model_sku_not_in_merchant_catalog），
+        # 所以这里的判定标准是「有商品没对上任何商品」——
+        # 而不是「商品的 sku 不在目录里」。两者都要转澄清，
+        # 但只有前者能做到“问客户还是问商家”的判断。
+        if any(not item.get("sku") for item in parsed["items"]):ambiguities.append("sku_outside_merchant_catalog")
         evidence_text="\n".join([msg["content"]]+[r["content"] for r in recent])
         if parsed["evidence"] and not any(str(ev) in evidence_text for ev in parsed["evidence"]):ambiguities.append("evidence_not_in_source_message")
         for item in parsed["items"]:
