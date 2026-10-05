@@ -27,6 +27,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from pyweixin.summary import (  # noqa: E402
+    DEFAULT_SUMMARY_MODEL,
     SUMMARY_SYSTEM_PROMPT,
     Summarizer,
     summarize_messages,
@@ -50,6 +51,17 @@ class _Response:
 def _reply(content: str) -> _Response:
     return _Response({"choices": [{"message": {"content": content}}],
                       "usage": {"cost": 0.0002}})
+
+
+class DefaultModelTests(unittest.TestCase):
+    """默认模型必须是真实验证过的那个。
+
+    一开始我就在脚本里写死了 gpt-4o-mini，而项目实际用的是 DeepSeek ——
+    那样验证结论对项目没有价值。模型标识一定得来自真实列表。
+    """
+
+    def test_it_defaults_to_the_model_we_actually_validated(self):
+        self.assertEqual(DEFAULT_SUMMARY_MODEL, "deepseek/deepseek-v4.1-flash")
 
 
 class PromptTests(unittest.TestCase):

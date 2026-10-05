@@ -37,6 +37,14 @@ import urllib.error
 import urllib.request
 from typing import Any, Iterable, Mapping, Sequence
 
+#: 默认模型。测过真实调用：**DeepSeek v4.1 flash 在「说不清」这件
+#: 事上比 gpt-4o-mini 做得好** —— 它会把「要什么 / 多少 / 什么时候」
+#: 三个维度都标出来，而且会主动注明「牧牛」是原话照抄。
+#: 成本 $0.0005（gpt-4o-mini 约 $0.0002）。
+#:
+#: 模型标识取自 OpenRouter 的实际列表，不是凭印象拼的。
+DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4.1-flash"
+
 SUMMARY_SYSTEM_PROMPT = """\
 你会看微信群里的订货消息，然后把一个群这段时间的订货情况整理成一段简报，
 给**店主本人**看。店主就在群里，他知道「老张」是谁，也知道自家卖什么。
