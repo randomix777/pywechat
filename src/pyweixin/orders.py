@@ -884,8 +884,30 @@ class OrderStore:
         with self.db:
             self.db.execute("UPDATE messages SET customer_id=?,match_confidence=1.0 WHERE id=? AND merchant_id=?",(customer_id,message_id,tenant))
             if msg["sender"]:
-                current=self.db.execute("SELECT DISTINCT customer_id FROM aliases WHERE merchant_id=? AND group_id=? AND alias=? AND valid_to IS NULL",(tenant,msg["group_id"],msg["sender"])).fetchall()
-                if not current:self.db.execute("INSERT INTO aliases VALUES(?,?,?,?,?,?,NULL)",(uuid.uuid4().hex,tenant,customer_id,msg["group_id"],msg["sender"],self.now()))
+                # **纠正必须真的改掉绑定。**
+                #
+                # 原来写的是「没有任何绑定时才插入」。于是发送人一旦被绑到
+                # 错的人身上，纠正就什么也不写：`current` 非空，插入被跳过，
+                # 下一条同一个人发的消息照样认错 —— **同一个错误永远重犯**，
+                # 而那正是「记记忆用于减少错误」要消灭的东西。
+                #
+                # aliases 表本来就有 valid_from / valid_to，就是为此设计的：
+                # 把指向**别人**的旧绑定关掉（保留历史，不删），再写新的。
+                #
+                # 只动同一个群里、同一个称呼、且指向别人的那些 ——
+                # 别的群的叫法互不相干，不能一起关掉。
+                self.db.execute(
+                    "UPDATE aliases SET valid_to=? WHERE merchant_id=? AND group_id=?"
+                    " AND alias=? AND valid_to IS NULL AND customer_id<>?",
+                    (self.now(), tenant, msg["group_id"], msg["sender"], customer_id))
+                already = self.db.execute(
+                    "SELECT 1 FROM aliases WHERE merchant_id=? AND group_id=? AND alias=?"
+                    " AND customer_id=? AND valid_to IS NULL",
+                    (tenant, msg["group_id"], msg["sender"], customer_id)).fetchone()
+                if not already:
+                    self.db.execute("INSERT INTO aliases VALUES(?,?,?,?,?,?,NULL)",
+                                    (uuid.uuid4().hex, tenant, customer_id, msg["group_id"],
+                                     msg["sender"], self.now()))
             # Identity correction invalidates only prior parse attempts for this
             # message. Any empty identity review card is closed before replay.
             self.db.execute("UPDATE parse_runs SET status='superseded',error='customer identity corrected; reparse required' WHERE merchant_id=? AND message_id=?",(tenant,message_id))
@@ -2113,6 +2135,20 @@ class OrderStore:
                 continue
             if phrase == product["name"] or phrase == product["sku"]:
                 continue
+            # **先把这个称呼从别的商品上摘掉。**
+            #
+            # 只加不撤会留下两个候选：原本「李记酱油」错绑在 P-A 上（唯一候选 →
+            # 自动匹配，商家拿到错商品还不知道），纠正后变成 P-A 和 P-B 都有 ——
+            # 匹配结果从「错」变成「认不出」，商家每次都要手动确认。
+            #
+            # 那不叫减少错误，只是把错换成了烦。纠正要**改掉**绑定，
+            # 不只是加一条新的。product_aliases 没有时序列，所以只能删；
+            # 删掉的是错的绑定，改动记在 audit 里。
+            with self.db:
+                self.db.execute(
+                    "DELETE FROM product_aliases WHERE alias=? AND product_id<>?"
+                    " AND product_id IN (SELECT id FROM products WHERE merchant_id=?)",
+                    (phrase, product_id, tenant))
             exists = self.db.execute(
                 "SELECT 1 FROM product_aliases WHERE product_id=? AND alias=?",
                 (product_id, phrase)).fetchone()
