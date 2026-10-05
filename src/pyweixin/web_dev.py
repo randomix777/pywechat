@@ -168,6 +168,7 @@ def _history_view(result: Any) -> dict[str, Any] | None:
             "count": int(getattr(item, "message_count", 0) or 0),
             "truncated": bool(getattr(item, "truncated", False)),
             "unresolved": int(getattr(item, "unresolved_senders", 0) or 0),
+            "fetched": int(getattr(item, "fetched_count", 0) or 0),
             "skipped": bool(getattr(item, "skipped", False)),
             "error": str(getattr(item, "error", "") or ""),
         })

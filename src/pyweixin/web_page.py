@@ -261,6 +261,12 @@ function render(data) {
       // 发送人没认出来必须显式说出来，否则页面上的「读到 N 条」
       // 会让商户以为成功了。
       if (row.unresolved) status += "（" + row.unresolved + " 条发送人没认出来）";
+      // 一条都没读到时，区分「群里没消息」和「读取失败」
+      if (!row.error && !row.skipped && !row.count) {
+        status += (row.fetched === 0)
+          ? "（读取器拿回 0 条，这不等于群里没消息）"
+          : "（读取器拿回 " + row.fetched + " 条，但本次一条都没进库）";
+      }
       html += "<tr><td>" + esc(row.name) + "</td><td>" + row.count +
               "</td><td>" + esc(status) + "</td></tr>";
     }

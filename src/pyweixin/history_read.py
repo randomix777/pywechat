@@ -145,6 +145,12 @@ class ConversationCoverage:
     #: 不记下来就没了 —— “读到 107 条”和“读到 107 条但每条的发送人
     #: 都是占位符”在界面上完全一样，商户会以为成功了。
     unresolved_senders: int = 0
+    #: 读取器自己拿回来的条数 —— **进库之前**的数。
+    #:
+    #: 为什么要单独留：界面只显示进库后的条数，于是「微信里确实没有新消息」
+    #: 和「读取器没取到东西」在界面上**一模一样**，都显示「本次 0 条」。
+    #: 商户看到「完成，0 条」只会以为群里没消息，而真相可能是读取根本没成功。
+    fetched_count: int = 0
     error: str = ""
     skipped: bool = False
 
@@ -625,6 +631,7 @@ class HistoryReader:
                     latest=latest,
                     truncated=truncated or hit_ceiling,
                     unresolved_senders=unresolved,
+                    fetched_count=len(messages),
                 )
             )
             with self._lock:

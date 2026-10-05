@@ -971,6 +971,17 @@ class MerchantWindow:
             unresolved = int(getattr(item, "unresolved_senders", 0) or 0)
             if unresolved and not item.error:
                 note_text += f"　（{unresolved} 条发送人没认出来）"
+            # **一条都没读到时不能只说「完成」。**
+            #
+            # 两种情况原来在界面上完全一样、都显示「本次 0 条」：
+            #   * 微信里确实没有新消息 → 正常
+            #   * 读取器根本没取到（窗口没聚焦、群名搜不到、时间窗不匹配）
+            # 商户看「完成」只会以为群里没消息，于是永远不会去查「读取是不是没成功」。
+            fetched = int(getattr(item, "fetched_count", 0) or 0)
+            if not item.error and not item.skipped and not item.message_count:
+                note_text += ("　（读取器拿回 0 条，**这不等于群里没消息**）"
+                              if fetched == 0 else
+                              f"　（读取器拿回 {fetched} 条，但本次一条都没进库）")
             tree.insert(
                 "", "end",
                 values=(name, count_text, f"{earliest} 至 {latest}{note_text}"),
