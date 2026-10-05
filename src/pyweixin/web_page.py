@@ -73,6 +73,23 @@ PAGE = r"""<!DOCTYPE html>
   <div id="banner"></div>
 
   <section class="card">
+    <h2>0 · 产品账号</h2>
+    <p class="hint">
+      智能整理要提交任务给云端，**依赖产品账号**。没登录必然失败，
+      所以放在最前面 —— 免得读到一堆消息才发现整理不了。
+    </p>
+    <div class="row">
+      <button id="loginBtn" class="primary" onclick="doLogin()">登录产品账号</button>
+      <button id="logoutBtn" onclick="doLogout()" hidden>退出登录</button>
+      <span class="muted" id="acct">正在确认登录状态…</span>
+    </div>
+    <p class="hint" style="margin-top:10px">
+      数据目录：<code id="datadir"></code><br>
+      目录不对时这里会显示成「没有数据 / 未登录」——先看这里。
+    </p>
+  </section>
+
+  <section class="card">
     <h2>1 · 微信</h2>
     <p class="hint">读取历史需要微信已登录并打开。</p>
     <div class="row">
@@ -108,7 +125,8 @@ PAGE = r"""<!DOCTYPE html>
     <h2>4 · 智能整理</h2>
     <p class="hint">已整理过的消息不会重复提交 —— 重复提交会真的花钱，而结果只会是「已处理过」。</p>
     <div class="row">
-      <button class="primary" onclick="post('/api/analyze')">开始智能整理</button>
+      <button id="analyzeBtn" class="primary" onclick="post('/api/analyze')">开始智能整理</button>
+      <span class="muted" id="analyzeHint"></span>
     </div>
     <div id="analysis" style="margin-top:10px"></div>
   </section>
@@ -156,7 +174,7 @@ PAGE = r"""<!DOCTYPE html>
   </section>
 </main>
 
-<script>
+<script>const DATADIR = "__DATADIR__";
 let polling = null;
 const $ = (id) => document.getElementById(id);
 
@@ -202,6 +220,19 @@ function render(data) {
   const busy = $("busy");
   busy.hidden = !data.busy;
   busy.textContent = data.busy ? ("进行中：" + data.busy) : "";
+
+  // 账号 —— 整理按钮能不能按，取决于它
+  const acct = data.account || {};
+  $("loginBtn").hidden = !!acct.logged_in;
+  $("logoutBtn").hidden = !acct.logged_in;
+  $("acct").textContent = acct.logged_in
+    ? ("已登录：" + (acct.name || acct.merchant_id || "（未显示名称）"))
+    : "未登录";
+  const analyzeBtn = document.querySelector("#analyzeBtn");
+  if (analyzeBtn) {
+    analyzeBtn.disabled = !acct.logged_in;
+    $("analyzeHint").textContent = acct.logged_in ? "" : "（要先登录产品账号）";
+  }
 
   banner(data.error, true);
   if (!data.error && data.notice) banner(data.notice, false);
@@ -296,6 +327,17 @@ function renderOrders(rows) {
   $("orders").innerHTML = html + "</table>";
 }
 
+async function doLogin() {
+  await post("/api/login");
+  banner("已发起登录。按提示完成授权，登录成功后这里会自动变。", false);
+}
+
+async function doLogout() {
+  if (!confirm("确定退出登录吗？\n\n已经读到的消息和订单会留在这台电脑上，没有删除。")) return;
+  await post("/api/logout");
+  banner("已退出登录。消息和订单都还在，重新登录后可以继续整理，不会重复读取。", false);
+}
+
 async function reference(kind) {
   const text = $("csv").value.trim();
   if (!text) { banner("先把 CSV 内容粘进来。", true); return; }
@@ -330,7 +372,7 @@ load = async function (path) {
   return data;
 };
 
-tick();
+tick().then(() => $("datadir").textContent = DATADIR);
 polling = setInterval(tick, 1200);
 </script>
 </body>

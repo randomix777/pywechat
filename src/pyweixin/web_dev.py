@@ -85,6 +85,7 @@ class WebState:
         self.orders: list[dict[str, Any]] = []
         self.notice: str = ""
         self._objects: dict[str, Any] = {}
+        self.account: dict[str, Any] = {}
 
     # ---- 写入（应用线程回调里） ----
 
@@ -133,6 +134,7 @@ class WebState:
         with self._lock:
             history = self.history
             return {
+                "account": dict(self.account),
                 "step": self.step,
                 "busy": self.busy,
                 "error": self.error,
@@ -206,6 +208,9 @@ def _order_view(row: Any) -> dict[str, Any]:
 class DevHandler(BaseHTTPRequestHandler):
     app: MerchantApplication
     state: WebState
+    #: 这个服务读的是哪个数据目录。**必须告诉使用者**。
+    #: 目录不对时商户只会看到「没数据 / 未登录」，看不出原因。
+    data_dir: str = ""
     server_version = "pyweixin-dev"
 
     # ---- 基础设施 ----
@@ -263,7 +268,10 @@ class DevHandler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             from .web_page import PAGE
 
-            self._send_html(200, PAGE)
+            # 数据目录由服务端注入。它不能从 /api/state 拿——
+            # 那是「服务运行中」的事。而目录错了正好表现为
+            # 「没数据 / 未登录」，不显示出来没人会往哪找。
+            self._send_html(200, PAGE.replace("__DATADIR__", self.data_dir or "（未知）"))
         elif path == "/api/state":
             self._send_json(200, self.state.snapshot())
         elif path == "/api/conversations":
@@ -310,6 +318,16 @@ class DevHandler(BaseHTTPRequestHandler):
             elif path == "/api/summary":
                 self._send_json(200, {"ok": True, "started": self._run_blocking(
                     "\u6574\u7406\u6210\u4e00\u6bb5\u8bdd", self._do_summary)})
+            elif path == "/api/login":
+                # 登录是**前置条件**，不是第一步。没登录时智能整理必然失败
+                # （排序依赖云端账号），所以页面开头就要能登录。
+                self.app.login_requested()
+                self._send_json(200, {"ok": True})
+            elif path == "/api/logout":
+                # 退出不删本地数据。页面上也说清楚这一点。
+                self.app.detach()
+                self.state.set(account={})
+                self._send_json(200, {"ok": True})
             elif path == "/api/reference":
                 kind = str(body.get("kind") or "")
                 outcome = summary_task.import_reference(self.app, kind, str(body.get("text") or ""))
@@ -323,6 +341,19 @@ class DevHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": f"{type(exc).__name__}: {exc}"[:300]})
 
     # ---- 动作 ----
+
+    def _sync_account(self) -> None:
+        """把当前登录状态写进状态。
+
+        **字段名照 Session 的真实定义做，不猜。** 页面上出现一个恒为空的
+        「账号」栏，而日志里出现「Logged in as」，两者对不上。
+        """
+        session = getattr(self.app, "session", None)
+        self.state.set(account={
+            "logged_in": session is not None,
+            "name": str(getattr(session, "merchant_name", "") or "") if session else "",
+            "merchant_id": str(getattr(session, "merchant_id", "") or "") if session else "",
+        })
 
     def _resolve(self, names: list[str]) -> list[Any]:
         """按名字取回真的 Conversation 对象。
@@ -339,6 +370,7 @@ class DevHandler(BaseHTTPRequestHandler):
         rows = [_conversation_view(c) for c in found]
         self.state.set(conversations=rows)
         self.state.set_conversation_objects(found)
+        self._sync_account()
         self._send_json(200, {"conversations": rows})
 
     def _run_blocking(self, what: str, work: Callable[[], Any]) -> bool:
@@ -442,7 +474,11 @@ def create_server(app: MerchantApplication, *, host: str = "127.0.0.1",
     state.set(conversations=[_conversation_view(c) for c in found])
     state.set_conversation_objects(found)
 
-    handler = type("BoundDevHandler", (DevHandler,), {"app": app, "state": state})
+    state.set(account=({"logged_in": getattr(app, "session", None) is not None,
+                        "name": str(getattr(getattr(app, "session", None), "merchant_name", "") or ""),
+                        "merchant_id": str(getattr(getattr(app, "session", None), "merchant_id", "") or "")}))
+    handler = type("BoundDevHandler", (DevHandler,),
+                   {"app": app, "state": state, "data_dir": str(getattr(app, "data_dir", "") or "")})
     server = ThreadingHTTPServer((host, port), handler)
     server.dev_state = state  # type: ignore[attr-defined]
     return server

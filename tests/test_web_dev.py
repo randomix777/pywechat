@@ -151,6 +151,61 @@ class PageAndStateTests(unittest.TestCase):
         self.assertIn('if self._reject_remote():', source)
 
 
+    def test_the_page_shows_which_data_directory_it_reads(self):
+        """目录错了就表现为「没数据 / 未登录」，不显示出来没人会往哪找。"""
+        source = (ROOT / "src/pyweixin/web_dev.py").read_text(encoding="utf-8")
+        self.assertIn("__DATADIR__", source, "\u9875\u9762\u6ca1\u6709\u63a5\u6536\u6570\u636e\u76ee\u5f55")
+
+    def test_the_placeholder_is_always_replaced(self):
+        """占位符残留在页面上 = 看到一句“__DATADIR__”。"""
+        html = self.client.get("/")[1].decode("utf-8")
+        self.assertNotIn("__DATADIR__", html, "占位符没被替换")
+
+
+class LoginTests(unittest.TestCase):
+    """登录是前置条件，不是第一步。
+
+    没登录就去整理，商户会读完一堆消息才发现整理不了。
+    """
+
+    def setUp(self):
+        self.app = _FakeApp()
+        self.app.session = None
+        self.logged_in = []
+        self.app.login_requested = lambda: self.logged_in.append(1)
+        self.detached = []
+        self.app.detach = lambda: (self.detached.append(1),
+                                   setattr(self.app, "session", None))
+        self.server = _serve(self.app)
+        self.client = _Client(self.server)
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_state_says_whether_we_are_logged_in(self):
+        data = json.loads(self.client.get("/api/state")[1].decode("utf-8"))
+        self.assertIn("account", data)
+        self.assertFalse(data["account"]["logged_in"])
+
+    def test_the_page_has_a_login_entry(self):
+        html = self.client.get("/")[1].decode("utf-8")
+        self.assertIn("登录产品账号", html)
+        self.assertIn("/api/login", html)
+
+    def test_login_endpoint_calls_the_runner(self):
+        code, _ = self.client.post("/api/login")
+        self.assertEqual(code, 200)
+        self.assertEqual(len(self.logged_in), 1)
+
+    def test_logout_does_not_delete_local_data(self):
+        """退出只断云端能力，本地读到的一条不能消失。"""
+        self.app.session = types.SimpleNamespace(merchant_name="张店", merchant_id="m-1")
+        code, _ = self.client.post("/api/logout")
+        self.assertEqual(code, 200)
+        self.assertEqual(len(self.detached), 1)
+
+
 class ConversationChoiceTests(unittest.TestCase):
     """\u6309\u540d\u5b57\u53d6\u5bf9\u8c61\u3002\u53d6\u4e0d\u5230\u5c31\u4e22\u5f03\uff0c**\u4e0d\u80fd\u731c**\u3002"""
 
