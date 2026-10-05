@@ -1093,8 +1093,20 @@ class MerchantWindow:
         self._summary_tick()
         def work():
             outcome = self._run_summary(result)
-            self.root.after(0, lambda: self._summary_finished(outcome))
+            # **必须走 _post，不能在后台线程里碰 Tk。**
+            #
+            # 原来写的是 self.root.after(0, ...)，结果：
+            #   RuntimeError: main thread is not in main loop
+            # 它抛在**工作线程**里，不是 Tk 回调里，所以
+            # report_callback_exception 抓不到、stderr 一片安静。
+            # 于是 _summary_finished 永远不执行、_summary_running 永远是 True，
+            # 之后每次点击都被 if self._summary_running 挡掉 —— 点了没反应。
+            self._post("summary", outcome=outcome)
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_summary(self, outcome: dict) -> None:
+        """主线程入口：_drain 把后台线程的结果送到这里。"""
+        self._summary_finished(outcome)
 
     def _summary_finished(self, outcome: dict) -> None:
         self._summary_running = False

@@ -69,13 +69,95 @@ class TkCallsAreAnchoredTests(unittest.TestCase):
                     if isinstance(n, ast.FunctionDef) and n.name == "_summary_tick")
         self.assertIn("self.root.after", ast.unparse(tick))
 
-    def test_finishing_is_scheduled_through_root(self):
-        """这一处出错会让界面永远停在「正在整理」，比计时器停住更严重。"""
+    def test_finishing_goes_through_the_main_thread(self):
+        """结果必须由主线程接手。
+
+        这条以前断言的是「_on_summarize 里有 self.root.after」——
+        而那正是错的写法：它让工作线程直接碰了 Tk，
+        抛出 RuntimeError 而且**静默**。现在改成断言走 _post。
+        """
         on_summarize = next(n for n in ast.walk(ast.parse(self.source))
                             if isinstance(n, ast.FunctionDef) and n.name == "_on_summarize")
         body = ast.unparse(on_summarize)
-        self.assertIn("self.root.after", body)
-        self.assertNotIn("self.after(", body)
+        self.assertIn("self._post", body,
+                      "后台线程只能把结果交给 _post")
+        # _post 送出的 kind 必须有主线程处理器，否则事件被丢掉
+        handlers = {n.name for n in ast.walk(ast.parse(self.source))
+                    if isinstance(n, ast.FunctionDef)}
+        self.assertIn("_on_summary", handlers)
+        self.assertIn("_summary_finished", handlers)
+
+
+class NoTkCallsFromWorkerThreadsTests(unittest.TestCase):
+    """**后台线程绝不能碰 Tk。**
+
+    ## 出过什么事
+
+    摘要的工作线程里写的是 ``self.root.after(0, lambda: ...)``。它抛：
+
+        RuntimeError: main thread is not in main loop
+
+    但这个异常抛在**工作线程**里，不是 Tk 回调里 —— 所以
+    ``report_callback_exception`` 抓不到，stderr 一片安静。
+
+    后果是所有点击都没反应：
+
+    1. 第一次点 → 显示「正在整理……」
+    2. 线程结束 → ``after`` 抛错 → 静默吞掉
+    3. ``_summary_finished`` 永远不执行 → ``_summary_running`` 永远是 True
+    4. 之后每次点击都被 ``if self._summary_running`` 挡掉
+
+    ## 正确的做法
+
+    这个文件本来就有跨线程机制：``_post()`` 往队列放事件，``_drain()``
+    在**主线程**取出来派发。后台线程只许用 ``_post``。
+    """
+
+    def setUp(self):
+        self.source = MERCHANT_UI.read_text(encoding="utf-8")
+        self.tree = ast.parse(self.source)
+
+    def _thread_targets(self):
+        """找出所有被 Thread 当作 target 的嵌套函数。"""
+        targets = []
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Call) and "Thread" in ast.unparse(node.func):
+                for kw in node.keywords:
+                    if kw.arg == "target" and isinstance(kw.value, ast.Name):
+                        name = kw.value.id
+                        for inner in ast.walk(self.tree):
+                            if isinstance(inner, ast.FunctionDef) and inner.name == name:
+                                targets.append(inner)
+        return targets
+
+    def test_thread_targets_do_not_touch_tk(self):
+        offenders = []
+        for target in self._thread_targets():
+            body = ast.unparse(target)
+            if "self.root.after" in body or "self.after(" in body:
+                offenders.append(target.name)
+        self.assertEqual(offenders, [],
+                         f"这些后台线程直接碰了 Tk（应该用 self._post）：{offenders}")
+
+    def test_the_summary_worker_posts_instead_of_calling_after(self):
+        """具体盯住摘要那个线程 —— 它就是出问题的那一处。"""
+        target = next(t for t in self._thread_targets() if t.name == "work")
+        body = ast.unparse(target)
+        self.assertIn("self._post", body,
+                      "后台线程必须把结果交给 _post，由主线程派发")
+        self.assertNotIn("after", body)
+
+    def test_there_is_a_main_thread_handler(self):
+        """_post 送出的 kind 必须有对应的 _on_<kind>，否则事件被丢掉。"""
+        posted = set()
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Call) and ast.unparse(node.func).endswith("._post"):
+                if node.args and isinstance(node.args[0], ast.Constant):
+                    posted.add(node.args[0].value)
+        handlers = {n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)}
+        missing = [k for k in posted if f"_on_{k}" not in handlers]
+        self.assertEqual(missing, [],
+                         f"这些事件没有主线程处理器，会被丢掉：{missing}")
 
 
 class FieldsAreInitialisedTests(unittest.TestCase):

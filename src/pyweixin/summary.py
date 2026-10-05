@@ -75,6 +75,28 @@ SUMMARY_SYSTEM_PROMPT = """\
 """
 
 
+
+def _as_message(item: Any) -> dict[str, Any]:
+    """把一条消息统一成字典。
+
+    ## 为什么不能直接 ``dict(m)``
+
+    读取结果里的消息**不一定是映射**。它可能是 ``sqlite3.Row``（能 ``dict``），
+    也可能是 dataclass 或普通对象（**不能** ``dict``）—— 后者会直接
+    ``TypeError: cannot convert dictionary update sequence``。
+
+    这个错误在单测里抓不到，因为单测喂的是字典；只有接到真实的读取结果上
+    才会炸。所以这里两种都收：先试映射，再按属性取。
+
+    **只取需要的字段**：发送人、内容、时间。读取结果里可能还带着消息 id、
+    群 id、原始游标之类的东西 —— 那些既不该送去模型，也不该出这台机器。
+    """
+    fields = ("sender", "content", "sent_at", "observed_at")
+    if isinstance(item, Mapping):
+        return {k: item.get(k) for k in fields if k in item}
+    return {k: getattr(item, k) for k in fields if hasattr(item, k)}
+
+
 class Summarizer:
     """把消息汇总成一段可读文本。"""
 
@@ -98,7 +120,7 @@ class Summarizer:
         """
         if not messages:
             return {"summary": "", "error": None, "cost": None, "message_count": 0}
-        context: dict[str, Any] = {"messages": [dict(m) for m in messages]}
+        context: dict[str, Any] = {"messages": [_as_message(m) for m in messages]}
         if catalog:
             context["店里的商品（仅供参考，不是让你去匹配编码）"] = [
                 {"名称": p.get("name"), "单位": p.get("unit")} for p in catalog]

@@ -113,8 +113,16 @@ class OffThreadTests(unittest.TestCase):
         self.assertIn("daemon", body)
 
     def test_the_ui_is_updated_back_on_the_main_thread(self):
-        """后台线程不能碰 Tk，必须 after(0, ...) 回去。"""
-        self.assertIn("after", ast.dump(self.on_summarize))
+        """后台线程不能碰 Tk。
+
+        这条以前断言的是「必须 after(0, ...)」—— 而那正是错的：
+        工作线程调 self.root.after 会抛 RuntimeError，而且因为
+        它不是 Tk 回调，**静默无输出**。现在改成断言走 _post。
+        """
+        body = ast.dump(self.on_summarize)
+        self.assertIn("_post", body,
+                      "必须用 _post 把结果交给主线程，不能在后台线程里碰 Tk")
+        self.assertNotIn("self.root.after", body)
 
 
 if __name__ == "__main__":
