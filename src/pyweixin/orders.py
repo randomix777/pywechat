@@ -1,4 +1,19 @@
-"""Tenant-scoped order workflow with demo and optional schema-validated parsers."""
+"""Tenant-scoped order workflow with demo and optional schema-validated parsers.
+
+## 两个容易被误读的名字
+
+**``plans.ai_quota`` / ``plans.ai_used`` 是死列。**
+只写不读 —— 从未被 SELECT，从未参与任何判断。真正的余额在 product.db 的
+subscriptions 里（``quota_micro_usd`` 等，整数微美元）。
+
+它的默认值 10000 看起来很像"额度"，而实际余额可能已经是 0。
+**不要把它当成余额读** —— 照它判断会得出「商户额度充足」，
+而商户其实已经欠费。
+
+**``parse_runs.usage_units`` 是 token 数**（input + output），
+不是金额、也不是次数。名字里的 "units" 指的是 token 用量，
+别当成"额度"改掉。
+"""
 from __future__ import annotations
 
 import csv
@@ -364,6 +379,9 @@ class OrderStore:
         self.db.execute("DROP TABLE IF EXISTS parse_runs_backup_v2")
         self.db.execute("CREATE TABLE parse_runs_backup_v2 AS SELECT * FROM parse_runs")
         self.db.execute("ALTER TABLE parse_runs RENAME TO parse_runs_v2")
+        # ``usage_units`` 是 **token 数**（input + output），不是金额、不是次数。
+        # 名字里的 "units" 指的是 token 用量，别当成"额度"改掉 ——
+        # 真正的计费在 product.db 的 subscriptions，单位是整数微美元。
         self.db.executescript(
             """
             CREATE TABLE parse_runs(id TEXT PRIMARY KEY,merchant_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES messages(id),adapter TEXT NOT NULL,status TEXT NOT NULL,usage_units INTEGER NOT NULL DEFAULT 0,error TEXT,created_at TEXT NOT NULL DEFAULT '',result_json TEXT,run_key TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',prompt_version TEXT NOT NULL DEFAULT '',requested_by TEXT NOT NULL DEFAULT 'auto');
