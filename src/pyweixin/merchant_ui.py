@@ -1020,10 +1020,25 @@ class MerchantWindow:
             button.pack_forget()
 
 
+    def _has_messages_for(self, result: Any) -> bool:
+        """这个群到底有没有可用的消息。
+
+        **不能只看 ``result.total_messages``。** 那个数是**本次**读到的条数，
+        更新时发现没有新消息就是 0 —— 但库里可能已经积累了几百条。
+
+        只看它，就会出现这种自相矛盾的界面：按钮明明放出来了，一点却弹
+        「还没有读到消息，请先点开始读取」，而商户刚刚才读完一大群。
+        """
+        if result is None:
+            return False
+        if getattr(result, "total_messages", 0):
+            return True
+        return any(n for n, _, _ in self._accumulated_coverage(result).values())
+
     def _go_next_from_history(self) -> None:
-        """「下一步：智能整理」按钮。没读到消息时不放行 —— 那是个死路。"""
+        """「下一步：智能整理」按钮。真的没有消息时才拦 —— 那是死路。"""
         result = self._last_read_result or self.app.wizard.history_result
-        if result is None or not result.total_messages:
+        if not self._has_messages_for(result):
             messagebox.showinfo("还没有读到消息", "请先点「开始读取」。读到消息之后才能进入下一步。")
             return
         # 走**向导**而不是直接 _show_step：两者必须一致。以前界面翻页了而
@@ -1244,7 +1259,7 @@ class MerchantWindow:
         if self._summary_running:
             return
         result = self._last_read_result or self.app.wizard.history_result
-        if result is None or not getattr(result, "total_messages", 0):
+        if not self._has_messages_for(result):
             messagebox.showinfo("还没读到消息",
                                 "请先回上一步读取历史消息。")
             return
