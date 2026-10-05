@@ -1035,8 +1035,14 @@ class MerchantApplication:
 
             return [str(name) for name in (Contacts.get_groupMembers_info(
                 conversation.name, is_maximize=False, close_weixin=False) or []) if name]
-        except Exception:
-            LOGGER.exception("failed to load group members for %s", getattr(conversation, "name", ""))
+        except Exception as exc:
+            # **不打堆栈。** 「取不到群成员」是常见情况，不是崩溃：
+            # 微信没开、群名对不上、界面正忙 —— 都会走到这里。
+            # 打完整堆栈会让真正的故障淹没在噪声里。
+            #
+            # 但也不能不出声：这次读取的发送人会认不出来，排查时要知道原因。
+            LOGGER.warning("取不到群成员，这次读取的发送人可能认不出来：%s（%s: %s）",
+                           getattr(conversation, "name", ""), type(exc).__name__, exc)
             return []
 
     def close(self) -> None:

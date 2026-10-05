@@ -20,7 +20,7 @@ import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
 from .application import LISTEN_FAIR_NOTE, AppEvents, MerchantApplication
@@ -1802,6 +1802,10 @@ class MerchantWindow:
         # 他不会想到去数据目录里翻文件。
         ttk.Button(actions, text="出问题了？这里有日志", style="Subtle.TButton",
                    command=self._on_support).pack(side="right", padx=(0, 10))
+        # 参考信息放在维护那一排（不是主操作那一排）：它是**偶尔做一次**的事，
+        # 不是每单都要点的。放进主操作会让「后台整理」这些日常按钮失去层级。
+        ttk.Button(actions, text="商品与客户名单", style="Subtle.TButton",
+                   command=self._on_reference_data).pack(side="right", padx=(0, 10))
 
         self._build_listen_box(frame)
 
@@ -2180,6 +2184,124 @@ class MerchantWindow:
         body.insert("1.0", row.summary)
         body.configure(state="disabled")
         body.pack(fill="both", expand=True)
+
+    def _on_reference_data(self) -> None:
+        """「参考信息」—— 商户上传自己的商品数据和客户数据。
+
+        ## 为什么单独做一个入口
+
+        这两份名单决定了软件认不认得出「客户说的东西」和「说话的是谁」。
+        没有入口的时候它们只能靠命令行导入，等于商户根本用不上 ——
+        而「认不出来」的后果全部落在商户身上：东西认错了发错货，
+        人认错了把单挂到别人账上。
+
+        ## 为什么用文件而不是让他在界面上一条条录
+
+        商户的数据本来就在 Excel 里。逐条录入没人会做，做了也录不全。
+        """
+        window = tk.Toplevel(self.root)
+        window.title("参考信息")
+        window.transient(self.root)
+        window.geometry("760x560")
+        frame = ttk.Frame(window, padding=(18, 14))
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="上传你店里的商品和客户名单",
+                  font=("Microsoft YaHei", 12, "bold")).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="软件靠这两份名单认人、认商品。名单越全，需要你手动确认的就越少。\n"
+                 "用 Excel 另存为 CSV 就行 —— 表格第一行是列名。\n\n"
+                 "商品表列名：编码、名称、单位、价格、别名\n"
+                 "客户表列名：名字、群、地址、偏好、别名\n\n"
+                 "「别名」可以填多个，用逗号隔开。客户平时怎么叫这个商品、"
+                 "群里怎么称呼这个人，都填进去 —— 填了以后就自动认得出来。\n"
+                 "重复上传没关系：同一个编码/同一个名字会更新，不会变成两条。",
+            wraplength=700, foreground="#5a6572", justify="left",
+        ).pack(anchor="w", pady=(8, 12))
+
+        for label, key, hint in (
+            ("上传商品数据", "products", "商品表"),
+            ("上传客户数据", "customers", "客户表"),
+        ):
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=(0, 8))
+            ttk.Button(row, text=label, style="Big.TButton",
+                       command=lambda k=key: self._pick_reference_file(k)).pack(side="left")
+            ttk.Label(row, text=hint, foreground="#7b8794").pack(side="left", padx=(10, 0))
+
+        ttk.Label(frame, text="上传结果：").pack(anchor="w", pady=(8, 2))
+        self._reference_result = tk.Text(frame, height=12, wrap="word", relief="flat")
+        self._reference_result.pack(fill="both", expand=True)
+        self._reference_result.configure(state="disabled")
+        self._reference_result.insert("1.0", "还没有上传。")
+        ttk.Button(frame, text="关闭", command=window.destroy).pack(anchor="e", pady=(10, 0))
+
+    def _pick_reference_file(self, kind: str) -> None:
+        """选一个 CSV 文件并导入。导入在后台线程里跑。"""
+        path = filedialog.askopenfilename(
+            title="选择商品数据" if kind == "products" else "选择客户数据",
+            filetypes=[("CSV 表格", "*.csv"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        self._set_reference_result(f"正在读取 {os.path.basename(path)} ……")
+
+        def work() -> None:
+            try:
+                with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                    text = handle.read()
+                store = getattr(self.app, "orders", None)
+                tenant = getattr(self.app, "tenant", "")
+                if store is None:
+                    outcome = {"error": "本地数据还没准备好"}
+                elif kind == "products":
+                    outcome = store.import_products_csv(tenant, text)
+                else:
+                    outcome = store.import_customers_csv(tenant, text)
+                outcome = dict(outcome)
+                outcome["kind"] = kind
+            except UnicodeDecodeError:
+                outcome = {"error": "这个文件不是 UTF-8 编码。用 Excel 另存为 "
+                                    "「CSV UTF-8」再试一次。"}
+            except Exception as exc:  # 读文件/写库都可能出问题，不能让界面崩
+                outcome = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+            self._post("reference", outcome=outcome)
+
+        self._spawn("reference", work)
+
+    def _on_reference(self, outcome: dict[str, Any]) -> None:
+        """主线程入口：把导入结果显示出来。"""
+        if outcome.get("error"):
+            self._set_reference_result("上传失败：" + str(outcome["error"]))
+            return
+        what = "商品" if outcome.get("kind") == "products" else "客户"
+        lines = [f"{what}数据已上传：",
+                 f"  新增 {outcome.get('created', 0)} 条",
+                 f"  更新 {outcome.get('updated', 0)} 条"]
+        skipped = outcome.get("skipped", 0)
+        if skipped:
+            lines.append(f"  跳过 {skipped} 条")
+        problems = outcome.get("problems") or []
+        if problems:
+            lines.append("")
+            lines.append("下面这些行没能读进去，改完可以再传一次：")
+            lines.extend(f"  {p}" for p in problems[:30])
+            if len(problems) > 30:
+                lines.append(f"  …还有 {len(problems) - 30} 条")
+        if not problems and not skipped:
+            lines.append("")
+            lines.append("全部读进去了。以后客户怎么叫都认得出来。")
+        self._set_reference_result("\n".join(lines))
+
+    def _set_reference_result(self, text: str) -> None:
+        widget = getattr(self, "_reference_result", None)
+        if not self._alive(widget):
+            return
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+        widget.configure(state="disabled")
 
     def _on_privacy(self) -> None:
         messagebox.showinfo("云端会发送哪些信息", PRIVACY_TEXT)
