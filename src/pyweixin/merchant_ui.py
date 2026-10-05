@@ -18,6 +18,7 @@ import logging
 import os
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any, Callable
@@ -111,6 +112,9 @@ class MerchantWindow:
         self._last_read_result: Any = None
         #: 汇总卡。已经在整理中：重复点会花两次钱。
         self._summary_running = False
+        self._summary_bar: Any = None
+        self._summary_elapsed: Any = None
+        self._summary_started: float = 0.0
         self._summary_text: Any = None
         self._summary_status: Any = None
 
@@ -1013,8 +1017,19 @@ class MerchantWindow:
         bar.pack(fill="x", pady=(8, 0))
         ttk.Button(bar, text="整理成一段话", style="Big.TButton",
                    command=self._on_summarize).pack(side="left")
+        # 不确定进度（indeterminate），**不是百分比**。
+        #
+        # 汇总是**一次 HTTP 请求**，不流式、也没有分步回报—— 服务端在让模型写完之前
+        # 不会送出任何东西。若画一条会自己往前走的百分比，那就是在擅自€。
+        # 常见的错误做法是加一条不动的进度条，日志里却写着模型在思考—— 无法比对。
+        #
+        # 所以这里用不确定模式 + **已等待几秒**。时间是真的，能让商户知道这个程序没卡死。
+        self._summary_bar = ttk.Progressbar(bar, length=180, mode="indeterminate")
+        self._summary_bar.pack(side="left", padx=(12, 0))
+        self._summary_elapsed = tk.StringVar(value="")
+        self._summary_elapsed_label = ttk.Label(bar, textvariable=self._summary_elapsed, foreground="#7b8794")
+        self._summary_elapsed_label.pack(side="left", padx=(8, 0))
         self._summary_status = ttk.Label(bar, text="", foreground="#7b8794")
-        self._summary_status.pack(side="left", padx=(12, 0))
 
     def _run_summary(self, result: Any) -> dict:
         """真正去调模型。在后台线程里跑，不能碰 Tk。"""
@@ -1039,6 +1054,14 @@ class MerchantWindow:
             return {"summary": "", "error": type(exc).__name__, "cost": None,
                     "message_count": len(messages)}
 
+    def _summary_tick(self) -> None:
+        """每半秒刷一次已等待时长。给的是**真实秒数**。"""
+        if not self._summary_running or not self._alive(self._summary_elapsed_label):
+            return
+        waited = int(time.monotonic() - self._summary_started)
+        self._summary_elapsed.set(f"已等待 {waited} 秒")
+        self.after(500, self._summary_tick)
+
     def _set_summary(self, text: str) -> None:
         if not self._alive(self._summary_text):
             return
@@ -1062,6 +1085,9 @@ class MerchantWindow:
             return
         self._summary_running = True
         self._summary_status.configure(text="正在整理……")
+        self._summary_started = time.monotonic()
+        self._summary_bar.start(12)
+        self._summary_tick()
         def work():
             outcome = self._run_summary(result)
             self.after(0, lambda: self._summary_finished(outcome))
@@ -1069,6 +1095,9 @@ class MerchantWindow:
 
     def _summary_finished(self, outcome: dict) -> None:
         self._summary_running = False
+        if self._alive(self._summary_bar):
+            self._summary_bar.stop()
+        self._summary_elapsed.set("")
         if not self._alive(self._summary_status):
             return
         if outcome.get("error"):
