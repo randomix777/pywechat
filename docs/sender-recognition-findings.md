@@ -23,6 +23,29 @@
 | 「多选」按钮 | ❌ 不存在 | 面板只有 3 个按钮：`Voice Input`、`Minimize`、`Disable` |
 | 右键 + 复制 | ❌ 同一个 COM 错误 | 崩在 `uia_element_info.ElementFromHandle` |
 | 本地消息库 | ❌ 这台机器上没有 | `xwechat/radium/users/<id>/` 下只有 `applet`、`mmkv`、`udr`、`xworker`，无 `db_storage` |
+| **换 pywinauto 后端 `win32`** | ❌ 不比 UIA 多给什么 | 两种后端都只看到 2 个子控件 |
+| **全部 UIA 属性** | ❌ 发送人不在任何属性里 | 见下 |
+
+## 两条决定性的证据
+
+### 一、整个界面渲染在一个自绘窗口里
+
+    Qt51514QWindowIcon      'Weixin'
+    MMUIRenderSubWindowHW   'MMUIRenderSubWindowHW'
+
+`MMUIRenderSubWindowHW` 是**自绘渲染面**，所有界面元素都画在这一个 HWND 上。
+UIA 只能读到 WeChat **主动发布**的那部分，而它没发布发送人。
+
+### 二、每个消息条目的全部 UIA属性
+
+    class_name    = mmui::ChatTextItemView
+    name          = '纠正\n\n神仙果$11/袋... 2026-10-4 19:58'   ← 只有正文和时间
+    automation_id = 'chat_log_message_list.qt_scrollarea_viewport.chat_bubble_item_view'
+    framework_id  = 'Qt'
+    help_text / value / label / item_status / item_type = None
+
+**`automation_id` 每条消息完全相同**（没有逐条标识），其余属性全 `None`。
+发送人在 UIA 的任何位置都不存在——不是我们没读到，是**没被暴露**。
 
 ## 已排除的猜测
 
@@ -44,14 +67,32 @@
 已改成 `need_select = not groupMembers and is_group_chat` —— **成员是主路，
 多选是兜底**（多选会崩，必须能退回去）。
 
-## 还值得试的（都没验）
+## 还值得试的
 
-1. **换 pywinauto 后端**：`backend="win32"` 走经典 Win32 API，不走 UIA。
-   COM 错误是 UIA 层的，换后端可能既不崩又能读到别的信息。**最便宜，先试这个。**
-2. **升级/降级 pywinauto**：`-2147220991` 像版本不兼容。
-3. **换更旧的微信 3.x**：那一代界面把「发送人 内容」渲染进可访问文本，
-   现有代码就是照它写的。
-4. **让微信把消息存到本地**：设置里打开「保留聊天记录」，然后找 `db_storage`。
+**界面这条路已经走完了**（上面十一条全是实测排除）。剩下的都不在界面上：
+
+### ① 让微信把消息存到本地，再读数据库
+
+这是 `WeChatMsg`、`pywxdump` 一类工具走的路，也是目前**最可能拿到发送人的非 OCR 方案**。
+
+需要三步：
+1. 微信设置里**打开「保留聊天记录」**（默认可能没开，所以本机找不到 `db_storage`）
+2. 找到 `db_storage` 下的消息库
+3. **解密** —— 微信 4.x 的库是加密的，密钥要从进程内存里取
+
+代价：要读进程内存，属于非官方手段；有被微信判定为异常的风险；版本一变就可能失效。
+但它是**唯一已被多个开源项目验证过**的路径。
+
+### ② 换更旧的微信 3.x
+
+那一代界面把「发送人 内容」渲染进可访问文本 —— 现有这套代码就是照它写的，
+所以逻辑上自洽，真机上读不到只是因为**微信换了**。
+代价：老版本有安全风险，且用户未必愿意降级。
+
+### ③ 升/降 pywinauto
+
+`-2147220991` 像是版本不兼容。但要说清楚：**它只影响「多选遍历」那条兜底路**，
+不影响主路（成员名单 + 普通遍历），所以优先级最低。
 
 ## 复现命令
 
