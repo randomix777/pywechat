@@ -258,16 +258,24 @@ def _match_items_to_products(items: Sequence[Mapping[str, Any]], products: Seque
             continue
         aliases_by_sku: dict[str, list[str]] = {}
         for product in products:
-            # products 是 ``SELECT * FROM products`` 的结果，**没有 aliases 列**。
-            # 别名在 product_aliases 里。用、不用它是不对的 ——
-            # 本来这里就是让模型来匹配的，本地只是兜底。
-            raw = product.get("aliases") or ""
+            # products 通常是 ``dict(SELECT * FROM products)`` —— **没有 aliases 列**，
+            # 别名在 product_aliases 里（调用方用 group_concat 拼进来）。
+            # 但也可能有人直接传 ``sqlite3.Row`` 过来，而 Row **没有 .get**。
+            # 两种都按「用键取值」来读 —— dict 和 Row 都支持下标。
+            def field(key: str) -> Any:
+                try:
+                    return product[key]
+                except (KeyError, IndexError, TypeError):
+                    return None
+            raw = field("aliases") or ""
             names = [a for a in raw.split("|") if a] if raw else []
-            if product.get("name"):
-                names.append(str(product["name"]))
-            if product.get("sku"):
-                names.append(str(product["sku"]))
-            aliases_by_sku.setdefault(str(product["sku"]), []).extend(names)
+            name = field("name")
+            sku = field("sku")
+            if name:
+                names.append(str(name))
+            if sku:
+                names.append(str(sku))
+            aliases_by_sku.setdefault(str(sku), []).extend(names)
 
         matches: list[str] = []
         for probe in (str(item.get("said") or "").strip(),
@@ -893,6 +901,108 @@ class OrderStore:
             self.db.execute("INSERT INTO products VALUES(?,?,?,?,?,?)",(pid,tenant,sku,name,unit,int(price_cents)))
             for alias in set(aliases)|{name,sku}: self.db.execute("INSERT INTO product_aliases VALUES(?,?,?)",(uuid.uuid4().hex,pid,alias))
         return pid
+
+    def import_customers(self, tenant: str, rows: Iterable[Mapping[str,Any]]) -> dict[str,Any]:
+        """批量导入客户数据。
+
+        ## 为什么客户名单比商品名单更要紧
+
+        群里说话的是**人**，而商户认人靠的是「张姐」「老李」这些称呼，
+        同一个客户在不同群里可能叫法还不一样。
+
+        名单进来了，模型才能把「张姐」对上商户心里的那个人；
+        对不上时也能说「这个称呼我不认识」，而不是自己编一个人。
+
+        ## 去重与别名
+
+        按 **name** 去重（商户心里的那个正式称呼）：已存在则**更新地址与偏好**。
+
+        别名用「别名」列给（逗号、顿号分隔），并进 ``aliases`` 表 ——
+        那正是消息里认人用的地方。所以别名可以多给几个：
+        「张姐, 张大姐, 老张家的」。
+
+        ## 群
+
+        别名是**按群**生效的：同一个人在 A 群叫「张姐」、在 B 群叫「小张」，
+        这是两条别名记录。``group`` 列留空表示「所有群」。
+        留空时写入通配群，消息里任意群都能认出来。
+
+        ## 不抛异常
+
+        一行看不懂就记进 ``skipped`` 并说明原因，其余照常导入 ——
+        一个脏单元格不该让整批失败。
+        """
+        self._plan(tenant)
+        created = updated = skipped = 0
+        problems: list[str] = []
+        for index, row in enumerate(rows, 1):
+            name = str(row.get("name") or row.get("\u540d\u5b57") or row.get("\u5ba2\u6237")
+                       or row.get("\u79f0\u547c") or "").strip()
+            if not name:
+                skipped += 1
+                problems.append(f"\u7b2c {index} \u884c\uff1a\u7f3a\u5c11\u5ba2\u6237\u79f0\u547c")
+                continue
+            group = str(row.get("group") or row.get("\u7fa4") or "").strip()
+            address = str(row.get("address") or row.get("\u5730\u5740") or "").strip()
+            preference = str(row.get("preference") or row.get("\u504f\u597d")
+                             or row.get("\u53e3\u5473") or "").strip()
+            aliases: list[str] = []
+            for key in ("aliases", "\u522b\u540d", "\u522b\u540d1"):
+                raw = row.get(key)
+                if not raw:
+                    continue
+                for piece in str(raw).replace("\uff0c", ",").replace("\u3001", ",").split(","):
+                    piece = piece.strip()
+                    if piece and piece not in aliases:
+                        aliases.append(piece)
+            existing = self.db.execute(
+                "SELECT id FROM customers WHERE merchant_id=? AND name=?", (tenant, name)
+            ).fetchone()
+            if existing is not None:
+                with self.db:
+                    self.db.execute(
+                        "UPDATE customers SET address=?, preference=? WHERE id=?",
+                        (address or "", preference or "", existing["id"]))
+                cid = existing["id"]
+                updated += 1
+            else:
+                cid = "c_" + uuid.uuid4().hex[:12]
+                with self.db:
+                    self.db.execute(
+                        "INSERT INTO customers(id,merchant_id,name,address,preference,created_at)"
+                        " VALUES(?,?,?,?,?,?)", (cid, tenant, name, address, preference, self.now()))
+                created += 1
+            # \u79f0\u547c\u672c\u8eab\u4e5f\u662f\u4e00\u4e2a\u522b\u540d \u2014\u2014 \u5426\u5219\u6d88\u606f\u91cc\u53eb\u300c\u5f20\u59d0\u300d\u53cd\u800c\u8ba4\u4e0d\u51fa\u3002
+            for alias in [name, *aliases]:
+                self._bind_customer_alias(tenant, cid, group, alias)
+        return {"created": created, "updated": updated, "skipped": skipped,
+                "problems": problems}
+
+    def _bind_customer_alias(self, tenant: str, customer_id: str, group: str, alias: str) -> None:
+        """把一个称呼绑到客户身上。**已经绑过就不再写**。
+
+        ``aliases`` 表有 ``valid_from/valid_to``，查询用的是 ``valid_to IS NULL``。
+        重复写入会让同一个称呼在同一个群里出现多条有效记录，
+        认人时就成了「多个候选」—— 那会让本来能自动认出的消息转人工。
+        """
+        if not alias:
+            return
+        row = self.db.execute(
+            "SELECT id FROM aliases WHERE merchant_id=? AND customer_id=? AND group_id=?"
+            " AND alias=? AND valid_to IS NULL", (tenant, customer_id, group, alias)).fetchone()
+        if row:
+            return
+        with self.db:
+            self.db.execute("INSERT INTO aliases VALUES(?,?,?,?,?,?,NULL)",
+                            (uuid.uuid4().hex, tenant, customer_id, group, alias, self.now()))
+
+    def import_customers_csv(self, tenant: str, text: str) -> dict[str,Any]:
+        """从 CSV 文本导入客户。
+
+        表头认中文常用名：名字/客户/称呼、群、地址、偏好、别名。
+        """
+        reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+        return self.import_customers(tenant, [dict(row) for row in reader])
 
     def import_products(self, tenant: str, rows: Iterable[Mapping[str,Any]]) -> dict[str,Any]:
         """批量导入商品数据。
@@ -1884,6 +1994,98 @@ class OrderStore:
                 self.db.execute("INSERT INTO memory_facts VALUES(?,?,?,?,?,?,1,?,NULL,NULL)",(uuid.uuid4().hex,tenant,detail["customer_id"],"confirmed_order",json.dumps({"sku":item["sku"],"quantity":item["quantity"],"unit":item["unit"]},ensure_ascii=False),oid,self.now()))
             self.db.execute("UPDATE review_tasks SET status='resolved' WHERE merchant_id=? AND order_id=?",(tenant,oid))
             self.db.execute("INSERT INTO audit VALUES(?,?,?,?,?,?,?,?)",(uuid.uuid4().hex,tenant,user_id,"confirm_order" if target_status=="confirmed" else "confirm_cancellation",oid,json.dumps({"status":detail["status"]}),json.dumps({"status":target_status}),self.now()))
+    #: 学别名时，客户原话最长允许多少字。
+    #:
+    #: 「李记酱油」这种短语值得记 —— 客户下次还会这么说。
+    #: 「明天下午要3箱红富士苹果」这种整句不值得记 —— 它不会一字不差地重现，
+    #: 记下来只会让别名表变脏，反而干扰匹配。
+    LEARNABLE_ALIAS_MAX = 12
+
+    def _learn_from_correction(self, tenant: str, order_id: str,
+                               selected: list[Mapping[str, Any]]) -> list[str]:
+        """商家纠正之后，把「客户当时怎么说的」记成商品别名。
+
+        ## 为什么值得做
+
+        人工纠正是**质量最高的信号**：商家亲口确认了这句客户话对应哪个商品。
+        只用来修一张单子、然后就丢掉，等于同一个客户明天再说一遍
+        「李记酱油」，还要再问一次商家。
+
+        ## 只在无歧义时学
+
+        一张单子只有**一条**商品时才学。多条的时候，客户说的几个短语
+        分别对应哪条商品无从知道 —— 猜错就把别名记到错的商品上，
+        以后每次都会认错，比不学更糟。
+
+        ## 学什么
+
+        学客户原话（``said``），但**只学短的**。整句不学：它不会一字不差地
+        重现，记下来只会让别名表变脏。
+
+        ``said`` 太长时退一步学 ``category`` / ``brand`` —— 它们本来就是
+        从原话里拆出来的品类与品牌，比整句可靠。
+
+        返回实际记下的别名，方便界面告诉商家「以后会自动认出来」。
+        """
+        if len(selected) != 1:
+            return []
+        product_id = str(selected[0].get("product_id") or "")
+        if not product_id:
+            return []
+        product = self.db.execute(
+            "SELECT id, sku, name FROM products WHERE merchant_id=? AND id=?",
+            (tenant, product_id)).fetchone()
+        if product is None:
+            return []
+        phrases = self._phrases_for_order(tenant, order_id)
+        learned: list[str] = []
+        for phrase in phrases:
+            if not phrase or len(phrase) > self.LEARNABLE_ALIAS_MAX:
+                continue
+            if phrase == product["name"] or phrase == product["sku"]:
+                continue
+            exists = self.db.execute(
+                "SELECT 1 FROM product_aliases WHERE product_id=? AND alias=?",
+                (product_id, phrase)).fetchone()
+            if exists:
+                continue
+            with self.db:
+                self.db.execute("INSERT OR IGNORE INTO product_aliases VALUES(?,?,?)",
+                                (uuid.uuid4().hex, product_id, phrase))
+            learned.append(phrase)
+        return learned
+
+    def _phrases_for_order(self, tenant: str, order_id: str) -> list[str]:
+        """这张单子对应的解析结果里，客户是怎么说商品的。
+
+        优先用 ``said``（客户原话），拿不到再退到 ``category`` / ``brand``。
+        解析结果读不到就返回空 —— 学不到东西是可以接受的，
+        拿别的东西冒充客户原话不行。
+        """
+        row = self.db.execute(
+            "SELECT parse_run_id FROM orders WHERE merchant_id=? AND id=?",
+            (tenant, order_id)).fetchone()
+        if row is None or not row["parse_run_id"]:
+            return []
+        run = self.db.execute(
+            "SELECT result_json FROM parse_runs WHERE merchant_id=? AND id=?",
+            (tenant, row["parse_run_id"])).fetchone()
+        if run is None or not run["result_json"]:
+            return []
+        try:
+            parsed = json.loads(run["result_json"])
+        except (TypeError, ValueError):
+            return []
+        phrases: list[str] = []
+        for item in (parsed or {}).get("items") or []:
+            if not isinstance(item, Mapping):
+                continue
+            for key in ("said", "category", "brand"):
+                value = str(item.get(key) or "").strip()
+                if value and value not in phrases:
+                    phrases.append(value)
+        return phrases
+
     def correct_order(self,tenant,oid,user_id,customer_id=None,items=None):
         old=self.order_detail(tenant,oid)
         if not old:raise ValueError("order not found in merchant scope")
@@ -1906,7 +2108,41 @@ class OrderStore:
                 msg=self.db.execute("SELECT id FROM messages WHERE merchant_id=? AND group_id=? AND content=? AND COALESCE(sender,'')=COALESCE(?,'') ORDER BY observed_at LIMIT 1",(tenant,old["group_id"],e["content"],e["sender"])).fetchone()
                 if msg:self._attach(tenant,new,msg["id"])
             self.db.execute("INSERT INTO audit VALUES(?,?,?,?,?,?,?,?)",(uuid.uuid4().hex,tenant,user_id,"correct_order",new,json.dumps({"order_id":oid,"status":old["status"]}),json.dumps({"order_id":new,"customer_id":target_customer,"items":selected},ensure_ascii=False),self.now()))
+            # **纠正之后要学。**
+            #
+            # 人工纠正是质量最高的信号：商家亲口确认了这句客户话对应哪个商品。
+            # 只用来修一张单子然后就丢掉，等于同一个客户明天再说一遍
+            # 「李记酱油」还要再问一次商家。
+            #
+            # 只学无歧义的情况 —— 见 _learn_from_correction。
+            learned=self._learn_from_correction(tenant,oid,list(selected))
+            if learned:
+                self.db.execute("INSERT INTO audit VALUES(?,?,?,?,?,?,?,?)",(uuid.uuid4().hex,tenant,user_id,"learn_aliases",new,json.dumps({"from_order":oid}),json.dumps({"aliases":learned},ensure_ascii=False),self.now()))
+        # 返回值**始终**是新订单号，不因为「学到了别名」而变成字典 ——
+        # 同一个方法按情况返回两种类型，调用方会在某一次突然崩掉，
+        # 而且只在恰好学过别名的那些单子上崩。
+        # 学到的别名记在 audit 里，界面要展示就自己回读。
         return new
+
+    def learned_aliases(self, tenant: str, order_id: str) -> list[str]:
+        """这张单子纠正时学到了哪些别名。界面用它告诉商家「以后会自动认出来」。
+
+        审计表的列是 ``entity_id``（这里放订单号）和 ``after_json``（学到的别名）。
+        """
+        rows = self.db.execute(
+            "SELECT after_json FROM audit WHERE merchant_id=? AND entity_id=?"
+            " AND action='learn_aliases' ORDER BY rowid DESC",
+            (tenant, order_id)).fetchall()
+        learned: list[str] = []
+        for row in rows:
+            try:
+                data = json.loads(row["after_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            for alias in data.get("aliases") or []:
+                if alias not in learned:
+                    learned.append(alias)
+        return learned
     def dashboard(self,tenant):
         counts={r["status"]:r["n"] for r in self.db.execute("SELECT status,count(*) n FROM orders WHERE merchant_id=? GROUP BY status",(tenant,))}
         mode=self.db.execute("SELECT parser_mode FROM merchant_settings WHERE merchant_id=?",(tenant,)).fetchone()
