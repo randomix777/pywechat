@@ -223,16 +223,82 @@ class ImportReferenceTests(unittest.TestCase):
         self.assertIn("error", result)
 
 
-class ApiKeyTests(unittest.TestCase):
-    def test_it_never_raises(self):
-        """取不到就是取不到 —— 不能让界面崩。"""
-        self.assertIsInstance(summary_task.local_api_key(), str)
+class CloudSummaryTests(unittest.TestCase):
+    """摘要走云网关：没登录直说，本机不再读任何密钥。"""
 
-    def test_the_env_var_wins(self):
-        import os
-        import unittest.mock as mock
-        with mock.patch.dict(os.environ, {summary_task.API_KEY_ENV: "from-env"}):
-            self.assertEqual(summary_task.local_api_key(), "from-env")
+    def _app(self, client):
+        return types.SimpleNamespace(client=client, orders=None, tenant="t")
+
+    def _messages(self, app):
+        with unittest.mock.patch(
+                "pyweixin.summary_task.messages_for_summary",
+                return_value=[{"sender": "张姐", "content": "苹果两箱",
+                               "sent_at": "2026-10-13 10:00", "kind": "text"}]):
+            return app
+
+    def test_logged_out_says_so(self):
+        app = self._app(None)
+        with unittest.mock.patch(
+                "pyweixin.summary_task.messages_for_summary",
+                return_value=[{"sender": "张姐", "content": "苹果两箱",
+                               "sent_at": "2026-10-13 10:00", "kind": "text"}]):
+            outcome = summary_task.run_summary(app, object())
+        self.assertEqual(outcome["summary"], "")
+        self.assertIn("登录", outcome["error"])
+        self.assertEqual(outcome["message_count"], 1)
+
+    def test_submit_poll_succeed(self):
+        states = [
+            {"job": {"job_id": "job1", "state": "running"}, "billing": {}},
+            {"job": {"job_id": "job1", "state": "succeeded",
+                     "result": {"summary": "张姐要两箱苹果"}},
+             "billing": {"available": True, "charged_micro_usd": 7}},
+        ]
+
+        class FakeClient:
+            session = types.SimpleNamespace(access_token="tok")
+
+            def submit_summary(self, request, key):
+                assert request["task"] == "summarize" if "task" in request else True
+                assert key.startswith("sum-")
+                assert request["messages"][0]["content"] == "苹果两箱"
+                return {"job": {"job_id": "job1"}}
+
+            def summary_job(self, job_id):
+                assert job_id == "job1"
+                return states.pop(0)
+
+        with unittest.mock.patch(
+                "pyweixin.summary_task.messages_for_summary",
+                return_value=[{"sender": "张姐", "content": "苹果两箱",
+                               "sent_at": "2026-10-13 10:00", "kind": "text"}]), \
+            unittest.mock.patch("pyweixin.summary_task.SUMMARY_POLL_INTERVAL", 0):
+            outcome = summary_task.run_summary(self._app(FakeClient()), object())
+        self.assertEqual(outcome["summary"], "张姐要两箱苹果")
+        self.assertEqual(outcome["error"], "")
+        self.assertEqual(outcome["cost"], 7)
+
+    def test_failed_job_reports_message(self):
+        class FakeClient:
+            session = types.SimpleNamespace(access_token="tok")
+
+            def submit_summary(self, request, key):
+                return {"job": {"job_id": "job9"}}
+
+            def summary_job(self, job_id):
+                return {"job": {"job_id": "job9", "state": "failed",
+                                "error": {"code": "backend_unavailable",
+                                          "message": "服务暂时不可用"}},
+                        "billing": {}}
+
+        with unittest.mock.patch(
+                "pyweixin.summary_task.messages_for_summary",
+                return_value=[{"sender": "张姐", "content": "苹果两箱",
+                               "sent_at": "2026-10-13 10:00", "kind": "text"}]), \
+            unittest.mock.patch("pyweixin.summary_task.SUMMARY_POLL_INTERVAL", 0):
+            outcome = summary_task.run_summary(self._app(FakeClient()), object())
+        self.assertEqual(outcome["summary"], "")
+        self.assertIn("服务暂时不可用", outcome["error"])
 
 
 if __name__ == "__main__":

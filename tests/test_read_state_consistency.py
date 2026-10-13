@@ -98,6 +98,15 @@ class UpdateHeadlineShowsTheTotalTests(unittest.TestCase):
         branch = branch[:branch.index("elif")] if "elif" in branch else branch
         self.assertIn("_render_coverage_rows", branch)
 
+    def test_zero_result_says_different_things_per_mode(self):
+        """更新 0 条是"没有新信息"，其它读法 0 条才是"没读到"。
+
+        回归：更新点完看到"这次没有读到任何消息"，商户以为读失败了。
+        """
+        source = ast.unparse(self.render)
+        self.assertIn("没有读到新信息", source)
+        self.assertIn("没有新消息", source)
+
 
 
 

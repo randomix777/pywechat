@@ -135,6 +135,9 @@ class MerchantSettings:
     model_alias: str = ""
     #: 上次用的网关地址。换账号时一并清空。
     gateway_url: str = ""
+    #: 上次见到的微信版本号。微信一升级，界面选择器、读取逻辑都可能
+    #: 对不上 —— 先记下来，变了就提醒商户重走一次检测，而不是静默读空。
+    wechat_version: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -147,6 +150,7 @@ class MerchantSettings:
             "wizard_complete": self.wizard_complete,
             "model_alias": self.model_alias,
             "gateway_url": self.gateway_url,
+            "wechat_version": self.wechat_version,
         }
 
     @classmethod
@@ -161,6 +165,7 @@ class MerchantSettings:
             wizard_complete=bool(data.get("wizard_complete", False)),
             model_alias=str(data.get("model_alias", "")),
             gateway_url=str(data.get("gateway_url", "")),
+            wechat_version=str(data.get("wechat_version", "")),
         )
 
     def reset_for_new_account(self) -> None:

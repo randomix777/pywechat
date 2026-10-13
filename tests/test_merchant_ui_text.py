@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -122,6 +123,25 @@ class MerchantTextTests(unittest.TestCase):
     def test_forbidden_terms_list_covers_the_obvious_leaks(self):
         for term in ("token", "api key", "opencode", "model"):
             self.assertIn(term, FORBIDDEN_TERMS)
+
+
+class DisplayContentTests(unittest.TestCase):
+    """空内容按类型给占位：图片行不能看着像坏了。只测显示，不碰库。"""
+
+    def test_text_shows_as_is(self):
+        from pyweixin.merchant_ui import display_content
+
+        self.assertEqual(display_content("text", "苹果两箱"), "苹果两箱")
+
+    def test_empty_content_shows_kind_label(self):
+        from pyweixin.merchant_ui import display_content
+
+        self.assertEqual(display_content("image", ""), "［图片］")
+        self.assertEqual(display_content("voice", None), "［语音］")
+        self.assertEqual(display_content("video", "  "), "［视频］")
+        self.assertEqual(display_content("other", ""), "［非文字消息］")
+        self.assertEqual(display_content("whatever", ""), "［非文字消息］")
+        self.assertEqual(display_content("", ""), "［非文字消息］")
 
 
 class HomeContentTests(unittest.TestCase):
@@ -359,17 +379,20 @@ class EmptySpaceTests(unittest.TestCase):
 class FlowSimplicityTests(unittest.TestCase):
     """流程本身要短。如实上报必须真的被看见。"""
 
-    def test_the_merchant_walks_five_steps_not_six(self):
-        """额度查询与智能整理合成一步。"""
+    def test_the_merchant_walks_seven_steps_not_more(self):
+        """确认范围、真正执行、核对明细各占一步，额度查询与智能整理合成一步。"""
         from pyweixin.wizard import WizardStep
 
-        self.assertEqual(len(WizardStep.ORDER), 5, "商户要走的步骤变多了")
+        self.assertEqual(len(WizardStep.ORDER), 7, "商户要走的步骤变多了")
         self.assertNotIn(WizardStep.QUOTA, WizardStep.ORDER, "额度查询不该再单独占一步")
         self.assertEqual(
             WizardStep.ORDER,
             (WizardStep.WECHAT, WizardStep.CONVERSATIONS, WizardStep.HISTORY,
-             WizardStep.ANALYZE, WizardStep.DONE),
+             WizardStep.READ, WizardStep.REVIEW, WizardStep.ANALYZE, WizardStep.DONE),
         )
+        self.assertEqual(WizardStep.TITLES[WizardStep.HISTORY], "确认读取范围")
+        self.assertEqual(WizardStep.TITLES[WizardStep.READ], "读取历史消息")
+        self.assertEqual(WizardStep.TITLES[WizardStep.REVIEW], "核对读取明细")
 
     def test_both_steps_render_the_same_screen(self):
         """额度与整理是同一件事的两半，拆成两屏只是多一次点击。"""
@@ -382,16 +405,21 @@ class FlowSimplicityTests(unittest.TestCase):
         self.assertIn("WizardStep.ANALYZE: self._page_analyze", source)
 
     def test_the_read_result_is_drawn_on_the_screen_they_land_on(self):
-        """第 4 步以前会自动跳走，读取结果只画在它上面 —— 一闪而过，等于没报。"""
+        """第 6 步只留：角色单选、开始整理、角色报告。
+
+        "刚才读到的消息"、"分析额度"、"选择分析模型"都已拿掉：
+        读到多少第 4 步写了，额度不足点整理会直接说明，模型由云端配置。
+        """
         import inspect
 
         from pyweixin import merchant_ui
 
         source = inspect.getsource(merchant_ui.MerchantWindow._page_analyze)
-        self.assertIn("_build_history_summary", source, "读取结果没画在合并后的这一屏上")
-        self.assertIn("_build_quota_block", source)
-        # 顺序：商户最先要确认的是"读到了什么"。
-        self.assertLess(source.index("_build_history_summary"), source.index("_build_quota_block"))
+        self.assertNotIn("_build_history_summary", source)
+        self.assertNotIn("_build_quota_block", source)
+        self.assertNotIn("_build_model_picker", source)
+        self.assertNotIn("选择分析模型", source)
+        self.assertIn("_build_role_picker", source)
 
     def test_checking_quota_does_not_navigate_away(self):
         """额度够用就跳走，读到的条数和缺口就看不见了。"""
@@ -407,6 +435,15 @@ class FlowSimplicityTests(unittest.TestCase):
 
         self.assertEqual(WizardStep.TITLES[WizardStep.ANALYZE], "智能整理")
         self.assertEqual(WizardStep.TITLES[WizardStep.QUOTA], "智能整理")
+
+    def test_first_paint_is_checking_not_failed(self):
+        """还没查过就摆失败脸，商户以为一上来就坏了。"""
+        import inspect
+
+        from pyweixin import merchant_ui
+
+        source = inspect.getsource(merchant_ui.MerchantWindow._page_wechat)
+        self.assertIn("正在检测微信状态", source)
 
 
 class NoLeakedExceptionTests(unittest.TestCase):
@@ -456,6 +493,57 @@ class NoLeakedExceptionTests(unittest.TestCase):
         for leak in self.LEAKS:
             self.assertNotIn(leak, notice, f"异常泄漏到界面：{notice}")
         self.assertEqual(audit_text(notice), [])
+
+
+class NextStepTargetTests(unittest.TestCase):
+    """核对页的"下一步"必须进智能整理，不能原地踏步。
+
+    回归真机 case：第 5 步点"下一步：智能整理"毫无反应 ——
+    它和第 4 步共用 handler，目标写死 REVIEW，在第 5 步点就是原地刷新。
+    """
+
+    def _window(self, result):
+        from types import SimpleNamespace
+
+        from pyweixin.merchant_ui import MerchantWindow
+        from pyweixin.wizard import WizardStep
+
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._last_read_result = result
+        calls: list = []
+        window.app = SimpleNamespace(
+            wizard=SimpleNamespace(_go=calls.append, history_result=result))
+        window._WizardStep = WizardStep
+        return window, calls
+
+    def test_review_page_advances_to_analyze(self):
+        from pyweixin.wizard import WizardStep
+
+        window, calls = self._window(object())
+        with unittest.mock.patch.object(
+                window, "_has_messages_for", return_value=True):
+            window._go_next_from_history(WizardStep.ANALYZE)
+        self.assertEqual(calls, [WizardStep.ANALYZE])
+
+    def test_execute_page_still_goes_to_review(self):
+        from pyweixin.wizard import WizardStep
+
+        window, calls = self._window(object())
+        with unittest.mock.patch.object(
+                window, "_has_messages_for", return_value=True):
+            window._go_next_from_history()
+        self.assertEqual(calls, [WizardStep.REVIEW])
+
+    def test_no_messages_blocks_with_a_dialog(self):
+        from pyweixin.wizard import WizardStep
+
+        window, calls = self._window(None)
+        with unittest.mock.patch.object(
+                window, "_has_messages_for", return_value=False), \
+            unittest.mock.patch("pyweixin.merchant_ui.messagebox") as box:
+            window._go_next_from_history(WizardStep.ANALYZE)
+        self.assertEqual(calls, [])
+        self.assertTrue(box.showinfo.called)
 
 
 if __name__ == "__main__":

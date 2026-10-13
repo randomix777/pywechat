@@ -96,8 +96,8 @@ def main() -> int:
     print(f"   选了 {len(app.wizard.conversations.history_selected)} 个会话")
 
     # —— 读取（第 3 步）
-    window._on_read_history()             # ②点「开始读取」
-    click("开始读取")
+    window._on_read_history()             # ②点「更新消息」
+    click("更新消息")
     deadline = time.time() + 30
     while app.wizard.history_result is None and time.time() < deadline:
         pump(0.2)

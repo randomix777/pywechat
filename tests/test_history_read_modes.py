@@ -74,7 +74,7 @@ class _Recorder:
 class ReadModeTests(unittest.TestCase):
     def setUp(self):
         self.cursor = HistoryCursor(":memory:")
-        self.reader = HistoryReader(reader=None, cursor=self.cursor)
+        self.reader = HistoryReader(reader=None, cursor=self.cursor, sender_source="members")
         self.window = TimeWindow(start_delta=timedelta(days=1), label="recent")
 
     def tearDown(self):
@@ -168,6 +168,27 @@ class ReadModeTests(unittest.TestCase):
         saved = self.cursor.get(GROUP.identity, "m1")
         self.assertEqual(int(saved["exhausted"]), 0, "按定义就没读完，不能说读完了")
 
+    def test_all_reads_again_after_exhausted(self):
+        """点"读取全部"就是要一次全量：上次翻到底也不许跳过。"""
+        first = _Recorder([message(i, f"第{i}条") for i in range(5)])
+        self._run(first, ReadMode.ALL)
+        saved = self.cursor.get(GROUP.identity, "m1")
+        self.assertEqual(int(saved["exhausted"]), 1)
+
+        again = _Recorder([message(i, f"第{i}条") for i in range(5)])
+        result = self._run(again, ReadMode.ALL)
+        self.assertEqual(len(again.calls), 1, "全部模式不许跳过已读完的会话")
+        self.assertFalse(result.coverage[0].skipped)
+
+    def test_recent_still_skips_exhausted(self):
+        """按范围读保持跳过：同一窗口短期重翻只是浪费时间。"""
+        first = _Recorder([message(i, f"第{i}条") for i in range(5)])
+        self._run(first, ReadMode.ALL)
+        again = _Recorder([message(i, f"第{i}条") for i in range(5)])
+        result = self._run(again, ReadMode.RECENT, limit=5)
+        self.assertEqual(len(again.calls), 0, "按范围读应跳过已翻到底的会话")
+        self.assertTrue(result.coverage[0].skipped)
+
     # -------------------------------------------------------------- 按范围
 
     def test_recent_reports_that_more_may_exist(self):
@@ -209,7 +230,7 @@ class ProgressByMessageTests(unittest.TestCase):
 
     def _reader(self, messages):
         recorder = _Recorder(messages)
-        reader = HistoryReader(reader=recorder, cursor=self.cursor)
+        reader = HistoryReader(reader=recorder, cursor=self.cursor, sender_source="members")
         return reader, recorder
 
     def test_progress_reports_message_counts_while_reading(self):
@@ -265,6 +286,18 @@ class ResultWordingTests(unittest.TestCase):
         result = HistoryResult(window=TimeWindow(), mode=ReadMode.UPDATE, coverage=[])
         self.assertEqual(result.headline(), "没有发现上次之后的新消息")
 
+    def test_update_zero_says_no_new_info_not_read_failure(self):
+        """更新无新消息是"没有读到新信息"，不是"没有读到"。
+
+        回归：更新点完看到"这次没有读到任何消息"，商户以为读失败了。
+        """
+        update = HistoryResult(window=TimeWindow(), mode=ReadMode.UPDATE, coverage=[])
+        self.assertEqual(update.actual_range_text(), "没有读到新信息")
+        for mode in (ReadMode.ALL, ReadMode.RECENT):
+            with self.subTest(mode=mode):
+                result = HistoryResult(window=TimeWindow(), mode=mode, coverage=[])
+                self.assertEqual(result.actual_range_text(), "这次没有读到任何消息")
+
     def test_all_and_recent_report_the_actual_range(self):
         for mode in (ReadMode.ALL, ReadMode.RECENT):
             with self.subTest(mode=mode):
@@ -276,7 +309,7 @@ class ResultWordingTests(unittest.TestCase):
         self.assertIn("已取消", result.headline())
 
     def test_unknown_mode_is_rejected_by_the_constructor_path(self):
-        reader = HistoryReader(reader=None, cursor=HistoryCursor(":memory:"))
+        reader = HistoryReader(reader=None, cursor=HistoryCursor(":memory:"), sender_source="members")
         with self.assertRaises(ValueError):
             reader.read([GROUP], TimeWindow(), merchant_id="m1", mode="whatever")
         reader.cursor.close()
@@ -301,6 +334,36 @@ def _parse_message(raw):
     from pyweixin.wechat_time import parse_timestamp
 
     return parse_timestamp(raw["消息发送时间"])
+
+
+class UnresolvedSenderCountTests(unittest.TestCase):
+    """未认出计数看的必须是"消息发送人"：各路读取器产出的都是这个键，
+    "sender"是入库后的字段名。
+
+    回归真机 case：第 4 步说"2 条发送人没认出来"，第 5 步却写着名字 ——
+    计数查错了键，条条算没认出来。
+    """
+
+    def _read(self, rows):
+        reader = HistoryReader(_Recorder(rows), cursor=HistoryCursor(":memory:"),
+                               sender_source="members")
+        try:
+            return reader.read([GROUP], TimeWindow(), merchant_id="m1",
+                               max_messages=10, mode=ReadMode.ALL)
+        finally:
+            reader.cursor.close()
+
+    def test_resolved_names_are_not_counted(self):
+        result = self._read([message(1, "苹果两箱"), message(2, "再加一箱")])
+        self.assertEqual(result.coverage[0].unresolved_senders, 0)
+
+    def test_placeholders_are_counted(self):
+        from pyweixin.utils import UNRESOLVED_SENDER
+
+        bad = message(1, "红包")
+        bad["消息发送人"] = UNRESOLVED_SENDER
+        result = self._read([message(2, "苹果"), bad])
+        self.assertEqual(result.coverage[0].unresolved_senders, 1)
 
 
 if __name__ == "__main__":

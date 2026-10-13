@@ -69,8 +69,13 @@ def _page(title: str, body: str) -> str:
 
 
 def _js_literal(value: str) -> str:
-    """Embed a value in JavaScript source without letting markup break out."""
-    return html.escape(json_escape(str(value)), quote=True)
+    """Embed a value as a JavaScript string literal.
+
+    必须带两侧的双引号：之前只转义不加引号，吐出来是 ``csrf=abc123;``，
+    浏览器整段 script 直接语法错误，改密码/确认设备的按钮全死 ——
+    点了没反应的那种坏法，连报错都没有。
+    """
+    return '"' + html.escape(json_escape(str(value)), quote=True) + '"'
 
 
 def json_escape(value: str) -> str:

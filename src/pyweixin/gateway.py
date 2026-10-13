@@ -95,6 +95,18 @@ SESSION_COOKIE = "pyw_session"
 MAX_BODY_BYTES = 256 * 1024
 MAX_MESSAGE_CHARS = 4000
 MAX_HISTORY_ITEMS = 40
+
+#: 任务类型。订单解析是老任务；摘要是新任务（整理成一段话）。
+#: 网关不替客户端选任务 —— 客户端说要什么，网关只校验、执行、结算。
+TASK_ORDER_PARSE = "order_parse"
+TASK_SUMMARIZE = "summarize"
+TASKS = (TASK_ORDER_PARSE, TASK_SUMMARIZE)
+
+#: 摘要一次最多带的消息条数（和客户端 SUMMARY_MESSAGE_LIMIT 对齐）。
+MAX_SUMMARY_MESSAGES = 200
+#: 摘要正文上限与单次条数：唯一来源是 :mod:`pyweixin.summary`
+#: （提示词和校验在同一处，改只改那里）。
+from .summary import SUMMARY_MAX_CHARS as MAX_SUMMARY_CHARS
 DEFAULT_COST_MICRO_USD = 1
 #: Wall-clock ceiling for one parse job.
 #:
@@ -300,6 +312,15 @@ class ProductGateway:
             job = self.store.get_job(identity["account_id"], match.group(1))
             # 计费字段随任务一起下发：客户端只**展示**这里的数字，不自己算。
             return _json(200, {"job": job, "billing": self._billing_payload(identity, match.group(1))})
+        if path == "/v1/summarize-jobs":
+            identity = self._require_client(headers)
+            states = [state for state in query.get("state", [""])[0].split(",") if state]
+            return _json(200, {"jobs": self.store.list_jobs(identity["account_id"], states, limit=50)})
+        match = re.fullmatch(r"/v1/summarize-jobs/([A-Za-z0-9_.-]{1,64})", path)
+        if match:
+            identity = self._require_client(headers)
+            job = self.store.get_job(identity["account_id"], match.group(1))
+            return _json(200, {"job": job, "billing": self._billing_payload(identity, match.group(1))})
         if path == "/v1/operator/jobs":
             self._require_operator(headers)
             states = [state for state in query.get("state", [""])[0].split(",") if state]
@@ -367,6 +388,14 @@ class ProductGateway:
             identity = self._require_client(headers)
             return self._create_job(identity, payload, headers)
         match = re.fullmatch(r"/v1/order-parse-jobs/([A-Za-z0-9_.-]{1,64})/cancel", path)
+        if match:
+            identity = self._require_client(headers)
+            job = self.store.request_cancel(identity["account_id"], match.group(1))
+            return _json(200, {"job": job})
+        if path == "/v1/summarize-jobs":
+            identity = self._require_client(headers)
+            return self._create_job(identity, payload, headers)
+        match = re.fullmatch(r"/v1/summarize-jobs/([A-Za-z0-9_.-]{1,64})/cancel", path)
         if match:
             identity = self._require_client(headers)
             job = self.store.request_cancel(identity["account_id"], match.group(1))
@@ -901,15 +930,67 @@ class ProductGateway:
 
         The client may not choose a system prompt, tools, a filesystem path or
         an upstream address; only the fields listed here are accepted.
+        ``task`` 决定走哪套校验与执行：订单解析还是摘要。未知任务直接拒掉，
+        不能默默当成订单跑 —— 跑错任务的账算不清。
         """
-        # ``model`` 不在禁止之列：客户提交的是**产品别名**，由网关解析成
-        # 真正的 provider/model。provider_id / model_id / 上游地址仍然禁止。
+        task = str(payload.get("task") or TASK_ORDER_PARSE)
+        if task not in TASKS:
+            raise ValidationFailed(f"不支持的任务类型：{task}", code="unsupported_task")
+        # 禁止字段对所有任务生效：客户不能自选提示词、工具、路径或上游。
         forbidden_keys = {"system_prompt", "tools", "prompt", "upstream", "upstream_url", "path",
                           "provider", "provider_id", "model_id", "base_url", "api_key", "token", "endpoint",
                           "agent", "tenant_id", "merchant_id"}
         present = forbidden_keys & {str(key) for key in payload}
         if present:
             raise ValidationFailed(f"请求包含不支持的字段：{', '.join(sorted(present))}", code="unsupported_field")
+        if task == TASK_SUMMARIZE:
+            request = self._validate_summary_request(payload)
+            request["task"] = task
+            return request
+        request = self._validate_order_request(payload)
+        request["task"] = task
+        return request
+
+    def _validate_summary_request(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """摘要任务校验：只要消息列表，不要客户、商品、订单状态。
+
+        摘要不需要绑定客户身份 —— 它只转述，不归属。要求客户身份会把
+        没绑定的群直接挡在门外，而摘要恰恰是绑之前先看一眼的工具。
+        """
+        raw_messages = payload.get("messages")
+        if not isinstance(raw_messages, list) or not raw_messages:
+            raise ValidationFailed("缺少待汇总消息", code="missing_messages")
+        if len(raw_messages) > MAX_SUMMARY_MESSAGES:
+            raise ValidationFailed(
+                f"一次最多汇总 {MAX_SUMMARY_MESSAGES} 条", code="too_many_messages")
+        messages = []
+        for item in raw_messages:
+            if not isinstance(item, Mapping):
+                raise ValidationFailed("消息必须是对象", code="bad_message")
+            content = str(item.get("content", ""))
+            if len(content) > MAX_MESSAGE_CHARS:
+                raise ValidationFailed(
+                    f"单条消息过长（上限 {MAX_MESSAGE_CHARS} 字）", code="message_too_long")
+            messages.append({
+                "sender": str(item.get("sender", ""))[:128],
+                "content": content,
+                "sent_at": str(item.get("sent_at", ""))[:64],
+                "kind": str(item.get("kind") or "text")[:32],
+            })
+        if not any(item["content"].strip() for item in messages):
+            raise ValidationFailed("消息内容为空", code="empty_message")
+        return {
+            "model": str(payload.get("model", ""))[:128],
+            "messages": messages,
+        }
+
+    def _validate_order_request(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """订单解析校验（老任务，原样搬过来，一字未改）。
+
+        禁止字段已在分流前统一检查，这里只做订单业务字段。
+        """
+        # ``model`` 不在禁止之列：客户提交的是**产品别名**，由网关解析成
+        # 真正的 provider/model。provider_id / model_id / 上游地址仍然禁止。
         message = payload.get("message")
         if not isinstance(message, Mapping):
             raise ValidationFailed("缺少待解析消息", code="missing_message")
@@ -1039,8 +1120,12 @@ class ProductGateway:
         # and the only recovery would be a re-run that double-charges the customer.
         self.store.mark_upstream_session(job_id, session_id)
         deadline = time.time() + self._job_budget_seconds(job)
+        task = str((payload or {}).get("task") or TASK_ORDER_PARSE)
         try:
-            outcome = self._run_with_job_model(job_id, payload, deadline, session_id)
+            if task == TASK_SUMMARIZE:
+                outcome = self._run_summary_with_model(job_id, payload, deadline, session_id)
+            else:
+                outcome = self._run_with_job_model(job_id, payload, deadline, session_id)
         except (AdapterTimeout, OutcomeUnknown) as exc:
             self.store.record_internal_retry(job_id, "上游结果未确认", tokens=0)
             self.store.finish_job(job_id, JOB_OUTCOME_UNKNOWN, error_code="outcome_unknown", error_message=exc.merchant_message)
@@ -1175,6 +1260,25 @@ class ProductGateway:
             cancel_check=lambda: self.store.cancel_requested(job_id),
             provider_id=provider_id, model_id=model_id,
         )
+
+    def _run_summary_with_model(self, job_id: str, payload: Mapping[str, Any], deadline: float, session_id: str = ""):
+        """摘要任务执行：和订单走同一套会话/取消/计费，只换提示词与校验。
+
+        适配器没有 ``run_summary``（比如默认的本地规则适配器）时明确失败，
+        不回落成订单解析 —— 跑错任务的账算不清。
+        """
+        run_summary = getattr(self.adapter, "run_summary", None)
+        if not callable(run_summary):
+            raise AdapterRejected("当前解析服务不支持摘要任务，请联系客服")
+        snapshot = self.store.job_snapshot(job_id) or {}
+        provider_id = str(snapshot.get("provider_id") or "")
+        model_id = str(snapshot.get("model_id") or "")
+        outcome = run_summary(
+            session_id, payload, job_id, deadline,
+            cancel_check=lambda: self.store.cancel_requested(job_id),
+            provider_id=provider_id, model_id=model_id,
+        )
+        return outcome
 
     def _queue_session_cleanup(self, session_id: str | None) -> None:
         if session_id:

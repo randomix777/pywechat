@@ -38,18 +38,22 @@ class WizardStep:
     WECHAT = "wechat"
     CONVERSATIONS = "conversations"
     HISTORY = "history"
+    READ = "read"
+    REVIEW = "review"
     QUOTA = "quota"
     ANALYZE = "analyze"
     DONE = "done"
 
-    #: 商户看到的步骤只有 4 步。额度查询与智能整理是同一件事的两半，
-    #: 拆成两屏只是让商户多点一次、多闪一次。
-    ORDER = (WECHAT, CONVERSATIONS, HISTORY, ANALYZE, DONE)
+    #: 商户看到的步骤。确认范围与真正执行分开，执行与核对也分开：
+    #: 花额度整理之前，必须先亲眼看到读到了什么。
+    ORDER = (WECHAT, CONVERSATIONS, HISTORY, READ, REVIEW, ANALYZE, DONE)
 
     TITLES = {
         WECHAT: "检查微信",
         CONVERSATIONS: "选择会话",
-        HISTORY: "读取历史消息",
+        HISTORY: "确认读取范围",
+        READ: "读取历史消息",
+        REVIEW: "核对读取明细",
         QUOTA: "智能整理",
         ANALYZE: "智能整理",
         DONE: "开始使用",
@@ -160,6 +164,7 @@ class Wizard:
         on_log: Callable[[str], None] | None = None,
         on_wechat: Callable[[WeChatStatus], None] | None = None,
         on_history_done: Callable[[HistoryResult], None] | None = None,
+        is_product_logged_in: Callable[[], bool] | None = None,
     ):
         self.store = settings_store
         self.settings = settings_store.load()
@@ -178,6 +183,10 @@ class Wizard:
         self.on_wechat = on_wechat
         #: 读取结束。界面据此显示结果并给出下一步，**不再自动跳页**。
         self.on_history_done: Callable[[HistoryResult], None] | None = on_history_done
+        #: 产品账号是否已登录。未登录不许离开第 1 步 —— 这是商户定的规则
+        #: （"不登录产品不应该允许进入下一步"），门禁判据只认这一个回调。
+        #: 为 None 时不限行：单测里直接构造向导，不走产品登录。
+        self.is_product_logged_in = is_product_logged_in
         self.step = WizardStep.WECHAT
         self.history_result: HistoryResult | None = None
         self.quota = QuotaView()
@@ -231,6 +240,16 @@ class Wizard:
 
     # --------------------------------------------------------------- ① 微信
 
+    def product_gate_open(self) -> bool:
+        """第 1 步放行判据：产品账号已登录。判据只此一处，界面与跳转都问它。"""
+        gate = self.is_product_logged_in
+        if gate is None:
+            return True
+        try:
+            return bool(gate())
+        except Exception:
+            return False
+
     def check_wechat(self) -> WeChatStatus:
         """检测一次微信，并把**新状态**通知出去。
 
@@ -254,17 +273,39 @@ class Wizard:
                 self.settings.reset_for_new_account()
                 self.conversations = ConversationRegistry()
             self.settings.account_id = status.account_id
+            self._note_wechat_version()
             self.save()
-            # 只有**还停在第 1 步**时才推进。监视器每几秒就检测一次；以前不
-            # 判断当前在哪一步，于是商户正在读历史（或者已经走到首页了）时，
-            # 一次后台检测就能把他弹回选择页 —— 表现为"读完没有下一步"、
-            # 进度条不动。状态好着的时候没有理由打断正在进行的流程。
+            # 只有**还停在第 1 步、且产品门禁放行**时才推进。监视器每几秒就检测
+            # 一次；以前不判断当前在哪一步，于是商户正在读历史（或者已经走到
+            # 首页了）时，一次后台检测就能把他弹回选择页 —— 表现为"读完没有
+            # 下一步"、进度条不动。状态好着的时候没有理由打断正在进行的流程。
+            # 未登录产品账号时不推进：门禁规则定的就是"不登录不许进入下一步"，
+            # 留在第 1 步等登录，登录成功后下一次检测会自动放行。
             if self.step == WizardStep.WECHAT:
-                self._go(WizardStep.CONVERSATIONS)
+                if self.product_gate_open():
+                    self._go(WizardStep.CONVERSATIONS)
+                else:
+                    self._log("微信已就绪，还差产品账号登录，登录后自动进入下一步")
         elif self.step != WizardStep.WECHAT:
             self._log(f"微信状态变为「{status.state}」，回到第 1 步")
             self._go(WizardStep.WECHAT)
         return status
+
+    def _note_wechat_version(self) -> None:
+        """记下这次见到的微信版本。变了就吱一声 —— 微信一升级，
+        界面选择器、读取逻辑都可能对不上，商户看到"读不到"时至少知道
+        先重走一次检测，而不是以为软件坏了。读版本失败不挡路。"""
+        try:
+            from .Config import GlobalConfig
+            current = str(GlobalConfig.Version or "")
+        except Exception:
+            return
+        if not current:
+            return
+        previous = str(getattr(self.settings, "wechat_version", "") or "")
+        if previous and previous != current:
+            self._log(f"微信版本从 {previous} 变为 {current}，已重走检测")
+        self.settings.wechat_version = current
 
     def start_wechat(self) -> bool:
         """用户点了「打开微信」。这是唯一允许主动启动微信的入口。"""
@@ -315,6 +356,7 @@ class Wizard:
         on_progress: Callable[[HistoryProgress], None] | None = None,
         resume: bool = True,
         mode: str = ReadMode.RECENT,
+        sender_source: str = "",
     ) -> HistoryResult:
         if mode not in ReadMode.ALL_KINDS:
             raise ValueError(f"unknown read mode: {mode}")
@@ -324,7 +366,8 @@ class Wizard:
         self.settings.history_range = kind
         self.settings.history_max_messages = limit
         self.save()
-        self._go(WizardStep.HISTORY)
+        # 执行是独立的一步：进确认页只是看看范围，真正动手读才进执行页。
+        self._go(WizardStep.READ)
 
         importer = self._make_importer()
         result = self.history.read(
@@ -336,6 +379,7 @@ class Wizard:
             resume=resume,
             importer=importer,
             mode=mode,
+            sender_source=sender_source,
         )
         self.history_result = result
         self._log(f"历史读取完成：{result.headline()}")
@@ -426,8 +470,14 @@ class Wizard:
 
     # ------------------------------------------------------------ ⑤ 整理
 
-    def analyze(self, message_ids: Sequence[str] | None = None) -> dict[str, Any]:
+    def analyze(self, message_ids: Sequence[str] | None = None,
+                role: str = "order") -> dict[str, Any]:
         """对读取到的消息跑一遍智能整理。
+
+        ``role`` 是整理角色（每次整理时选，见 :mod:`pyweixin.roles`）：
+        订单助手走原来的订单链路（模型解析 → 规则校验 → 订单草稿，
+        要过额度门）；其它角色走本机规则引擎（不调模型、不扣费、
+        不建单，产出只进人工核对），不过额度门。
 
         额度不足时抛 :class:`QuotaBlocked`，但**不重复读取、不重复扣费**：
         消息还在本地库，恢复额度后重新调用即可。
@@ -436,6 +486,11 @@ class Wizard:
         算成了收费，也和运营配的每任务扣费数对不上。计费只有网关说了算；
         这里只统计"提交了多少个任务"，金额一律读服务端返回的值。
         """
+        from .roles import ROLE_ORDER, get_role
+
+        role_def = get_role(role)
+        if role_def.id != ROLE_ORDER:
+            return self._analyze_with_role(role_def, message_ids)
         self.require_quota()
         self._go(WizardStep.ANALYZE)
         ids = list(message_ids) if message_ids is not None else self._pending_message_ids()
@@ -471,6 +526,58 @@ class Wizard:
             f"整理完成：处理 {summary['processed']} 条，生成订单 {summary['with_result']} 条，"
             f"需要核对 {summary['needs_review']} 条，本次实际扣费 {charged_micro_usd} 次"
         )
+        self.finish()
+        return summary
+
+    def _analyze_with_role(self, role_def: Any, message_ids: Sequence[str] | None) -> dict[str, Any]:
+        """本机规则整理（非订单角色）：不过额度门、不调模型、不建单。
+
+        角色整理不占用"已整理"状态 —— 同一批消息换个角色可以重跑，
+        不会因为"已处理过"被判成 duplicate。产出全部进人工核对。
+        """
+        from .roles import organize
+
+        self._go(WizardStep.ANALYZE)
+        ids = list(message_ids) if message_ids is not None else self._pending_message_ids()
+        rows: list[dict[str, Any]] = []
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            try:
+                fetched = self.orders().db.execute(
+                    "SELECT id, group_id, sender, content, sent_at, kind FROM messages "
+                    f"WHERE merchant_id=? AND id IN ({placeholders})",
+                    (self.tenant, *ids)).fetchall()
+            except Exception:
+                fetched = []
+            for row in fetched:
+                try:
+                    rows.append({
+                        "id": str(row["id"] or ""),
+                        "group": str(row["group_id"] or ""),
+                        "sender": str(row["sender"] or ""),
+                        "content": str(row["content"] or ""),
+                        "sent_at": str(row["sent_at"] or ""),
+                        "kind": str(row["kind"] or "text"),
+                    })
+                except Exception:
+                    continue
+        report = organize(role_def.id, rows)
+        summary = {
+            "processed": len(rows),
+            "with_result": 0,
+            "needs_review": len(rows),
+            "ignored": 0,
+            "already_analyzed": self.already_analyzed_count(),
+            "submitted_jobs": 0,
+            "charged_micro_usd": 0,
+            "billing": [],
+            "billing_note": "本机规则整理，不调用模型、不扣费、不建单，结果只进人工核对。",
+            "traces": [],
+            "role_id": role_def.id,
+            "role_name": role_def.name,
+            "role_report": report.to_dict(),
+        }
+        self._log(f"整理完成（{role_def.name}）：{report.headline()}")
         self.finish()
         return summary
 

@@ -142,13 +142,22 @@ class ConversationSource(Protocol):
 class RealConversationSource:
     """真实微信会话列举。
 
-    群用 ``Contacts.get_recent_groups()``（最近群聊，含人数），好友用
-    ``Contacts.get_friends_info()``。两者都操作微信界面，因此**必须**在 UI
-    串行队列里调用，不能和发送、监听并发。
+    三条路，按顺序试：
+    1. 解密库（``wcdb_fn``）：最近会话 + 全量群名 + 人数，全是真名；
+    2. 内存 carve（``localdb``）：不碰微信窗口，UIA 全死时这是唯一路；
+    3. 界面通讯录（``Contacts.get_recent_groups``）：老版本微信才走得通。
+
+    解密和内存都只读不写，但仍**必须**在 UI 串行队列里调用，
+    不能和发送、监听并发。任何一条失败都不致命：能列多少列多少，
+    界面会如实说明来源。
     """
 
-    def __init__(self, ui_lock: Any = None):
+    def __init__(self, ui_lock: Any = None,
+                 wcdb_fn: Callable[[str], Sequence[Any] | None] | None = None):
         self._ui_lock = ui_lock
+        #: 解密库会话来源（应用层注入，缺密钥时为 None）。抛异常=不可用，
+        #: 这里吞掉回落内存路，不把整次列举带崩。
+        self.wcdb_fn = wcdb_fn
 
     def _guarded(self, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         if self._ui_lock is None:
@@ -157,17 +166,59 @@ class RealConversationSource:
             return function(*args, **kwargs)
 
     def list_conversations(self, kind: str = "") -> tuple[Conversation, ...]:
+        from . import localdb
         from .WeChatAuto import Contacts
 
         found: list[Conversation] = []
+        try:
+            from .wechat_state import uia_automation_available
+            uia_ok = uia_automation_available()
+        except Exception:
+            uia_ok = True
+        if self.wcdb_fn is not None:
+            # 解密库优先：真名 + 人数 + 最近时间，一次到位。
+            # 失败（没密钥、文件锁、验签不过）就当没这条路。
+            try:
+                rows = self._guarded(self.wcdb_fn, kind) or ()
+            except Exception:
+                rows = ()
+            for item in rows:
+                username = str(getattr(item, "username", "") or "")
+                if not username:
+                    continue
+                show = str(getattr(item, "display", "") or "") or username
+                item_kind = str(getattr(item, "kind", "") or "")
+                if item_kind not in ConversationKind.ALL:
+                    item_kind = (ConversationKind.GROUP if username.endswith("@chatroom")
+                                 else ConversationKind.FRIEND)
+                try:
+                    members = int(getattr(item, "member_count", 0) or 0)
+                except (TypeError, ValueError):
+                    members = 0
+                found.append(Conversation(name=show, kind=item_kind,
+                                          member_count=members, wxid=username))
+            if found:
+                return disambiguate(found)
+        memory_groups: list[tuple[str, str]] = []
         if kind in ("", ConversationKind.GROUP):
+            # 内存优先：不碰微信窗口，4.1.15 上 UIA 全死时这是唯一路。
+            # 人数读不到填 0，界面照群显示，不写"联系人"。
+            try:
+                memory_groups = self._guarded(localdb.list_group_conversations) or []
+            except Exception:
+                memory_groups = []
+            for name, wxid in memory_groups:
+                found.append(Conversation(name=str(name), kind=ConversationKind.GROUP,
+                                          member_count=0, wxid=str(wxid)))
+        if kind in ("", ConversationKind.GROUP) and not memory_groups:
             try:
                 for name, count in self._guarded(Contacts.get_recent_groups, is_maximize=False, close_weixin=False) or ():
                     found.append(Conversation(name=str(name), kind=ConversationKind.GROUP, member_count=int(count or 0)))
             except Exception:
                 # 读不到群列表不是致命错误：好友仍然可选，界面会说明。
                 pass
-        if kind in ("", ConversationKind.FRIEND):
+        if kind in ("", ConversationKind.FRIEND) and uia_ok:
+            # 好友名单只有 UIA 一条路：界面已死就直接跳过，别让人干等超时。
             try:
                 for name in self._guarded(Contacts.get_friends_info, is_maximize=False, close_weixin=False) or ():
                     found.append(Conversation(name=str(name), kind=ConversationKind.FRIEND))
@@ -254,6 +305,23 @@ class ConversationRegistry:
             "history": [item.identity for item in self.history_selected],
             "live": self.live_selected.identity if self.live_selected else "",
         }
+
+    def available_to_dicts(self) -> list[dict[str, Any]]:
+        """把当前可见的会话列表转成可落盘的字典。"""
+        return [item.to_dict() for item in self.available]
+
+    def restore_available(self, rows: Any) -> int:
+        """从落盘数据恢复可见列表，返回恢复条数。坏行跳过，不断整个恢复。"""
+        items: list[Conversation] = []
+        for row in rows or ():
+            try:
+                item = Conversation.from_dict(row)
+            except Exception:
+                continue
+            if item.name.strip():
+                items.append(item)
+        self.available = tuple(items)
+        return len(items)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], available: Sequence[Conversation]) -> "ConversationRegistry":

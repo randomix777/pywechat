@@ -141,6 +141,32 @@ class Tools():
             if process.info['name'].lower()=='weixin.exe':
                 return True
         return False
+
+    @staticmethod
+    def restart_weixin()->bool:
+        '''该方法用来重启微信：先杀掉所有 Weixin.exe 进程，再重新打开。
+        用于微信更新后卡死（进程在、界面出不来）的场景。
+        Returns:
+            is_launched:是否已请求重新打开
+        '''
+        for process in psutil.process_iter(['pid','name']):
+            try:
+                if (process.info['name'] or '').lower()=='weixin.exe':
+                    process.kill()
+            except Exception:
+                pass
+        time.sleep(2)
+        try:
+            weixin_path=Tools.where_weixin()
+        except Exception:
+            return False
+        if not weixin_path:
+            return False
+        try:
+            os.startfile(weixin_path)
+            return True
+        except Exception:
+            return False
     
     @staticmethod
     def where_weixin(copy_to_clipboard:bool=False)->str:

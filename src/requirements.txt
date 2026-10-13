@@ -11,3 +11,4 @@ pillow>=10.4.0
 sounddevice>=0.5.1
 soundfile>=0.13.1
 packaging>=23.2
+zstandard>=0.20

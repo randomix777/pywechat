@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
 from pyweixin.live_listen import (  # noqa: E402
     LISTEN_DEGRADED,
+    LISTEN_FAILED,
     LISTEN_RUNNING,
     LISTEN_STOPPED,
     LiveListener,
@@ -265,6 +266,61 @@ class ListenViewTests(unittest.TestCase):
         from pyweixin.application import MerchantApplication
 
         self.assertIsNone(MerchantApplication.__init__.__code__.co_consts is None or None)
+
+
+class FailFastTests(unittest.TestCase):
+    """窗口一次都打不开：3 次就停下来明说，别无限转圈干等超时。"""
+
+    def _listener(self, opener, states):
+        merger = MessageMerger(":memory:", MergeSettings(silence_window=0.3, max_wait=1.0))
+        return LiveListener(
+            conversation=CONVERSATION, store=None, merger=merger, pipeline=None,
+            dialog_opener=opener, listener=ScriptedCollector([[]]),
+            sink=OrderStoreSink(), poll_seconds=0.2,
+            on_state=lambda s, d: states.append((s, d)),
+        )
+
+    def test_three_failed_opens_stop_with_failed_state(self):
+        attempts: list[int] = []
+
+        def opener(**kwargs):
+            attempts.append(1)
+            raise RuntimeError("打不开")
+
+        states: list[tuple[str, str]] = []
+        listener = self._listener(opener, states)
+        listener.start()
+        deadline = time.time() + 10
+        while listener.running and time.time() < deadline:
+            time.sleep(0.05)
+        listener.stop()
+        self.assertFalse(listener.running)
+        self.assertEqual(len(attempts), 3, f"开了 {len(attempts)} 次才停")
+        self.assertIn(LISTEN_FAILED, [state for state, _ in states])
+        detail = " ".join(detail for state, detail in states if state == LISTEN_FAILED)
+        self.assertIn("历史读取", detail, "要告诉商户还有别的路")
+
+    def test_mid_run_failures_still_retry(self):
+        dialog = FakeDialog()
+        calls = {"n": 0}
+
+        def opener(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return dialog
+            raise RuntimeError("中途掉了")
+
+        states: list[tuple[str, str]] = []
+        listener = self._listener(opener, states)
+        listener.start()
+        time.sleep(0.4)
+        dialog.close()
+        time.sleep(0.8)
+        failed = [state for state, _ in states if state == LISTEN_FAILED]
+        degraded = [state for state, _ in states if state == LISTEN_DEGRADED]
+        listener.stop()
+        self.assertEqual(failed, [], "开过窗口之后掉线要重连，不能判死")
+        self.assertTrue(degraded, "掉线要报 degraded")
 
 
 if __name__ == "__main__":

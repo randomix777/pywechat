@@ -327,6 +327,10 @@ class MerchantClient:
     def submit_parse(self, request: Mapping[str, Any], idempotency_key: str) -> dict[str, Any]:
         return self._request("POST", "/v1/order-parse-jobs", request, idempotency_key=idempotency_key)
 
+    def submit_summary(self, request: Mapping[str, Any], idempotency_key: str) -> dict[str, Any]:
+        """提交摘要任务。网关按任务冻结模型与计费，和订单任务同一口径。"""
+        return self._request("POST", "/v1/summarize-jobs", request, idempotency_key=idempotency_key)
+
     def list_models(self) -> dict[str, Any]:
         """客户可见的模型目录。只有别名，不含任何上游信息。"""
         return self._request("GET", "/v1/models")
@@ -337,8 +341,14 @@ class MerchantClient:
     def job(self, job_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/order-parse-jobs/{job_id}")
 
+    def summary_job(self, job_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/summarize-jobs/{job_id}")
+
     def cancel(self, job_id: str) -> dict[str, Any]:
         return self._request("POST", f"/v1/order-parse-jobs/{job_id}/cancel", {})
+
+    def cancel_summary(self, job_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/summarize-jobs/{job_id}/cancel", {})
 
     def devices(self) -> dict[str, Any]:
         return self._request("GET", "/v1/devices")

@@ -9,10 +9,13 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .agent import AgentStore
@@ -110,6 +113,11 @@ class AppEvents:
     on_wechat: Callable[[Any], None] | None = None
     #: 监听状态或统计发生变化。界面据此刷新开关与数字。
     on_listen: Callable[[dict[str, Any]], None] | None = None
+    #: 产品账号登录刚成功。界面靠它刷新登录框与门禁 —— 以前没人通知，
+    #: 登录框一直写着"未登录"，门禁也不放行，商户以为登录没成功。
+    #: 注意名字不能叫 on_login：界面上 _on_login 是"发起登录"按钮，
+    #: 事件泵按 _on_<kind> 找处理器，重名会点成死循环。
+    on_logged_in: Callable[[], None] | None = None
 
 
 class MerchantApplication:
@@ -126,6 +134,7 @@ class MerchantApplication:
         conversation_source: ConversationSource | None = None,
         history_reader_fn: Callable[..., Any] | None = None,
         group_members_fn: Callable[[Any], Sequence[str]] | None = None,
+        sender_source: str = "members",
         gateway_url: str = "",
         client_factory: Callable[[Any], Any] | None = None,
         sender: Callable[[str, str], Any] | None = None,
@@ -172,7 +181,17 @@ class MerchantApplication:
         )
 
         self.conversations = ConversationRegistry()
+        #: wxid 显示名备注（内存解不出的群名/人名，手备注一次一直有效）。
+        self.wxid_aliases: dict = self.load_aliases()
         self.conversation_source = conversation_source or RealConversationSource(ui_lock=self.ui_lock)
+        # 解密库优先：有钥匙就走真名真人数，没有就当没这条路（内存兜底）。
+        if hasattr(self.conversation_source, "wcdb_fn"):
+            try:
+                self.conversation_source.wcdb_fn = self.list_wcdb_conversations
+            except Exception:
+                LOGGER.debug("wcdb hookup failed", exc_info=True)
+        #: 没钥匙时点"读取"自动提一次。每个进程只试一次，重试走界面按钮。
+        self._wcdb_ensure_attempted = False
         #: 持续监听。默认**不启动** —— 它会打开独立聊天窗口并占用本机前台，
         #: 必须由商户自己在首页上点开，见 :meth:`start_listening`。
         self.listener: LiveListener | None = None
@@ -182,9 +201,20 @@ class MerchantApplication:
             history_reader_fn or self._default_history_reader,
             ui_lock=self.ui_lock,
             cursor=self.cursor,
-            # 与 history_reader_fn 一样可注入：取群成员要开微信界面（实测一次
-            # 2 秒上下），测试拿假读取器却走真解析器，时序会被它拖垮。
+            # ? history_reader_fn ?????:??????????(????
+            # 2 ???),????????????,????????
             group_members=group_members_fn or self._default_group_members,
+            # 群发送人来源。默认 members（上游原设计）：全量优先；
+            # avatar 实验链需要时显式开；有钥匙时 members 自动升级 wcdb。
+            sender_source=sender_source,
+            # 读历史时顺手记群名（面板标题里的）：解不出名的群也能显示真名。
+            alias_recorder=self._record_group_alias,
+            # 解密库直读：有钥匙才有，没有则 members 照旧（4.1 界面已死会失败，
+            # 但那是老行为，不在这里改门禁）。
+            # 只给真实来源接：模拟/测试来源用自己的替身，不碰真微信。
+            wcdb_reader_fn=(self._wcdb_reader
+                            if isinstance(self.conversation_source, RealConversationSource)
+                            else None),
         )
 
         self.client = None
@@ -200,11 +230,14 @@ class MerchantApplication:
             self.history,
             tenant=tenant,
             orders=orders,
+            is_product_logged_in=self.product_logged_in,
             on_step=self.events.on_step,
             on_log=self.events.on_log,
             on_wechat=self.events.on_wechat,
         )
         self.wizard.conversation_source = self.conversation_source
+        # wizard 建好之后才能恢复：恢复要拿当前绑定的账号做比对。
+        self._restore_conversation_cache()
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._poller: threading.Thread | None = None
@@ -235,6 +268,11 @@ class MerchantApplication:
         except AttributeError:
             # 不可变的桩对象：不强设，OrderPipeline 会按 False 处理。
             pass
+        if self.events.on_logged_in:
+            try:
+                self.events.on_logged_in()
+            except Exception:
+                LOGGER.debug("logged_in handler skipped", exc_info=True)
 
     def _on_merged(self, message_id: str, event_ids: tuple) -> None:
         """短消息被合并了。告诉界面，让商户能核对。"""
@@ -366,8 +404,89 @@ class MerchantApplication:
 
     # -------------------------------------------------------------- ① 微信
 
+    def product_logged_in(self) -> bool:
+        """产品账号是否已登录。第 1 步的放行判据只认它。"""
+        return self.session is not None
+
+    #: wxid 显示名备注的文件名。内存解不出的群名/人名，商户手备注一次，
+    #: 以后都显示备注。只影响显示，不改库里原文。
+    WXID_ALIAS_NAME = "wxid_aliases.json"
+
+    def _aliases_path(self):
+        return Path(self.data_dir) / self.WXID_ALIAS_NAME
+
+    def load_aliases(self) -> dict:
+        """读备注映射。文件坏了当没有，不挡启动。"""
+        try:
+            raw = json.loads(self._aliases_path().read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {str(key): str(value) for key, value in raw.items() if value}
+
+    def display_name_for(self, wxid_or_name: str) -> str:
+        """显示用名：有备注用备注，没有用原文。从不返回空。"""
+        text = str(wxid_or_name or "")
+        if not text:
+            return ""
+        return self.wxid_aliases.get(text, text)
+
+    def display_name_for_conversation(self, item: Any) -> str:
+        """会话行的显示名：手动备注 > 内存辨认出的真名 > 原始编号。
+
+        之前重画时只查备注表，内存辨认出的真名（``Conversation.name``）
+        被 wxid 原文盖掉 —— 好不容易认出来的名字根本没画出来，
+        第 2 步看起来"一个群名都读不出"。只有备注和真名都没有时
+        才显示原始编号。
+        """
+        raw = str(getattr(item, "wxid", "") or getattr(item, "name", "") or "")
+        if not raw:
+            return ""
+        shown = self.display_name_for(raw)
+        if shown != raw:
+            return shown
+        name = str(getattr(item, "name", "") or "")
+        if name and name != raw:
+            return name
+        return raw
+
+    def set_alias(self, wxid: str, name: str) -> bool:
+        """手备注一个 wxid。空名等于删掉这条。"""
+        wxid, name = str(wxid or "").strip(), str(name or "").strip()
+        if not wxid:
+            return False
+        if name:
+            self.wxid_aliases[wxid] = name
+        else:
+            self.wxid_aliases.pop(wxid, None)
+        try:
+            path = self._aliases_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(self.wxid_aliases, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            LOGGER.debug("save wxid aliases failed", exc_info=True)
+            return False
+        return True
+
     def check_wechat(self) -> WeChatStatus:
-        return self.wizard.check_wechat()
+        before = self.wizard.settings.account_id
+        status = self.wizard.check_wechat()
+        after = self.wizard.settings.account_id
+        # 切号了：旧号的会话名单、缓存统统作废。不清掉，第 2 步会一直
+        # 显示上个号的群 —— 点进去读的也是错的。
+        if before and after and before != after:
+            self._clear_conversation_cache()
+        return status
+
+    def _clear_conversation_cache(self) -> None:
+        try:
+            self._conversations_cache_path().unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def start_wechat(self) -> bool:
         return self.wizard.start_wechat()
@@ -382,11 +501,253 @@ class MerchantApplication:
 
     # ------------------------------------------------------------ ② 会话
 
+    CONVERSATIONS_CACHE_NAME = "conversations_cache.json"
+
+    def _conversations_cache_path(self) -> Path:
+        return Path(self.data_dir) / self.CONVERSATIONS_CACHE_NAME
+
+    def _restore_conversation_cache(self) -> int:
+        """启动时恢复上次的会话列表。读不到、坏了、账号对不上都当没有，不挡启动。"""
+        try:
+            raw = json.loads(self._conversations_cache_path().read_text(encoding="utf-8"))
+        except Exception:
+            return 0
+        if not isinstance(raw, dict):
+            return 0
+        current = str(getattr(self.wizard.settings, "account_id", "") or "")
+        saved_account = str(raw.get("account_id", "") or "")
+        # 缓存是按号存的：换号之后旧名单不能再摆出来。
+        # settings 为空（全新）时也不恢复 —— 等检测出当前号再说。
+        if not current or not saved_account or current != saved_account:
+            return 0
+        rows = raw.get("available")
+        try:
+            return self.conversations.restore_available(rows)
+        except Exception:
+            return 0
+
+    def _save_conversation_cache(self, found: Sequence[Conversation]) -> None:
+        """拉到名单就落盘，连同账号一起存。空结果不覆盖 —— 读失败不等于没有会话。"""
+        if not found:
+            return
+        payload = {
+            "account_id": str(getattr(self.wizard.settings, "account_id", "") or ""),
+            "saved_at": datetime.now().astimezone().strftime("%m-%d %H:%M"),
+            "available": [item.to_dict() for item in found],
+        }
+        path = self._conversations_cache_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            LOGGER.debug("save conversation cache failed", exc_info=True)
+
+    def conversation_cache_info(self) -> str:
+        """给界面看的缓存状态：上次更新时间，或还没有拉取过。"""
+        try:
+            raw = json.loads(self._conversations_cache_path().read_text(encoding="utf-8"))
+            saved_at = raw.get("saved_at") if isinstance(raw, dict) else ""
+        except Exception:
+            return "还没有拉取过"
+        return f"上次更新：{saved_at}" if saved_at else "还没有拉取过"
+
     def refresh_conversations(self) -> list[Conversation]:
+        # 没钥匙先自动提一次（提完直接读，商户不用管中间步骤）。
+        # 只对真实来源自动提：模拟/测试来源不需要钥匙，别去碰真微信。
+        # 微信会新建分片/库（手机导入建 message_1.db），钥匙是旧的就
+        # 覆盖不全 —— 磁盘上有没钥匙的库时也重提，但两次自动提取至少
+        # 间隔 5 分钟，失败了反复扫内存只会越扫越慢，重试走界面按钮。
+        if isinstance(self.conversation_source, RealConversationSource):
+            self._auto_ensure_wcdb_keys()
         found = self.wizard.refresh_conversations()
+        if found:
+            self._save_conversation_cache(found)
         if self.events.on_conversations:
             self.events.on_conversations(found)
         return found
+
+    def _auto_ensure_wcdb_keys(self) -> bool:
+        """该补钥匙就补（没钥匙，或磁盘上有没钥匙的新库），返回钥匙齐否。
+
+        5 分钟节流：失败了反复扫内存只会越扫越慢，重试走界面按钮。
+        只对真实来源调用 —— 模拟/测试来源不需要钥匙，别去碰真微信。
+        """
+        if not self._wcdb_auto_ensure_due():
+            return self._wcdb_keys_complete()
+        self._wcdb_ensure_attempted = True
+        try:
+            import time as _time
+            self._wcdb_ensure_at = _time.time()
+        except Exception:
+            pass
+        try:
+            ok, _ = self.wcdb_status()
+            unkeyed: list = []
+            if ok:
+                unkeyed = self._wcdb_unkeyed()
+        except Exception:
+            ok, unkeyed = False, []
+        if not ok or unkeyed:
+            if unkeyed:
+                self._log(f"微信新建了 {len(unkeyed)} 个库还没钥匙，自动补提一次…")
+            else:
+                self._log("本机数据库还没钥匙，自动提取一次（几十秒）…")
+            try:
+                done, message = self.ensure_wcdb_keys()
+            except Exception as exc:
+                done, message = False, f"提取失败：{exc}"
+            self._log("密钥已就绪" if done else
+                      f"自动提取没成（{message}），可点按钮重试")
+            return done
+        return True
+
+    def _wcdb_keys_complete(self) -> bool:
+        """钥匙齐否：状态 ok 且磁盘上没有没钥匙的库。"""
+        try:
+            ok, _ = self.wcdb_status()
+            if not ok:
+                return False
+            return not self._wcdb_unkeyed()
+        except Exception:
+            return False
+
+    def _wcdb_unkeyed(self) -> list:
+        """磁盘上有、钥匙里没有的库。拿不到目录当没有（别误触发提取）。"""
+        try:
+            from .wcdb import WcdbReader
+            storage = self._wcdb_db_storage()
+            if storage is None:
+                return []
+            return WcdbReader(storage, self.wcdb_keys_path()).unkeyed_databases()
+        except Exception:
+            return []
+
+    def _wcdb_auto_ensure_due(self) -> bool:
+        """这次要不要自动提钥匙：没试过，或上次已超 5 分钟且仍有缺钥匙的库。"""
+        if not getattr(self, "_wcdb_ensure_attempted", False):
+            return True
+        try:
+            import time as _time
+            if _time.time() - float(getattr(self, "_wcdb_ensure_at", 0) or 0) < 300:
+                return False
+        except Exception:
+            return True
+        try:
+            storage = self._wcdb_db_storage()
+            if storage is None:
+                return False
+            from .wcdb import WcdbReader
+            return bool(WcdbReader(storage, self.wcdb_keys_path()).unkeyed_databases())
+        except Exception:
+            return False
+
+    # ------------------------------------------------- 解密库（真名真人数）
+
+    def wcdb_keys_path(self) -> Path:
+        """密钥文件位置（应用数据目录）。没有=还没提取过。"""
+        return Path(self.data_dir) / "wcdb_keys.json"
+
+    def _wcdb_db_storage(self) -> Path | None:
+        """当前登录号的 db_storage 目录。拿不到（没登录）返回 None。"""
+        try:
+            from .WeChatTools import Tools
+            folder = Tools.where_wxid_folder()
+        except Exception:
+            return None
+        if not folder:
+            return None
+        path = Path(folder) / "db_storage"
+        return path if path.is_dir() else None
+
+    def wcdb_status(self) -> tuple[bool, str]:
+        """解密库能不能用。(ok, 说明)。界面据此显示入口或引导。"""
+        from .wcdb import WcdbReader
+
+        storage = self._wcdb_db_storage()
+        if storage is None:
+            return False, "微信还没登录，看不到本机数据库"
+        reader = WcdbReader(storage, self.wcdb_keys_path())
+        if reader.available:
+            return True, "本机数据库可读，列表带真名和人数"
+        return False, reader.error or "还没有提取密钥，提一次以后一直能用"
+
+    def _wcdb_reader(self) -> Any | None:
+        """给 HistoryReader 的解密库来源：有钥匙才有，没有返回 None。
+
+        每次调用都新建（钥匙文件可能刚提出来），prepare 失败由上游吞掉回落。
+        """
+        from .wcdb import WcdbReader
+
+        storage = self._wcdb_db_storage()
+        if storage is None:
+            return None
+        reader = WcdbReader(storage, self.wcdb_keys_path())
+        return reader if reader.available else None
+
+    def list_wcdb_conversations(self, kind: str = "") -> list[Any] | None:
+        """解密库会话（注入给 RealConversationSource 的优先路）。
+
+        返回 None 或抛异常都等于"这条路不通"，上游回落内存路。
+        """
+        from .wcdb import WcdbReader, WcdbUnavailable
+
+        storage = self._wcdb_db_storage()
+        if storage is None:
+            return None
+        reader = WcdbReader(storage, self.wcdb_keys_path())
+        try:
+            return reader.list_conversations(kind)
+        except WcdbUnavailable as exc:
+            LOGGER.debug("wcdb conversations unavailable: %s", exc)
+            return None
+
+    def ensure_wcdb_keys(self, timeout: float = 300.0) -> tuple[bool, str]:
+        """跑上游工具提取一次密钥（后台线程调，会扫几十秒内存）。
+
+        钥匙跟微信大版本走，大版本不变一直能用。返回 (ok, 说明)。
+        """
+        import subprocess
+        import sys
+
+        storage = self._wcdb_db_storage()
+        if storage is None:
+            return False, "微信还没登录，先登录再提取"
+        script = (Path(__file__).resolve().parent.parent.parent
+                  / "third_party" / "wcdb-key-tool" / "wcdb_key_tool_windows.py")
+        if not script.is_file():
+            return False, "提取工具不在（third_party 缺失），按文档手动跑一次"
+        keys_path = self.wcdb_keys_path()
+        try:
+            import os as _os
+
+            env = dict(_os.environ)
+            # 子进程强制 UTF-8：它要打印中文，直接继承的系统编码（这台机器是
+            # cp1252）连 print 都会崩。父进程这边按 UTF-8 解（见下）。
+            env["PYTHONUTF8"] = "1"
+            proc = subprocess.run(
+                [sys.executable, str(script), "extract",
+                 "--db-dir", str(storage), "--output", str(keys_path)],
+                capture_output=True, timeout=timeout, env=env,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except subprocess.TimeoutExpired:
+            return False, "提取超时（超过 %d 秒），微信太忙时重试" % int(timeout)
+        except Exception as exc:
+            return False, f"启动提取失败：{exc}"
+        # 输出按 UTF-8 解（子进程继承的系统编码可能是 cp1252，直接 text=True
+        # 会在中文输出上崩 —— 之前"提取没成功"报的就是这个 charmap错）。
+        # Windows C 运行库的中文控制台编码不足以覆盖微信输出中的全部字符，
+        # 所以这里不信任 locale，认死 UTF-8（子进程被强制 UTF-8，见 env）。
+        stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
+        stderr = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
+        if proc.returncode != 0:
+            tail = (stderr or stdout)[-300:]
+            return False, f"提取没成功：{tail}"
+        ok, _ = self.wcdb_status()
+        if ok:
+            return True, "密钥已就绪，点「读取微信对话列表」刷新即带真名"
+        return False, "工具跑完了但钥匙对不上，微信可能刚升级，重提一次试试"
 
     def choose_history_conversations(self, selected: Sequence[Conversation]) -> None:
         self.wizard.choose_history_conversations(selected)
@@ -415,11 +776,20 @@ class MerchantApplication:
         custom: TimeWindow | None = None,
         max_messages: int = 0,
         mode: str = "",
+        sender_source: str = "",
     ) -> None:
         def work() -> None:
+            # 读之前先保证钥匙齐（手机导入建了新分片时在这里补提，
+            # 不用商户回第 2 步）。后台线程里跑，不卡界面。
+            if isinstance(self.conversation_source, RealConversationSource):
+                try:
+                    self._auto_ensure_wcdb_keys()
+                except Exception:
+                    LOGGER.debug("read-time key ensure failed", exc_info=True)
             result = self.wizard.read_history(
                 range_kind=range_kind, custom=custom, max_messages=max_messages,
                 on_progress=self.events.on_history_progress, mode=mode or ReadMode.RECENT,
+                sender_source=sender_source,
             )
             if self.events.on_history_done:
                 try:
@@ -588,7 +958,7 @@ class MerchantApplication:
 
     # ------------------------------------------------------------ ⑤ 整理
 
-    def analyze(self) -> dict[str, Any] | None:
+    def analyze(self, role: str = "order") -> dict[str, Any] | None:
         """开始智能整理。额度不足时保留已读取的数据。"""
         result_holder: dict[str, Any] = {}
 
@@ -596,7 +966,7 @@ class MerchantApplication:
             from .wizard import QuotaBlocked
 
             try:
-                result_holder["summary"] = self.wizard.analyze()
+                result_holder["summary"] = self.wizard.analyze(role=role)
             except QuotaBlocked as blocked:
                 result_holder["quota"] = blocked.view
                 self._error(blocked.view.headline())
@@ -1016,11 +1386,22 @@ class MerchantApplication:
         return list(Messages.dump_chat_history(**kwargs) or [])
 
     @staticmethod
+    def _record_group_alias(self, wxid: str, name: str) -> None:
+        """读历史时顺手记群名：面板标题里的群名 → 备注映射。
+
+        内存里解不出名的群（资料页没进内存），靠这次翻到的标题补齐。
+        已有备注不覆盖；写盘失败只留日志，不挡读取。
+        """
+        self.set_alias(wxid, name)
+
     def _default_group_members(conversation: Any) -> list[str]:
         """群成员的昵称列表。读取群聊历史时用来认出发送人。
 
         ## 为什么必须传
 
+        不传的话读取器靠「两次遍历对比」反推发送人，对不上时会把发送人写成
+        「红包或转账(无法获取发送人)」这个固定占位串 —— 商户拿到一堆
+        不知道是谁说的话。传了成员就**直接解析**，不依赖那次对比。
         不传的话读取器靠「两次遍历对比」反推发送人，对不上时会把发送人写成
         「红包或转账(无法获取发送人)」这个固定占位串 —— 商户拿到一堆
         不知道是谁说的话。传了成员就**直接解析**，不依赖那次对比。

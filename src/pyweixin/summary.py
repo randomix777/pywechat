@@ -169,6 +169,22 @@ def _as_message(item: Any) -> dict[str, Any]:
     return message
 
 
+#: 摘要正文上限：超了说明模型没按"简报"写，直接判无效。
+#: 网关用它校验模型输出（和网关的 MAX_SUMMARY_CHARS 对齐，改只改这里）。
+SUMMARY_MAX_CHARS = 8000
+
+
+def validate_summary_result(text: Any) -> str:
+    """摘要输出校验：非空纯文本，不超长。过不了抛 ValueError，
+    调用方按"上游未产出可用结果"处理（不扣冤枉账，见网关 invalid_output）。"""
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        raise ValueError("模型没有返回摘要正文")
+    if len(cleaned) > SUMMARY_MAX_CHARS:
+        raise ValueError("模型返回的摘要过长")
+    return cleaned
+
+
 #: 非文字消息在简报里的说法。模型照这个写，**不要自己去解释内容**。
 KIND_LABELS = {
     "image": "图片",

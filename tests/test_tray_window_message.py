@@ -91,5 +91,41 @@ class NoTechnicalLeakTests(unittest.TestCase):
                              f"商户可见文案里出现了 {term}")
 
 
+class RestartAfterUpdateTests(unittest.TestCase):
+    """微信更新后卡死（进程在、界面出不来）要有路可走。
+
+    2026-10-13 实录：4.1.13.65 升 4.1.15.55，5 个新进程跑着，
+    mmui 窗口一个没有，点托盘也没用，只能杀掉重开。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parent.parent
+        cls.ui = (root / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+        cls.tools = (root / "src" / "pyweixin" / "WeChatTools.py").read_text(encoding="utf-8")
+
+    def test_restart_kills_before_relaunch(self):
+        start = self.tools.index("def restart_weixin")
+        block = self.tools[start:start + 1200]
+        self.assertIn("process.kill()", block, "不杀旧进程就重开，两个微信会打架")
+        self.assertIn("os.startfile", block)
+
+    def test_restart_button_only_shows_when_unreadable(self):
+        self.assertIn("def _refresh_wechat_restart", self.ui)
+        self.assertIn("WeChatState.UNREADABLE", self.ui)
+
+    def test_restart_asks_first(self):
+        start = self.ui.index("def _on_restart_wechat")
+        block = self.ui[start:start + 800]
+        self.assertIn("askyesno", block, "杀微信不先问，正在输入的内容就没了")
+
+    def test_version_change_is_recorded(self):
+        from pyweixin.runmode import MerchantSettings
+
+        restored = MerchantSettings.from_dict(
+            MerchantSettings(wechat_version="4.1.15.55").to_dict())
+        self.assertEqual(restored.wechat_version, "4.1.15.55")
+
+
 if __name__ == "__main__":
     unittest.main()

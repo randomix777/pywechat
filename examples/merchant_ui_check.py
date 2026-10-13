@@ -137,6 +137,9 @@ def build() -> tuple[MerchantApplication, MerchantWindow, OrderStore, Path]:
         ),
         history_reader_fn=history_source(),
         simulated=True,
+        # 这里验的是界面与流程，不是认人：固定走成员名单，
+        # 否则默认的头像模式会去点真微信窗口。
+        sender_source="members",
     )
     app.monitor.launcher = sim
     app.attach(object(), Client(), Parse(store, tenant, GROUP), backend_is_model=False)
@@ -406,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
            [c.name for c in app.wizard.conversations.history_selected] == ["社区团购", GROUP],
            f"{[c.name for c in app.wizard.conversations.history_selected]}")
 
-    print("⑤ 第 3 步：点「开始读取」")
+    print("⑤ 第 3 步：点「更新消息」")
     window._on_read_history()
     deadline = time.time() + 10
     while app.wizard.history_result is None and time.time() < deadline:
@@ -428,7 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     nxt = window._widgets.get("read_next")
     record("读完出现「下一步」按钮", nxt is not None and bool(nxt.winfo_ismapped()),
            "可见" if nxt is not None and nxt.winfo_ismapped() else "不可见")
-    record("「开始读取」恢复可点（能再读一次）",
+    record("「更新消息」恢复可点（能再读一次）",
            "disabled" not in str(window._widgets["read_start"].cget("state")))
     # 界面不能说假话：读完了就不该还写着「准备中」。商户看到"准备中"会以为
     # 卡住，于是反复点「开始读取」。这一组来自视觉审计——那条"准备中"
@@ -923,7 +926,8 @@ def main(argv: list[str] | None = None) -> int:
         record("不限量时额度条收起来", False, "读不到")
 
     # 读到 0 条时不能是死路。商户的原话：「没有读取到新信息以后没有下一步」。
-    # 以前 0 条时把「下一步」藏起来，只剩「开始读取」，商户只能反复点读取。
+    # 修订：出口按钮「先看看已经读到的内容」已删，现在的出路是常驻的
+    # 「上一步：改范围」—— 0 条时它必须在。
     _empty_result = SimpleNamespace(
         total_messages=0, cancelled=False, gaps=(), coverage=(),
         headline=lambda: "没有读到消息",
@@ -933,10 +937,10 @@ def main(argv: list[str] | None = None) -> int:
     window._last_read_result = _empty_result
     window._render_read_state(_empty_result)
     pump(window, 0.3)
-    _exit = window._widgets.get("read_empty_exit")
-    record("读到 0 条时有一条走得通的路",
-           _exit is not None and _exit.winfo_ismapped(),
-           "有出口" if _exit is not None and _exit.winfo_ismapped() else "还是死路")
+    _back = _find_button(window, "上一步")
+    record("读到 0 条时有条走得通的路（上一步）",
+           _back is not None and _back.winfo_ismapped(),
+           "有" if _back is not None and _back.winfo_ismapped() else "还是死路")
     _nxt = window._widgets.get("read_next")
     record("读到 0 条时不给出「下一步：智能整理」",
            _nxt is not None and not _nxt.winfo_ismapped(),
@@ -950,16 +954,17 @@ def main(argv: list[str] | None = None) -> int:
     record("0 条时告诉商户之前读到的一个都没丢",
            "没丢" in _rstext, _rstext or "(无)")
 
-    # 读到东西之后，那个出口要收起来，两个出口不能同时亮着
+    # 读到东西之后，「上一步」本来就在，不需要收谁起来。
     _ok_result = SimpleNamespace(
         total_messages=7, cancelled=False, gaps=(), coverage=(),
         headline=lambda: "实际读到 7 条",
     )
     window._render_read_state(_ok_result)
     pump(window, 0.3)
-    record("读到消息后那个出口收起来",
-           _exit is not None and not _exit.winfo_ismapped(),
-           "已收起" if _exit is not None and not _exit.winfo_ismapped() else "还亮着")
+    _back2 = _find_button(window, "上一步")
+    record("读到消息后上一步还在",
+           _back2 is not None and _back2.winfo_ismapped(),
+           "在" if _back2 is not None and _back2.winfo_ismapped() else "没了")
     window._last_read_result = None
 
     # 出问题时的出口。日志装了但商户找不到，等于没装。

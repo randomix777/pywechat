@@ -52,6 +52,7 @@ def build_app(tmp_path, history_reader_fn):
             [(GROUP, ConversationKind.GROUP, 128), ("社区团购", ConversationKind.GROUP, 64)]
         ),
         history_reader_fn=history_reader_fn, simulated=True,
+        sender_source="members",
     )
     return app, store, data_dir
 
@@ -148,7 +149,7 @@ class MonitorMustNotInterruptTests(unittest.TestCase):
         self.app = app
         self.store = store
         self.app.monitor.probe = SimulatedWeChat([WeChatState.LOGGED_IN])
-        # 停在第 3 步：商户正在读历史
+        # 停在第 3 步确认页：商户正在选范围，不能被拽走
         self.app.wizard.step = WizardStep.HISTORY
 
     def tearDown(self):
@@ -170,6 +171,9 @@ class MonitorMustNotInterruptTests(unittest.TestCase):
                          "后台检测把商户弹回了别的步骤 —— 这就是「读完没有下一步」")
 
     def test_it_still_advances_when_still_on_the_first_step(self):
+        from types import SimpleNamespace
+
+        self.app.session = SimpleNamespace(merchant_name="测试商家")
         self.app.wizard.step = WizardStep.WECHAT
         self.app.wizard.check_wechat()
         self.assertEqual(self.app.wizard.step, WizardStep.CONVERSATIONS,
@@ -217,8 +221,8 @@ class ReadCompletionTests(unittest.TestCase):
         self.app.wizard.read_history(range_kind="last_week", max_messages=200)
         self.assertTrue(self.results, "界面没收到读取完成的通知")
         result = self.results[-1]
-        self.assertEqual(self.app.wizard.step, WizardStep.HISTORY,
-                         "读完就自动跳走，商户看不到读到了什么")
+        self.assertEqual(self.app.wizard.step, WizardStep.READ,
+                          "读完就自动跳走，商户看不到读到了什么")
         self.assertGreater(result.total_messages, 0)
 
     def test_the_result_states_how_much_and_which_period(self):
@@ -307,13 +311,10 @@ class NoDeadEndTests(unittest.TestCase):
 
         没有读取到新信息以后没有下一步
 
-    以前 0 条时把「下一步：智能整理」藏起来，只剩「开始读取」和「上一步」。
-    商户的反应是反复点读取 —— 而读不到多半不是他的操作问题，再点一百次
-    还是 0 条。**他其实是卡住了**：没有任何一条能走的路。
-
-    已读到的消息和订单一个字节都没少，所以他需要的是「去看已经有的东西」。
-
-    这一组盯的就是：**任何「读不到」的结局，都必须留一个出口**。
+    修订记录：原来这里摆的是「先看看已经读到的内容」按钮及配套去处，
+    商户反馈取消后的面板不对 —— 决定整个删掉。现在的出路是执行页常驻的
+    「上一步：改范围」：0 条时不给下一步，但永远可以回去换读法重来，
+    不会卡死。
     """
 
     @classmethod
@@ -321,47 +322,21 @@ class NoDeadEndTests(unittest.TestCase):
         cls.source = (Path(__file__).resolve().parent.parent
                       / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
 
-    def _render_block(self) -> str:
-        start = self.source.index("def _render_read_state")
-        end = self.source.index("def _show_empty_exit", start)
-        return self.source[start:end]
+    def test_the_old_exit_button_is_gone(self):
+        self.assertNotIn('"read_empty_exit"', self.source)
+        self.assertNotIn("先看看已经读到的内容", self.source)
+        self.assertNotIn("def _go_home_from_history", self.source)
+        self.assertNotIn("def _show_empty_exit", self.source)
 
-    def test_there_is_a_dedicated_exit_button(self):
-        self.assertIn('"read_empty_exit"', self.source)
-        self.assertIn("先看看已经读到的内容", self.source)
-
-    def test_it_leads_somewhere_real(self):
-        self.assertIn("def _go_home_from_history", self.source)
-        start = self.source.index("def _go_home_from_history")
-        block = self.source[start:start + 700]
-        self.assertIn("WizardStep.DONE", block)
-
-    def test_it_walks_the_wizard_not_just_the_page(self):
-        """页面和向导状态必须一致，否则后续任何按 step 的判断都会读到过期值。"""
-        start = self.source.index("def _go_home_from_history")
-        self.assertIn("self.app.wizard._go(", self.source[start:start + 700])
-
-    def test_zero_messages_shows_it(self):
-        self.assertIn("_show_empty_exit(True)", self._render_block(),
-                      "读到 0 条时必须给出路")
-
-    def test_a_failed_or_unfinished_read_does_not_show_it(self):
-        """还没有结果时不显：还不知道读到没读到。
-
-        注意区分：这里找的是 **state 标签**里那个 ``result is None``，
-        不是上面进度文案里的同名分支。
-        """
-        block = self._render_block()
-        anchor = block.index("if state is not None and self._alive(state):")
-        idx = block.index("if result is None:", anchor)
-        self.assertIn("_show_empty_exit(False)", block[idx:idx + 400])
-
-    def test_reading_something_hides_it(self):
-        self.assertIn("_show_empty_exit(False)", self._render_block())
+    def test_zero_messages_keeps_the_way_back(self):
+        """0 条时「上一步：改范围」必须在，不能只剩下一步。"""
+        start = self.source.index("def _page_read")
+        block = self.source[start:start + 6000]
+        self.assertIn("上一步", block)
 
     def test_the_message_says_nothing_was_lost(self):
         """读不到多半不是操作问题，不能说成「你没弄好」。"""
-        self.assertIn("之前读到的一个都没丢", self._render_block())
+        self.assertIn("之前读到的一个都没丢", self.source)
 
 
 if __name__ == "__main__":

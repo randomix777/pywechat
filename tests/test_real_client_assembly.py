@@ -62,7 +62,8 @@ class WizardHasLocalStoreTests(unittest.TestCase):
         monitor = WeChatMonitor(SimulatedWeChat([WeChatState.LOGGED_IN]), None)
         return Wizard(
             self._settings(), monitor, ConversationRegistry(),
-            HistoryReader(lambda **kw: list(rows()[GROUP])), tenant=self.tenant,
+            HistoryReader(lambda **kw: list(rows()[GROUP]), sender_source="members"),
+            tenant=self.tenant,
             orders=orders,
         )
 

@@ -313,6 +313,32 @@ curl -fsS https://gateway.example.com/healthz
 
 ---
 
+## 9.5. 摘要任务（`summarize`）
+
+整理成一段话走云网关的新任务类型，和订单解析同一套任务机制
+（幂等、取消、归属校验、冻结结算），只换校验与执行：
+
+- `POST /v1/summarize-jobs`（需 `Idempotency-Key`，建议 `sum-<内容哈希>`）
+- `GET /v1/summarize-jobs/{job_id}`（含 `billing` 计费事实）
+- `POST /v1/summarize-jobs/{job_id}/cancel`
+- 请求体：`{"task": "summarize", "model": "<别名，可空>",
+  "messages": [{"sender", "content", "sent_at", "kind"}]}`，
+  最多 200 条，单条上限与订单任务同口径。
+- 不需要绑定客户、不需要商品资料 —— 摘要只转述，不归属。
+  要这两样的请求说明调错了任务。
+- 执行提示词与输出校验的唯一来源是 `pyweixin.summary`
+ （`SUMMARY_SYSTEM_PROMPT` + `validate_summary_result`），
+  客户端传 `system_prompt` 照样被拒。
+- 结算：同一套冻结结算，按实际 token 用量实结（`billing` 下发为准）。
+- 客户端不再读任何本地模型密钥：`summary_task` 只认网关客户端，
+  没登录返回"需要登录产品账号"。
+
+角色与记忆留本地：角色定义、本机规则引擎、客户记忆与订单库不动；
+云端只做模型执行。网关不支持的适配器（如本地规则适配器）接到摘要任务
+时明确失败，不回落成订单解析 —— 跑错任务的账算不清。
+
+---
+
 ## 10. 订阅与用量
 
 - 首期为运营手动开通、续期、调整额度，**不含在线支付**。

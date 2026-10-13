@@ -1,6 +1,7 @@
 import re
 import os
 import time
+import hashlib
 import logging
 import emoji
 import win32gui
@@ -672,12 +673,90 @@ def sender_is_resolved(sender: str | None) -> bool:
     return bool(text) and text not in (UNRESOLVED_SENDER, LEGACY_UNRESOLVED_SENDER)
 
 
-def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_without_name:list[tuple[str,str]]=[],groupMembers:list[str]=[])->tuple[list,list,list,list]:
+def format_sender_display(nickname: str | None, remark: str | None = None) -> str:
+    """把昵称和备注拼成一个发送人显示名。
+
+    两个都有且不一样时返回 ``备注(昵称)``，只有一个时返回有的那个。
+    这样下游「列出昵称和备注」只需要看这一个字段，不用再查表。
+    """
+    nick = str(nickname or "").strip()
+    mark = str(remark or "").strip()
+    if mark in ("无", nick):
+        mark = "" if mark in ("无",) else mark
+        if mark == nick:
+            return nick
+    if nick and mark:
+        return f"{mark}({nick})" if mark != nick else nick
+    return nick or mark
+
+
+def normalize_group_members(groupMembers) -> list[dict]:
+    """把群成员归一化成 ``[{昵称, 备注, 别名, 显示名}]``。
+
+    兼容三种传入形状（老的调用全是第一种，不用改）：
+
+    * ``["张老板", ...]`` —— 只有 UI 名，别名就它一个；
+    * ``[{"昵称":..., "备注":...}, ...]`` —— ``Contacts.get_groupMembers_detail`` 的返回；
+    * ``[("昵称", "备注"), ...]`` —— 手写元组。
+    """
+    normalized = []
+    for entry in groupMembers or []:
+        nickname, remark = "", ""
+        if isinstance(entry, dict):
+            nickname = str(entry.get("昵称") or entry.get("nickname")
+                            or entry.get("name") or "").strip()
+            remark = str(entry.get("备注") or entry.get("remark") or "").strip()
+            if not nickname and not remark:
+                continue
+            if not nickname:
+                nickname = remark
+        elif isinstance(entry, (list, tuple)):
+            nickname = str(entry[0] if len(entry) > 0 and entry[0] is not None else "").strip()
+            remark = str(entry[1] if len(entry) > 1 and entry[1] is not None else "").strip()
+            if not nickname:
+                continue
+        else:
+            nickname = str(entry or "").strip()
+            if not nickname:
+                continue
+        if remark == "无":
+            remark = ""
+        aliases = [a for a in dict.fromkeys([nickname, remark]) if a]
+        normalized.append({
+            "昵称": nickname,
+            "备注": remark,
+            "别名": aliases,
+            "显示名": format_sender_display(nickname, remark),
+        })
+    return normalized
+
+
+def match_group_sender(content: str, normalized: list[dict]) -> tuple[str | None, str]:
+    """按别名从长到短匹配正文开头的发送人。
+
+    Returns:
+        (显示名, 剩下正文)。匹配不上返回 ``(None, 原文)``。
+    """
+    text = str(content or "")
+    candidates = []
+    for member in normalized:
+        for alias in member.get("别名", []):
+            if alias:
+                candidates.append((alias, member["显示名"]))
+    for alias, display in sorted(candidates, key=lambda kv: len(kv[0]), reverse=True):
+        if re.search(rf'^{re.escape(alias)}(?:\s|$)', text):
+            return display, text[len(alias):].strip()
+    return None, text
+
+
+def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_without_name:list[tuple[str,str]]=[],groupMembers:list=[])->tuple[list,list,list,list]:
     '''群聊内的聊天记录解析
     Args:
         details_with_name:开启多选遍历得到的(文本,类名)元祖列表(traverse_chat_history_list)
         details_without_name:不开启多选遍历得到的(文本,类名)文本(traverse_chat_history_list)
-        groupMembers:群成员昵称列表(Contacts.get_groupMembers_info)
+        groupMembers:群成员列表。可以是昵称 ``["张老板"]``，也可以是
+            ``[{"昵称":..., "备注":...}]``（``Contacts.get_groupMembers_detail``）。
+            备注和昵称都会拿去匹配，发送人输出 ``备注(昵称)``，两个一次列全。
     Returns:
         (contents,senders,timestamps,message_types):消息内容,消息发送人,时间戳,消息类型
     '''
@@ -686,16 +765,12 @@ def parse_group_chat_history(details_with_name:list[tuple[str,str]],details_with
     message_types=[]
     timestamps=[]
     if groupMembers:
+        members = normalize_group_members(groupMembers)
         for item in details_with_name or []:
             text,class_name=item[0],item[1]
             timestamp=_history_timestamp(text) or UNRESOLVED_TIMESTAMP
             content=timestamp_pattern_sub(text)
-            sender=None
-            for group_member in sorted(groupMembers,key=lambda value:len(value),reverse=True):
-                if re.search(rf'^{re.escape(group_member)}(?:\s|$)',content):
-                    sender=group_member
-                    content=content[len(group_member):].strip()
-                    break
+            sender, content = match_group_sender(content, members)
             if sender is None:
                 sender=UNRESOLVED_SENDER
             message_type=_group_message_type(class_name,content)
@@ -775,7 +850,9 @@ def parse_group_messages(details_with_name:list[tuple[str]],details_without_name
     Args:
         details_with_name:开启多选遍历得到的文本(traverse_chatList)
         details_without_name:不开启多选遍历得到的文本(traverse_chatList)
-        groupMembers:群成员列表
+        groupMembers:群成员列表。可以是昵称 ``["张老板"]``，也可以是
+            ``[{"昵称":..., "备注":...}]``。备注和昵称都会拿去匹配，
+            发送人输出 ``备注(昵称)``。
     Returns:
         (contents,senders,message_types):消息内容,消息发送人,消息类型
     '''
@@ -783,14 +860,9 @@ def parse_group_messages(details_with_name:list[tuple[str]],details_without_name
     contents=[]
     message_types=[]
     if groupMembers:
+        members = normalize_group_members(groupMembers)
         for text,class_name in details_with_name or []:
-            content=str(text)
-            sender=None
-            for group_member in sorted(groupMembers,key=lambda value:len(value),reverse=True):
-                if re.search(rf'^{re.escape(group_member)}(?:\s|$)',content):
-                    sender=group_member
-                    content=content[len(group_member):].strip()
-                    break
+            sender, content = match_group_sender(str(text), members)
             senders.append(sender or UNRESOLVED_SENDER)
             contents.append(content)
             message_types.append(_group_message_type(class_name,content))
@@ -802,6 +874,342 @@ def parse_group_messages(details_with_name:list[tuple[str]],details_without_name
         contents.append(content)
         message_types.append(_group_message_type(class_name,content))
     return contents,senders,message_types
+
+#: 群聊系统消息类：时间、进群通知等。没有发送人，也不用点头像。
+GROUP_SYSTEM_CLASSES = {'mmui::ChatItemView', 'mmui::ChatSystemInfoItemView'}
+
+#: 头像在气泡内的相对偏移。is_my_bubble 用最左 65px 判头像存在，头像本身
+#: 约 40x40，(left+25, top+25) 落在头像中心附近。探针 examples/avatar_click_probe.py
+#: 若证明偏移不对，只调这两个数，不用改逻辑。
+AVATAR_CLICK_DX = 25
+AVATAR_CLICK_DY = 25
+
+
+def avatar_click_point(item, dx: int = AVATAR_CLICK_DX, dy: int = AVATAR_CLICK_DY) -> tuple[int, int]:
+    """该条消息头像的点击坐标（屏幕坐标）。
+
+    优先用截图实测：在最左头像区找非背景像素团，点它的中心 —— 气泡
+    高度、头像大小随消息而变，固定偏移经常偏（用户实测）。
+    找不着像素团（纯色区、截图失败）才回落固定偏移。
+    """
+    rect = item.rectangle()
+    fallback = (rect.left + dx, rect.top + dy)
+    try:
+        img = item.capture_as_image().convert("RGB")
+    except Exception:
+        return fallback
+    width, height = img.size
+    if width <= 0 or height <= 0:
+        return fallback
+    bg_dark = (0x1E, 0x1E, 0x1F)
+    bg_light = (0xFA, 0xFA, 0xFA)
+    threshold = 120
+
+    def _dist(c1, c2):
+        return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5
+
+    x_end = min(65, width)
+    # 只看顶部头像区：头像顶对齐约 40px 高。长文本、长图的气泡左侧下方
+    # 全是内容，在全高里找会把图片当中头像点开预览。
+    y_end = min(60, height)
+    pixels = img.load()
+    min_x, min_y = x_end, y_end
+    max_x, max_y = -1, -1
+    count = 0
+    step = 2
+    for y in range(0, y_end, step):
+        for x in range(0, x_end, step):
+            r, g, b = pixels[x, y]
+            if _dist((r, g, b), bg_dark) > threshold and _dist((r, g, b), bg_light) > threshold:
+                count += 1
+                if x < min_x:
+                    min_x = x
+                if y < min_y:
+                    min_y = y
+                if x > max_x:
+                    max_x = x
+                if y > max_y:
+                    max_y = y
+    if count < 50 or max_x < 0:
+        return fallback
+    # 截图与屏幕坐标可能差一个 DPI 缩放，按比例换算。
+    try:
+        scale_x = (rect.right - rect.left) / width
+        scale_y = (rect.bottom - rect.top) / height
+    except Exception:
+        return fallback
+    if not (0.5 < scale_x < 4 and 0.5 < scale_y < 4):
+        return fallback
+    center_x = (min_x + max_x) // 2
+    center_y = (min_y + max_y) // 2
+    return (rect.left + int(center_x * scale_x), rect.top + int(center_y * scale_y))
+
+
+def parse_avatar_profile_texts(texts) -> dict:
+    """从头像弹出的资料卡文本里提昵称、备注、微信号。
+
+    约定与 ``Contacts.get_friend_profile`` 一致：第一行非空文本是昵称，
+    各标签（微信号/昵称/备注）的下一行是对应值。迷你卡缺标签时只回昵称，
+    缺什么留空串什么，不抛异常。
+    Returns:
+        {'昵称':..,'备注':..,'微信号':..}
+    """
+    empty = {'昵称': '', '备注': '', '微信号': ''}
+    lines = [str(t or '').strip() for t in (texts or [])]
+    lines = [t for t in lines if t]
+    if not lines:
+        return empty
+    nickname = lines[0]
+    remark = ''
+    wxid = ''
+
+    def _after(label: str) -> str:
+        if label and label in lines and lines.index(label) + 1 < len(lines):
+            return lines[lines.index(label) + 1]
+        return ''
+
+    try:
+        named = _after(Special_Labels.Nickname)
+        if named:
+            nickname = named
+        number = _after(Special_Labels.WxNum)
+        if number and number != '无':
+            wxid = number
+        mark = _after(Special_Labels.Remark)
+        if mark and mark not in ('无', nickname):
+            remark = mark
+    except Exception:
+        pass
+    return {'昵称': nickname, '备注': remark, '微信号': wxid}
+
+
+def bubble_side(item, container) -> str:
+    """气泡靠左还是靠右：left / right / middle（拿不准）。
+
+    纯坐标，不截图。对方的气泡顶在左边，自己的顶在右边 —— 偏得明显
+    （超过 1/6 列表宽）就不用再逐条截图判了；超长消息占满整行、
+    中点落在中间的，才回落像素判断。
+    """
+    try:
+        rect = item.rectangle()
+        area = container.rectangle()
+    except Exception:
+        return "middle"
+    width = area.right - area.left
+    if width <= 0:
+        return "middle"
+    center = (rect.left + rect.right) / 2
+    middle = (area.left + area.right) / 2
+    margin = width / 6
+    if center < middle - margin:
+        return "left"
+    if center > middle + margin:
+        return "right"
+    return "middle"
+
+
+def _is_item_clickable(item, container, margin: int = 8) -> bool:
+    """这条消息的头像点现在点不点得到。
+
+    滚出可视区的条目 children() 照样能拿到，但它的屏幕坐标落在列表外面
+    甚至别的窗口上 —— 点下去就是点错地方。只允许头像区锚点
+    （横向中点，纵向顶部下 30px）在列表矩形内的才点。
+    """
+    try:
+        rect = item.rectangle()
+        area = container.rectangle()
+    except Exception:
+        return False
+    center_x = (rect.left + rect.right) // 2
+    anchor_y = rect.top + 30
+    return (area.left + margin <= center_x <= area.right - margin
+            and area.top + margin <= anchor_y <= area.bottom - margin)
+
+
+def avatar_group_key(item, size: int = 24, min_pixels: int = 50):
+    """头像指纹：同一头像 → 同一 key，可直接合组，一个人只点一次。
+
+    取左侧头像区缩成灰度小图做 md5。太干净（像素不够）返回 None，
+    表示"看不出头像"，调用方对这类条目逐条点 —— 罕见，不影响大局。
+    深浅两种背景都排除在计数外，免得深色模式下背景也被当成头像。
+    """
+    try:
+        img = item.capture_as_image().convert("L")
+    except Exception:
+        return None
+    width, height = img.size
+    if width <= 0 or height <= 0:
+        return None
+    try:
+        data = img.crop((0, 0, min(65, width), min(60, height))).resize((size, size)).tobytes()
+    except Exception:
+        return None
+    mid_tones = sum(1 for px in data if 40 < px < 230)
+    if mid_tones < min_pixels:
+        return None
+    return hashlib.md5(data).hexdigest()
+
+
+def _item_runtime_id(item):
+    try:
+        return item.element_info.runtime_id
+    except Exception:
+        return None
+
+
+def _dismiss_avatar_popup(chat_list=None) -> None:
+    """关掉头像弹出的资料卡，尽量不丢遍历位置。
+
+    ESC 后焦点一般会自动回到刚才那条消息上 —— 这时什么都不做，
+    逐条走才能不断。若焦点真丢了（列表里一条聚焦的都没有），
+    才把焦点设回列表（位置可能重走，调用方的 seen 去重兜住）。
+    """
+    try:
+        pyautogui.press('esc')
+    except Exception:
+        pass
+    time.sleep(0.3)
+    if chat_list is None:
+        return
+    try:
+        focused = [item for item in chat_list.children(control_type='ListItem')
+                   if item.has_keyboard_focus()]
+    except Exception:
+        focused = []
+    if not focused:
+        try:
+            chat_list.set_focus()
+        except Exception:
+            pass
+
+
+def _click_avatar_and_read(item, settle: float = 0.5) -> dict:
+    """点一条消息的头像并读资料卡。
+
+    find_Popover 内部已等 1 秒，所以这里 settle 只需补半秒。
+    弹不出、读不出都抛异常，调用方记 None 继续下一条。
+    """
+    mouse.click(coords=avatar_click_point(item))
+    if settle:
+        time.sleep(settle)
+    # find_Popover 找不到返回 None，不抛异常。
+    profile = Tools.find_Popover()
+    if profile is None:
+        popup = desktop.window(**Windows.PopUpProfileWindow)
+        if popup.exists(timeout=2):
+            profile = popup
+    if profile is None:
+        raise ValueError('点头像后没有弹出资料卡')
+    try:
+        texts = [t.window_text() for t in profile.descendants(control_type='Text')]
+    except Exception:
+        texts = []
+    info = parse_avatar_profile_texts(texts)
+    if not info.get('昵称'):
+        # 卡片内容是自绘的，UIA 文本树里没有 —— 但卡片支持右键复制，
+        # 复制出来的文本第一行一般就是昵称。
+        copied = _copy_avatar_card_text(profile)
+        info = parse_avatar_profile_texts(copied.splitlines())
+    if not info.get('昵称'):
+        raise ValueError('资料卡弹出来了但读不到昵称')
+    return info
+
+
+def _copy_avatar_card_text(profile) -> str:
+    """右键点资料卡 → 复制 → 读剪贴板。
+
+    用户剪贴板先存后还。复制出来是空的就抛异常，调用方记 None。
+    """
+    try:
+        old_clipboard = SystemSettings.get_copied_text()
+    except Exception:
+        old_clipboard = ''
+    try:
+        try:
+            SystemSettings.copy_text_to_clipboard('')
+        except Exception:
+            pass
+        profile.right_click_input()
+        time.sleep(0.5)
+        copy_item = profile.child_window(**MenuItems.CopyMenuItem)
+        if not copy_item.exists(timeout=1):
+            raise ValueError('资料卡右键菜单里没有复制')
+        copy_item.click_input()
+        time.sleep(0.5)
+        try:
+            copied = SystemSettings.get_copied_text()
+        except Exception:
+            copied = ''
+        if not (copied or '').strip():
+            raise ValueError('复制了但剪贴板是空的')
+        return copied
+    finally:
+        try:
+            SystemSettings.copy_text_to_clipboard(old_clipboard or '')
+        except Exception:
+            pass
+
+
+def resolve_group_senders_via_avatar(chat_list, items=None, max_clicks: int = None, settle: float = 0.5) -> list:
+    """逐条点击群聊气泡左侧头像，从弹出的资料卡读昵称/备注，回填发送人。
+
+    专为 4.x 消息文本不带发送人准备：慢（每条约 3~5 秒，复制多两步）、
+    抢鼠标焦点。单条失败只记 None，不中断整批；每次点击后都 ESC 关卡
+    并把焦点还给列表。资料卡文本读不到时自动改走右键复制读剪贴板。
+    Args:
+        chat_list:聊天窗口内的消息列表控件（Lists.FriendChatList）。
+        items:要解析的 ListItem 列表，不传则取当前可见全部。
+        max_clicks:最多点几个头像（试跑先设 3~5），None 不限。
+        settle:点击后补等资料卡的秒数（find_Popover 内部另有 1 秒等待）。
+    Returns:
+        与 items 对齐的 [{'昵称','备注','微信号'} or None]。None = 自己发的 /
+        系统消息 / 点不开——调用方按自己逻辑填（自己填 myName，群里对不上填占位）。
+    """
+    if items is None:
+        try:
+            items = chat_list.children(control_type='ListItem')
+        except Exception:
+            return []
+    results: list = []
+    clicks = 0
+    for item in items:
+        info = None
+        try:
+            if item.class_name() in GROUP_SYSTEM_CLASSES:
+                results.append(None)
+                continue
+            if chat_list is not None:
+                if not _is_item_clickable(item, chat_list):
+                    # 不可见的点了也是点错地方，直接记失败。
+                    results.append(None)
+                    continue
+                side = bubble_side(item, chat_list)
+            else:
+                side = "middle"
+            if side == "right":
+                # 自己的气泡在右边 —— 连截图都不用，直接跳过。
+                results.append(None)
+                continue
+            if side == "middle" and Tools.is_my_bubble(item):
+                # 占满整行的才截图判，左右分明的已经分完了。
+                results.append(None)
+                continue
+        except Exception:
+            results.append(None)
+            continue
+        if max_clicks is not None and clicks >= max_clicks:
+            results.append(None)
+            continue
+        try:
+            info = _click_avatar_and_read(item, settle=settle)
+        except Exception:
+            info = None
+        finally:
+            clicks += 1
+            _dismiss_avatar_popup(chat_list)
+        results.append(info)
+    return results
+
 
 def traverse_chat_history(chat_history_window:WindowSpecification,select:bool,number:int,
 save_detail:bool=False,target_folder:str=None,on_progress=None,cancelled=None)->list[tuple[str,str,list[str]]]:

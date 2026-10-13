@@ -74,6 +74,7 @@ class ReadLoggingTests(unittest.TestCase):
         )
         reader = HistoryReader(
             lambda **_k: list(rows), cursor=None, ui_lock=None,
+            sender_source="members",
         )
         return reader.read(
             [conversation],
@@ -96,7 +97,8 @@ class ReadLoggingTests(unittest.TestCase):
         rows = [{"sender": "张姐", "content": "苹果两箱",
                  "sent_at": "2026-10-02 09:01", "source_id": "s1",
                  "stable_source_id": True}]
-        reader = HistoryReader(lambda **_k: list(rows), cursor=None, ui_lock=None)
+        reader = HistoryReader(lambda **_k: list(rows), cursor=None, ui_lock=None,
+                               sender_source="members")
         reader.read([conversation],
                     TimeWindow(start_delta=timedelta(days=30), label='最近30天'),
                     merchant_id='m1', max_messages=50, mode=ReadMode.RECENT)
@@ -135,7 +137,8 @@ class NoChatContentTests(unittest.TestCase):
                  "stable_source_id": True}]
         from pyweixin.history_read import HistoryReader
 
-        reader = HistoryReader(lambda **_k: list(rows), cursor=None, ui_lock=None)
+        reader = HistoryReader(lambda **_k: list(rows), cursor=None, ui_lock=None,
+                               sender_source="members")
         reader.read([conversation],
                     TimeWindow(start_delta=timedelta(days=30), label='最近30天'),
                     merchant_id='m1', max_messages=50, mode=ReadMode.RECENT)

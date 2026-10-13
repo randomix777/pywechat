@@ -29,6 +29,11 @@ from .wechat_time import parse_timestamp
 
 LOGGER = logging.getLogger(__name__)
 
+#: 群发送人/历史从哪来。members=界面名单（上游原设计），
+#: avatar=逐条点头像（慢、抢焦点），localdb=内存 carve，
+#: wcdb=解密本地库直读（最快最全，要先提取密钥）。
+SENDER_SOURCES = ("members", "avatar", "localdb", "wcdb")
+
 #: 单个会话一次读取的默认条数上限。界面可在"高级"里调小或调大。
 DEFAULT_MAX_MESSAGES = 200
 
@@ -293,6 +298,10 @@ class HistoryResult:
     def actual_range_text(self) -> str:
         """界面上"实际覆盖范围"那一行。"""
         if not self.total_messages:
+            # 更新时 0 条="没有新信息"（正常），其它读法 0 条="没读到"（要查原因）。
+            # 两句不能混：更新点完看到"没有读到任何消息"，商户以为读失败了。
+            if self.mode == ReadMode.UPDATE:
+                return "没有读到新信息"
             return "这次没有读到任何消息"
         earliest = self.earliest.date().isoformat() if self.earliest else "?"
         latest = self.latest.date().isoformat() if self.latest else "?"
@@ -411,6 +420,9 @@ class HistoryReader:
         cursor: HistoryCursor | None = None,
         clock: Callable[[], float] = time.time,
         group_members: Callable[[Any], Sequence[str]] | None = None,
+        sender_source: str = "members",
+        alias_recorder: Callable[[str, str], None] | None = None,
+        wcdb_reader_fn: Callable[[], Any] | None = None,
     ):
         self._reader = reader
         self._ui_lock = ui_lock
@@ -423,8 +435,26 @@ class HistoryReader:
         #: 给群聊取成员昵称列表。取到了读取器就能**直接认出发送人**；
         #: 取不到只能靠两次遍历反推，而对不上时发送人会变成占位串。
         self._group_members = group_members
+        #: 群发送人从哪来。默认 "members"（上游原设计）：成员名单前缀匹配，
+        #: 快、全量，但 4.x 正文里没名字时认不出谁；"avatar" 是逐条点头像
+        #: 的实验链（慢、抢焦点），需要时显式开；"localdb" 是内存 carve；
+        #: "wcdb" 是解密本地库直读（要先提取密钥）。其它值一律按 members。
+        self._sender_source = sender_source if sender_source in SENDER_SOURCES[1:] else "members"
+        #: 解密库来源（应用层注入，有钥匙才有）。按次准备、整轮复用、读完即删。
+        self._wcdb_reader_fn = wcdb_reader_fn
+        self._wcdb_reader: Any = None
+        self._wcdb_ready: dict[str, Any] | None = None
+        self._wcdb_dead = False
         #: 按会话缓存，避免每次读取都重新去取一遍群成员。
         self._members_cache: dict[str, tuple[str, ...]] = {}
+        #: (wxid, 群名) -> 存备注。读历史时面板标题带群名，顺手记下来，
+        #: 解不出名的群也能在列表里显示真名。None 表示不记。
+        self._alias_recorder = alias_recorder
+
+    @property
+    def sender_source(self) -> str:
+        """当前群发送人来源（界面据此提示耗时）。"""
+        return self._sender_source
 
     # ------------------------------------------------------------- controls
 
@@ -497,13 +527,17 @@ class HistoryReader:
         resume: bool = True,
         importer: Callable[[Conversation, Sequence[Mapping[str, Any]], TimeWindow], dict[str, Any]] | None = None,
         mode: str = ReadMode.RECENT,
+        sender_source: str = "",
     ) -> HistoryResult:
         """同步读取。逐个会话串行，随时可取消。
 
         ``mode`` 是商户选的读法，见 :class:`ReadMode`。
+        ``sender_source`` 本次认人方式（members/avatar/localdb/wcdb），空用构造默认值。
+        members 在有钥匙时自动升级 wcdb（解密库直读，不碰界面）。
         """
         if mode not in ReadMode.ALL_KINDS:
             raise ValueError(f"unknown read mode: {mode}")
+        now = datetime.now(timezone.utc)
         now = datetime.now(timezone.utc)
         result = HistoryResult(window=window, mode=mode)
         total = len(conversations)
@@ -513,6 +547,8 @@ class HistoryReader:
                 done=0, total=total, message="准备中", message_target=target
             )
         self._emit(on_progress)
+        # 上一轮解密失败不带到这一轮：每轮开始都重给一次机会。
+        self._wcdb_dead = False
 
         for index, conversation in enumerate(conversations, start=1):
             if self._cancel.is_set():
@@ -531,9 +567,12 @@ class HistoryReader:
                 continue
 
             saved = self.cursor.get(conversation.identity, merchant_id) if (self.cursor and resume) else None
-            if saved is not None and saved["exhausted"] and mode != ReadMode.UPDATE:
-                # 已经翻到底了。增量更新仍然要再读一次 —— 上次读完到现在可能又来了
-                # 新消息，那正是"更新历史"要做的事。
+            if saved is not None and saved["exhausted"] and mode == ReadMode.RECENT:
+                # 只有"按范围读"才跳过已翻到底的会话：同一个窗口短期内不会变，
+                # 重翻一遍只是浪费时间。
+                # 「更新」仍然要再读 —— 上次读完到现在可能又来了新消息。
+                # 「全部」更要重读 —— 点"读取全部"就是要一次全量，跳过等于
+                # 把用户的明确动作当成没说。重复入库由 source_id 去重挡掉。
                 result.coverage.append(
                     ConversationCoverage(
                         conversation=conversation,
@@ -566,6 +605,7 @@ class HistoryReader:
                 messages = self._read_one(
                     conversation, budget,
                     on_progress=self._make_counter(conversation, index, total, target, on_progress),
+                    sender_source=sender_source,
                 )
             except Exception as exc:
                 result.coverage.append(
@@ -620,8 +660,12 @@ class HistoryReader:
             # 这一次读到的消息里，有多少条的发送人**没认出来**。
             # 不记下来就没了：“读到 107 条”与“读到 107 条但每一条的发送人都是占位符”
             # 在界面上完全一样，商户会以为成功了，转头去查“为什么发送人都是那句话”。
+            # 读取器各路产出的都是"消息发送人"（"sender"是入库后的字段名），
+            # 这里查错键会把条条都算成没认出来 —— 第 4 步说没认出来、
+            # 第 5 步却写着名字，自相矛盾就是这么来的。
             unresolved = sum(1 for row in kept
-                              if not sender_is_resolved(row.get("sender")))
+                             if not sender_is_resolved(
+                                 row.get("sender") or row.get("消息发送人")))
             result.coverage.append(
                 ConversationCoverage(
                     conversation=conversation,
@@ -673,6 +717,8 @@ class HistoryReader:
             LOGGER.warning('一条都没读到。选了 %d 个会话：%s',
                            len(conversations),
                            [c.disambiguation for c in conversations])
+        # 解密产物读完即删，不留明文过夜（失败残留由下次 cleanup 顺手清掉）。
+        self._wcdb_cleanup()
         return result
 
     # ------------------------------------------------------------- internals
@@ -713,9 +759,32 @@ class HistoryReader:
         conversation: Conversation,
         max_messages: int,
         on_progress: Callable[[int], None] | None = None,
+        sender_source: str = "",
     ) -> list[dict[str, Any]]:
         # 不把 since 传给 reader：dump_chat_history 和各测试替身都没有这个参数，
         # 「只要上次之后的消息」在 read() 里过滤，不要去改底层签名。
+        # 解密库不分群聊私聊：库里都有，直接走。members 默认在有钥匙时自动升级
+        # （界面已死的微信上 members 必然失败，别让商户干等超时）。
+        source = sender_source if sender_source in SENDER_SOURCES[1:] else self._sender_source
+        if source == "wcdb" or (source == "members" and self._wcdb_usable()):
+            try:
+                return self._read_via_wcdb(conversation, max_messages, on_progress)
+            except Exception as exc:
+                from .wcdb import WcdbNoLocalData
+
+                if isinstance(exc, WcdbNoLocalData):
+                    # 库是好的，只是这个会话本地没存消息：不回落（回落也读不到），
+                    # 把指引原样抛给上游记 error 覆盖，界面照着显示。
+                    raise
+                LOGGER.debug("wcdb 历史不可用，回落老链路：%s", exc)
+                self._wcdb_dead = True
+        # 群聊按来源分流：avatar 逐条点头像，localdb 从内存捡，其它走老链路。
+        source = sender_source if sender_source in SENDER_SOURCES[1:] else self._sender_source
+        if getattr(conversation, "kind", "") == "group":
+            if source == "avatar":
+                return self._read_via_avatar(conversation, max_messages, on_progress)
+            if source == "localdb":
+                return self._read_via_localdb(conversation, max_messages, on_progress)
         # 群聊必须把成员昵称一起传下去。
         #
         # 不传的话，读取器只能靠「开多选遍历一次、不开再遍历一次」两份结果
@@ -725,6 +794,302 @@ class HistoryReader:
         # 「直接解析发送人（无需遍历二次）」。
         #
         # 取成员要开微信界面，所以放在 ui_lock 里面，并且按会话缓存。
+        return self._read_via_members(conversation, max_messages, on_progress)
+
+    @staticmethod
+    def _page_in_history(friend: str, max_messages: int) -> str:
+        """把聊天记录从头翻到底（只按键盘，不点内容），把记录翻进内存。
+
+        返回面板标题（带着群名）；打不开/翻不动返回空串。内存里只有最近
+        碰过的页，不翻就捡不全。页数按条数估（一屏约 15 条），
+        上限 300 页兜底。
+        """
+        from .Uielements import Lists
+        from .WeChatTools import Navigator, Tools
+
+        try:
+            pages = min(300, max(10, int(max_messages or 0) // 15))
+        except (TypeError, ValueError):
+            pages = 60
+        try:
+            window = Navigator.open_chat_history(friend=friend, is_maximize=False,
+                                                 close_weixin=False)
+        except Exception:
+            return ""
+        title = ""
+        try:
+            # 面板标题里就是群名，顺手带走 —— 内存里解不出名的群靠它。
+            title = window.window_text() or ""
+        except Exception:
+            title = ""
+        try:
+            chat_list = window.child_window(**Lists.ChatHistoryList)
+            if not chat_list.exists(timeout=5):
+                return title
+            Tools.cancel_pin(window)
+            try:
+                chat_list.set_focus()
+                chat_list.type_keys("{HOME}")
+            except Exception:
+                pass
+            time.sleep(1.0)
+            idle = 0
+            last_tail = None
+            for _ in range(pages):
+                try:
+                    items = chat_list.children(control_type="ListItem")
+                    tail = items[-1].window_text() if items else None
+                except Exception:
+                    break
+                if tail == last_tail:
+                    idle += 1
+                    if idle >= 3:
+                        break
+                else:
+                    idle = 0
+                last_tail = tail
+                try:
+                    chat_list.type_keys("{PGDN}")
+                except Exception:
+                    break
+                time.sleep(0.4)
+        finally:
+            try:
+                window.close()
+            except Exception:
+                pass
+        return title
+
+    @staticmethod
+    def _page_in_members(friend: str) -> None:
+        """滚一遍群成员名单，把成员资料页翻进内存。
+
+        借现成的取名单流程（打开、滚完、关掉一条龙），名字顺手也拿到了，
+        但这里只为了翻页进内存，返回值直接扔掉。界面已死就秒失败，
+        不卡流程 —— 大不了备注少认几个。
+        search_pages=0：走顶部搜索栏，不逐页翻会话列表，死界面上失败得快。
+        """
+        try:
+            from .WeChatAuto import Contacts
+            Contacts.get_groupMembers_info(group=friend, is_maximize=False,
+                                           search_pages=0, close_weixin=False)
+        except Exception:
+            pass
+
+    def _read_via_avatar(
+        self,
+        conversation: Conversation,
+        max_messages: int,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """群聊头像模式：从聊天记录面板逐条点头像读资料卡，回填发送人。
+
+        与成员名单那条路的区别：不依赖正文里出现名字。读的是聊天记录
+        面板（从头翻到尾，能全量），不是聊天窗口（只看得到最近的）。
+        代价是慢、抢焦点；面板自带时间戳，所以记录有真实发送时间。
+        """
+        from .WeChatAuto import Messages
+
+        kwargs = dict(
+            friend=conversation.name,
+            number=max_messages,
+            close_weixin=False,
+            search_pages=5,
+            is_maximize=False,
+            on_progress=on_progress,
+            cancelled=self._cancel.is_set,
+        )
+        if self._ui_lock is None:
+            records = Messages.dump_senders_via_avatar(**kwargs)
+        else:
+            with self._ui_lock:
+                records = Messages.dump_senders_via_avatar(**kwargs)
+        return [dict(record) for record in (records or [])]
+
+    def _wcdb_usable(self) -> bool:
+        """解密库这条路现在通不通。只做轻量判断（钥匙+文件在不在），
+        真正的拷贝解密在第一次读取时发生，失败一次本轮不再试。"""
+        if self._wcdb_dead or self._wcdb_reader_fn is None:
+            return False
+        if self._wcdb_ready is not None:
+            return True
+        try:
+            reader = self._wcdb_reader_fn()
+        except Exception:
+            return False
+        return reader is not None and bool(getattr(reader, "available", False))
+
+    def _wcdb_prepare(self) -> tuple[Any, dict[str, Any]]:
+        """本轮第一次真正要读时才拷贝解密，多会话复用同一份（含消息全部分片）。"""
+        if self._wcdb_ready is not None and self._wcdb_reader is not None:
+            return self._wcdb_reader, self._wcdb_ready
+        if self._wcdb_reader_fn is None:
+            raise ValueError("no wcdb reader")
+
+        reader = self._wcdb_reader_fn()
+        if reader is None:
+            raise ValueError("no wcdb reader")
+        shards = reader.message_shards() if hasattr(reader, "message_shards") else []
+        ready = reader.prepare(shards)
+        self._wcdb_reader = reader
+        self._wcdb_ready = ready
+        return reader, ready
+
+    def _wcdb_cleanup(self) -> None:
+        reader, self._wcdb_reader = self._wcdb_reader, None
+        ready, self._wcdb_ready = self._wcdb_ready, None
+        if reader is not None:
+            try:
+                reader.cleanup(ready)
+            except Exception:
+                pass
+
+    def _read_via_wcdb(
+        self,
+        conversation: Conversation,
+        max_messages: int,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """解密库直读：不碰微信窗口、不抢焦点，发送人/时间都是库里原文。
+
+        名单里已有 wxid 就直接用，不再按名反查（反查可能串群）。
+        本地没存过这个会话（没表）抛 WcdbNoLocalData 带指引，
+        上游不回落、如实记 error 覆盖；表在但 0 条返回空表。
+        """
+        from .wcdb import message_table_exists, read_messages
+
+        _reader, ready = self._wcdb_prepare()
+        username = str(getattr(conversation, "wxid", "") or conversation.name or "")
+        contact_db = ready["contact/contact.db"]
+        message_dbs = [path for rel, path in ready.items()
+                       if rel.startswith("message/message_")]
+        if not message_table_exists(message_dbs, username):
+            from .wcdb import WcdbNoLocalData
+
+            show = conversation.disambiguation
+            raise WcdbNoLocalData(
+                f"「{show}」没有同步历史信息到微信桌面端，请手动同步："
+                "去电脑版微信里打开这个群、从右上角选择从手机导入聊天历史，"
+                "再回来点「更新消息」。"
+            )
+        try:
+            messages = read_messages(message_dbs, contact_db, username, max_messages)
+        except Exception:
+            # 结构对不上等硬伤：如实抛给上游记 error 覆盖，别吞成 0 条。
+            raise
+        out: list[dict[str, Any]] = []
+        for message in messages:
+            sender = message.sender_display or message.sender_username or conversation.name
+            sent_at = ""
+            if message.timestamp:
+                try:
+                    sent_at = datetime.fromtimestamp(
+                        message.timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    sent_at = ""
+            out.append({
+                "消息发送人": sender,
+                "消息内容": message.content,
+                "消息类型": message.kind,
+                "消息发送时间": sent_at,
+                "来源": "wcdb",
+                "source_id": message.source_id,
+                "stable_source_id": True,
+            })
+            if on_progress is not None:
+                try:
+                    on_progress(len(out))
+                except Exception:
+                    pass
+        return out
+
+    def _read_via_localdb(
+        self,
+        conversation: Conversation,
+        max_messages: int,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """群聊本地库模式：翻页进内存 → 备注名解群 wxid → 捡记录。
+
+        先翻聊天记录（消息进内存），再滚一遍成员名单（成员资料进内存），
+        都是键盘滚动不点。wxid 解不出就回落成员名单老链路 ——
+        解不出不是"没有这个群"，别报假。
+        发送人先解备注名，解不出直接写 wxid（能归属，不断链）；
+        同一次读取内记住解过的，几百条不用扫几百遍。
+        """
+        from . import localdb
+
+        # 面板标题里带着群名：先翻开面板把标题拿走，再滚消息、解 wxid。
+        panel_title = self._page_in_history(conversation.name, max_messages)
+        self._page_in_members(conversation.name)
+        # 名单里已经带 wxid（第 2 步按名找回的群）就直接用，不再按名反查：
+        # 反查是投票制的，重名/转发提到群名时可能投出另一个群，串群读错。
+        wxid = str(getattr(conversation, "wxid", "") or "")
+        if not wxid:
+            wxid = localdb.resolve_group_wxid(conversation.name) or ""
+        if not wxid:
+            return self._read_via_members(conversation, max_messages, on_progress)
+        # 标题里的群名落到备注：解不出名的群，列表和发送人列也能显示真名。
+        if panel_title and self._alias_recorder is not None:
+            group_name = localdb.extract_group_name_from_title(panel_title)
+            if group_name:
+                try:
+                    self._alias_recorder(wxid, group_name)
+                except Exception:
+                    pass
+        out: list[dict[str, Any]] = []
+        try:
+            messages = localdb.read_conversation(wxid, limit=max_messages)
+        except Exception:
+            return self._read_via_members(conversation, max_messages, on_progress)
+        resolved: dict[str, str] = {}
+        for message in messages:
+            sender = ""
+            if message.sender_wxid:
+                if message.sender_wxid not in resolved:
+                    try:
+                        resolved[message.sender_wxid] = localdb.resolve_contact_name(
+                            message.sender_wxid)
+                    except Exception:
+                        resolved[message.sender_wxid] = ""
+                sender = resolved[message.sender_wxid]
+            sent_at = ""
+            if message.timestamp:
+                try:
+                    from datetime import datetime
+                    sent_at = datetime.fromtimestamp(message.timestamp).astimezone().strftime(
+                        "%Y-%m-%d %H:%M")
+                except Exception:
+                    sent_at = ""
+            # 稳定来源 ID：同一条（群+内容+时间）永远同一个，重读不翻倍。
+            # 故意不带发送人 —— 发送人后认出来了，同一条才能合到一起升级，
+            # 而不是名字一变就多一条。
+            import hashlib
+            stable_id = "localdb-" + hashlib.sha256(
+                f"{conversation.name}|{message.content}|{sent_at}".encode("utf-8")).hexdigest()[:20]
+            out.append({
+                "消息发送人": sender or message.sender_wxid or conversation.name,
+                "消息内容": message.content,
+                "消息类型": message.kind or "文本",
+                "消息发送时间": sent_at,
+                "来源": "localdb",
+                "source_id": stable_id,
+                "stable_source_id": True,
+            })
+            if on_progress is not None:
+                try:
+                    on_progress(len(out))
+                except Exception:
+                    pass
+        return out
+
+    def _read_via_members(
+        self,
+        conversation: Conversation,
+        max_messages: int,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """成员名单老链路（localdb 回落用，也是默认行为）。"""
         members = self._members_for(conversation)
         kwargs = dict(
             friend=conversation.name,

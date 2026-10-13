@@ -32,6 +32,7 @@ LISTEN_STOPPED = "stopped"
 LISTEN_STARTING = "starting"
 LISTEN_RUNNING = "running"
 LISTEN_DEGRADED = "degraded"      # 窗口失效/重连中，缺口需要人工补采
+LISTEN_FAILED = "failed"          # 窗口一次都没打开过，重试只是干等，直接停
 
 
 @dataclass
@@ -226,6 +227,7 @@ class LiveListener:
 
     def _loop(self) -> None:
         first = True
+        open_failures = 0
         while not self._stop.is_set():
             try:
                 events = self._collect_once()
@@ -234,6 +236,20 @@ class LiveListener:
                     self.stats.last_error = str(exc)
                     self.stats.reconnects += 1
                     self._record_gap(self._clock())
+                # 一次都没打开过窗口：开窗口本身就不行（4.1.15 起常见），
+                # 后面每轮都是同样漫长的超时。3 次还打不开就停下来明说，
+                # 别无限转圈；中途掉线的不算（first 已经过去），照常重连。
+                if first and self.stats.window_opens == 0:
+                    open_failures += 1
+                    if open_failures >= 3:
+                        self._emit_state(
+                            LISTEN_FAILED,
+                            f"打不开聊天窗口（已试 3 次）：{exc}。"
+                            "请改用历史读取补消息。",
+                        )
+                        self._stop.set()
+                        self._close_dialog()
+                        break
                 self._emit_state(LISTEN_DEGRADED, f"采集失败：{exc}")
                 self._stop.wait(self.poll_seconds)
                 continue

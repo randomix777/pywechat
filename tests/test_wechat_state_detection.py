@@ -183,6 +183,75 @@ class ProbeDecisionTests(unittest.TestCase):
         self.assertNotEqual(status.state, WeChatState.WAITING_SCAN)
 
 
+class WxidFirstDetectionTests(unittest.TestCase):
+    """4.1.15 起主窗口自绘，UIA 里零个可用节点 —— 窗口类名匹配全死。
+
+    登录态改从 wxid 数据目录认（进程映射表，能找到就是登着），
+    不依赖任何窗口类名。2026-10-13 真机：全系统零个 mmui 节点，
+    主窗口是 Qt51514QWindowIcon 套 MMUIRenderSubWindowHW 黑盒。
+    """
+
+    def _probe_with_wxid(self, wxid_folder, monkey_state):
+        from pyweixin.WeChatTools import Tools
+
+        probe = RealWeChatProbe(timeout=0.0)
+        original = (Tools.where_weixin, Tools.is_weixin_running, Tools.where_wxid_folder)
+        Tools.where_weixin = lambda: "C:/fake/Weixin.exe"
+        Tools.is_weixin_running = lambda: True
+        Tools.where_wxid_folder = lambda *a, **k: wxid_folder
+        desktop = _FakeDesktop(**monkey_state)
+        try:
+            import pywinauto
+            original_desktop_class = pywinauto.Desktop
+            pywinauto.Desktop = desktop
+            try:
+                return probe.probe()
+            finally:
+                pywinauto.Desktop = original_desktop_class
+        finally:
+            (Tools.where_weixin, Tools.is_weixin_running,
+             Tools.where_wxid_folder) = original
+
+    def test_logged_in_without_any_window(self):
+        status = self._probe_with_wxid(
+            "C:/x/xwechat_files/wxid_abc123", {"main": False, "login": False})
+        self.assertEqual(status.state, WeChatState.LOGGED_IN)
+        self.assertEqual(status.account_id, "wxid_abc123")
+
+    def test_no_wxid_folder_falls_back_to_windows(self):
+        status = self._probe_with_wxid("", {"main": False, "login": False})
+        self.assertEqual(status.state, WeChatState.UNREADABLE)
+
+
+class StatusCopyShowsTheSpecificReasonTests(unittest.TestCase):
+    """copy() 不能把探针写好的具体指引丢掉换成通用文案。
+
+    托盘那条探针结论写了"点托盘图标、再点重新检测"，原来 copy() 直接
+    丢掉 detail，商户看到的永远是通用版——严重时还让他"重启电脑"。
+    """
+
+    def test_specific_detail_wins_over_generic_copy(self):
+        status = WeChatStatus(WeChatState.UNREADABLE, "微信开着，但窗口收起来了", checked_at=1.0)
+        title, detail, button = status.copy()
+        self.assertEqual(title, "暂时无法读取微信界面")
+        self.assertEqual(detail, "微信开着，但窗口收起来了")
+        self.assertEqual(button, "")
+
+    def test_not_checked_yet_stays_generic(self):
+        status = WeChatStatus(WeChatState.UNREADABLE, "尚未检测", checked_at=0.0)
+        self.assertEqual(status.copy()[1], wechat_state.STATE_COPY[WeChatState.UNREADABLE][1])
+
+    def test_simulated_statuses_stay_generic(self):
+        status = WeChatStatus(WeChatState.NOT_STARTED, "模拟微信状态：not_started",
+                              checked_at=1.0, simulated=True)
+        self.assertEqual(status.copy()[2], "打开微信")
+
+    def test_generic_unreadable_no_longer_says_reboot(self):
+        generic = wechat_state.STATE_COPY[WeChatState.UNREADABLE][1]
+        self.assertNotIn("重启电脑", generic, "先给台阶（托盘/重检测），别一上来就重启电脑")
+        self.assertIn("重新检测", generic)
+
+
 class StatusIsAlwaysAnnouncedTests(unittest.TestCase):
     """关掉微信再点「重新检测」，界面必须跟着变。
 

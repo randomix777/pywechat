@@ -93,6 +93,24 @@ def normalize_message_kind(value: Any) -> str:
     return KIND_ALIASES.get(lowered, "other")
 
 
+def _sender_needs_upgrade(old: Any, new: Any) -> bool:
+    """localdb 重读时，旧发送人值得被新名字替换吗。
+
+    只升不降：旧的是空/占位/wxid/群名/XML 碎片，且新的是干干净净的人名，
+    才换。其它情况一律不动 —— 认错人比没认出来严重。
+    """
+    old_text, new_text = str(old or "").strip(), str(new or "").strip()
+    if not new_text or new_text == old_text:
+        return False
+    if "</" in new_text or ">" in new_text:
+        return False
+    if not old_text or "未识别" in old_text:
+        return True
+    if old_text.endswith("@chatroom") or old_text.startswith(("wxid_", "gh_")):
+        return True
+    return False
+
+
 class OpenAICompatibleParser:
     """Schema-constrained adapter for OpenAI-compatible Chat Completions APIs."""
 
@@ -1220,6 +1238,34 @@ class OrderStore:
                         if matches:
                             for match in matches:self.db.execute("INSERT OR IGNORE INTO message_matches VALUES(?,?,?,'sender_time_content_kind','pending',?)",(tenant,mid,match["id"],self.now()))
                             overlap_candidates+=1
+                elif source_id.startswith(("localdb-", "wcdb-")):
+                    # 稳定 ID 重读：后认出来的信息合到同一条上，而不是多一条。
+                    # localdb 的 source_id 不带发送人，wcdb 早期的解不出压缩正文，
+                    # 都会留下"空壳行"（有 ID、无正文/发送人是群名）。
+                    # 只升级，不降级 —— 原发送人已经是名字的、或新名字带 XML
+                    # 碎片的，都不动；正文只填空不覆盖（同 ID 即同消息）。
+                    old=self.db.execute(
+                        "SELECT sender,sent_at,sent_at_epoch,content FROM messages WHERE id=?",
+                        (mid,)).fetchone()
+                    if old is not None:
+                        updates={}
+                        if sender and "未识别" not in sender \
+                                and (_sender_needs_upgrade(old["sender"], sender)
+                                     or (str(old["sender"] or "").strip() == group
+                                         and sender != group)):
+                            updates["sender"]=sender
+                        if not str(old["content"] or "").strip() and content:
+                            updates["content"]=content
+                        if epoch is not None and old["sent_at_epoch"] is None \
+                                and (not old["sent_at"] or "未识别" in str(old["sent_at"])):
+                            updates["sent_at"]=sent
+                            updates["sent_at_epoch"]=epoch
+                            updates["time_precision"]="exact"
+                        if updates:
+                            self.db.execute(
+                                "UPDATE messages SET {} WHERE id=?".format(
+                                    ",".join(f"{key}=?" for key in updates)),
+                                (*updates.values(),mid))
             rows=self.db.execute("SELECT sent_at FROM messages WHERE import_id=? AND sent_at IS NOT NULL ORDER BY COALESCE(sent_at_epoch,strftime('%s',sent_at)),sent_at",(iid,)).fetchall()
             count=self.db.execute("SELECT COUNT(*) n FROM messages WHERE import_id=?",(iid,)).fetchone()["n"]
             gaps=[known_gap.strip()] if known_gap.strip() else []
@@ -1233,6 +1279,40 @@ class OrderStore:
         sql="SELECT * FROM messages WHERE merchant_id=? AND group_id=?"; args=[tenant,group]
         if import_id: sql+=" AND import_id=?"; args.append(import_id)
         return self.db.execute(sql+" ORDER BY COALESCE(sent_at_epoch,strftime('%s',observed_at)),observed_at,id",args).fetchall()
+
+    def recent_messages(self, tenant: str, groups: Iterable[str] | None, limit: int = 200) -> list[dict[str, Any]]:
+        """所选会话的最新消息（核对页用）。只读，不碰解析、不触发任何任务。
+
+        按时间倒序，时间未知的沉底。调用方只拿来展示与导出。
+        """
+        names = [str(name) for name in (groups or []) if str(name or "").strip()]
+        if not names:
+            return []
+        try:
+            count = max(1, int(limit))
+        except (TypeError, ValueError):
+            count = 200
+        placeholders = ",".join("?" for _ in names)
+        rows = self.db.execute(
+            "SELECT group_id,sender,content,kind,sent_at,sent_at_epoch,observed_at FROM messages"
+            f" WHERE merchant_id=? AND group_id IN ({placeholders})"
+            " ORDER BY COALESCE(sent_at_epoch,strftime('%s',observed_at)) DESC, id DESC"
+            f" LIMIT {count}",
+            [tenant, *names],
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            sent = row["sent_at"] or ""
+            if not sent and row["observed_at"]:
+                sent = str(row["observed_at"])[:16]
+            out.append({
+                "group": row["group_id"] or "",
+                "sender": row["sender"] or "",
+                "content": row["content"] or "",
+                "kind": row["kind"] or "",
+                "sent_at": sent or "时间未知",
+            })
+        return out
 
     def parse_import(self, tenant: str, group: str, import_id: str | None = None, timezone_name: str="America/Toronto") -> dict[str,int]:
         """Use configured model with deterministic validation, or explicit demo rules."""

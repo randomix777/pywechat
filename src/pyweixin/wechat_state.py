@@ -60,6 +60,95 @@ LOGIN_WINDOW_SPECS: tuple[dict[str, Any], ...] = (
 #: 断网提示的标题，同样按语言给全。
 OFFLINE_TITLES: tuple[str, ...] = ("当前网络不可用", "Network unavailable", "目前網路不可用")
 
+#: 微信主窗口可能的标题（中文/英文客户端）。
+_MAIN_WINDOW_TITLES = ("微信", "Weixin", "WeChat")
+
+#: UIA 存活探测的缓存。key 是微信版本号 —— 同一版本内结果不变，
+#: 升级后自动重探。None 表示还没探过。
+_UIA_CACHE: dict[str, bool] = {}
+
+
+def reset_uia_cache() -> None:
+    """清掉 UIA 存活探测缓存（测试用，生产不用调）。"""
+    _UIA_CACHE.clear()
+
+
+def uia_automation_available(version: str = "") -> bool:
+    """微信界面还能不能被程序点（UIA 可用）。
+
+    4.1.15 起主窗口自绘，UIA 树里只有 2 个黑盒 Pane —— 查找、遍历、
+    点击、头像，过去那套全死。探一次记住，同版本不再重复扫。
+    探不到窗口一律按死的算：宁可保守地走内存路，也不让用户干等。
+    """
+    key = str(version or "")
+    if key in _UIA_CACHE:
+        return _UIA_CACHE[key]
+    result = _probe_uia_tree()
+    _UIA_CACHE[key] = result
+    return result
+
+
+def _probe_uia_tree() -> bool:
+    """数微信主窗口下可用 UIA 节点数。超过一小撮才算活的。"""
+    try:
+        from pywinauto import Desktop
+    except Exception:
+        return False
+    try:
+        windows = Desktop(backend="uia").windows()
+    except Exception:
+        return False
+    for window in windows:
+        try:
+            title = window.window_text() or ""
+        except Exception:
+            continue
+        if title not in _MAIN_WINDOW_TITLES:
+            continue
+        try:
+            count = _count_nodes(window, set(), 0)
+        except Exception:
+            continue
+        if count > 10:
+            return True
+    return False
+
+
+def _count_nodes(element, seen: set, depth: int, limit: int = 12) -> int:
+    """数 UIA 子树节点数，到上限就停（别把整棵桌面树扫了）。"""
+    if depth > 4:
+        return 0
+    try:
+        children = element.children()
+    except Exception:
+        return 0
+    total = 0
+    for child in children:
+        try:
+            runtime = child.element_info.runtime_id
+        except Exception:
+            runtime = id(child)
+        if runtime in seen:
+            continue
+        seen.add(runtime)
+        total += 1
+        if total >= limit:
+            return total
+        total += _count_nodes(child, seen, depth + 1, limit)
+        if total >= limit:
+            return total
+    return total
+
+
+def default_sender_source() -> str:
+    """认人方式默认值：UIA 活着走名单，死了走内存。界面和逻辑都问它。"""
+    try:
+        if uia_automation_available():
+            return "members"
+    except Exception:
+        pass
+    return "localdb"
+
 
 class WeChatState:
     """七种互斥状态。字符串值用于持久化与界面判断。"""
@@ -117,7 +206,8 @@ STATE_COPY: dict[str, tuple[str, str, str]] = {
     ),
     WeChatState.UNREADABLE: (
         "暂时无法读取微信界面",
-        "微信窗口在，但内容读不出来。请尝试把微信完全退出后重新打开；仍然不行请重启电脑。",
+        "先看一眼任务栏右下角：微信图标在的话点一下，把窗口打开，再点下面的「重新检测」。"
+        "如果微信明明开着还这样，把微信完全退出后重新打开一次，一般就好了。",
         "",
     ),
 }
@@ -144,7 +234,18 @@ class WeChatStatus:
         return self.state in WeChatState.READY
 
     def copy(self) -> tuple[str, str, str]:
-        return STATE_COPY[self.state]
+        """界面用的 (标题, 说明, 按钮文字)。
+
+        说明优先用这次检测的具体原因 —— 探针里对托盘、登录窗等情况都写了
+        一步一步的指引，原来这里直接丢掉，一律显示通用文案，等于白写。
+        模拟状态与"尚未检测"仍用通用文案：前者只存在于测试里，后者表示
+        还没查过，不能编一条原因出来。
+        """
+        title, generic, button = STATE_COPY[self.state]
+        detail = (self.detail or "").strip()
+        if self.simulated or detail in ("", "尚未检测"):
+            return title, generic, button
+        return title, detail, button
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -204,6 +305,22 @@ class RealWeChatProbe:
                 return WeChatStatus(WeChatState.NOT_STARTED, "微信进程未运行", checked_at=checked_at)
         except Exception as exc:
             return WeChatStatus(WeChatState.UNREADABLE, f"检测进程失败：{exc}", checked_at=checked_at)
+
+        # 2.5) 登录态直判：wxid 数据目录能从进程映射表里找到，
+        # 说明微信正登着号 —— 不依赖任何窗口类名。4.1.15 起主窗口
+        # 变成自绘 Qt（全系统零个 mmui 节点），窗口这条路走不通了。
+        # 找不到再走下面的窗口老路（老版本微信仍然有效）。
+        try:
+            from .WeChatTools import Tools as _Tools2
+
+            wxid_folder = _Tools2.where_wxid_folder()
+        except Exception:
+            wxid_folder = ""
+        if wxid_folder:
+            account_id = wxid_folder.rstrip("\\/").split("\\")[-1].split("/")[-1]
+            self._refresh_ui_language()
+            return WeChatStatus(WeChatState.LOGGED_IN, "检测到已登录的微信", account_id=account_id,
+                                checked_at=checked_at)
 
         # 3) 窗口检查。登录窗口优先于主窗口。
         try:
@@ -565,4 +682,7 @@ __all__ = [
     "WeChatProbe",
     "WeChatState",
     "WeChatStatus",
+    "default_sender_source",
+    "reset_uia_cache",
+    "uia_automation_available",
 ]

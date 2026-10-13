@@ -43,21 +43,30 @@ class LoginIsStepOneTests(unittest.TestCase):
         self.assertIn("_build_login_block(frame)", block,
                       "第 1 步没有登录入口 —— 商户要走到第 4 步才知道")
 
-    def test_the_login_block_comes_before_the_wechat_check(self):
-        """登录是「能不能整理」的前提，不该压在微信检测下面。"""
+    def test_the_wechat_block_comes_before_the_login_block(self):
+        """微信是每一步的前提，主角在上；产品登录是门禁，在下。
+
+        反转记录：之前商户定的是"登录框压在最上面"（登录是整理的前提）。
+        后来改成"不登录产品不许进入下一步"——门禁本身成了流程的一部分，
+        主次就反过来了：先看到卡住流程的微信状态，再看到开门的登录。
+        """
         start = self.source.index("def _page_wechat")
-        block = self.source[start:start + 2000]
+        block = self.source[start:start + 4000]
         self.assertLess(
-            block.index("_build_login_block(frame)"), block.index("wechat_title"),
-            "登录区块要在微信检测之上",
+            block.index("wechat_title"), block.index("_build_login_block(frame)"),
+            "微信状态要在产品登录之上",
         )
 
-    def test_it_says_you_can_work_without_logging_in(self):
-        """最要紧的一句。不说这句，商户会以为登录是所有功能的前提。"""
+    def test_it_says_login_is_required_to_proceed(self):
+        """最要紧的一句。门禁规则下，不登录不许进入下一步，必须明说。
+        
+        反转记录：之前是"登录不挡路"，这里断言"没有登录也能用"。
+        商户改成门禁制后，那句旧文案会变成假话，一起改掉。
+        """
         start = self.source.index("def _render_login")
         block = self.source[start:start + 2500]
-        self.assertIn("没有登录也能用", block)
-        self.assertIn("不扣额度", block)
+        self.assertIn("才能进入下一步", block)
+        self.assertNotIn("没有登录也能用", block)
 
     def test_it_says_what_logging_in_is_actually_for(self):
         """登录不是万能钥匙，得说清只买哪一样能力。"""
@@ -108,12 +117,12 @@ class WrongCauseTests(unittest.TestCase):
         )
 
     def test_the_model_refresh_button_is_disabled_when_logged_out(self):
-        """未登录时按它必然还是空的 —— 又一个点了没反应的按钮。"""
+        """模型选择模块已整个拿掉（模型由云端配置）：整理页没有模型按钮，
+        也就没有"亮着但白点"的按钮。"""
         source = (ROOT / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
-        self.assertIn("def _refresh_model_controls", source)
-        start = source.index("def _refresh_model_controls")
-        block = source[start:start + 900]
-        self.assertIn('state="disabled"', block)
+        self.assertNotIn("def _refresh_model_controls", source)
+        self.assertNotIn("def _build_model_picker", source)
+        self.assertNotIn("刷新模型列表", source)
 
 
 class NoFreeModelPromiseTests(unittest.TestCase):
@@ -183,10 +192,12 @@ class NoFreeModelPromiseTests(unittest.TestCase):
                                  f"{name} 里有商户能看到的「不扣额度」")
 
     def test_the_model_card_says_what_actually_happens(self):
-        """只说「推荐」，不承诺价格。"""
+        """模型选择模块已整个拿掉（模型由云端配置）：界面上没有模型卡片，
+        也就没有"推荐/免费"一类的价格承诺可写错。"""
         text = self._merchant_text("merchant_ui.py")
-        self.assertIn("推荐模型", text)
-        self.assertIn("分析消息会使用您的分析额度", text)
+        self.assertNotIn("推荐模型", text)
+        self.assertNotIn("选择分析模型", text)
+        self.assertNotIn("刷新模型列表", text)
 
     def test_the_login_block_explains_local_reading_without_the_额度_wording(self):
         """读历史只写"存在这台电脑上"，不牵扯额度。"""

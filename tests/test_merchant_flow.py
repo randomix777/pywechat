@@ -107,6 +107,9 @@ class Harness(unittest.TestCase):
             sender=kwargs.pop("sender", lambda target, text: self.sent.append((target, text))),
             events=kwargs.pop("events", AppEvents()),
             simulated=kwargs.pop("simulated", True),
+            # 这里测的是流程与文案，不是认人：群读取固定走成员名单，
+            # 否则默认的头像模式会去点真微信窗口。
+            sender_source="members",
         )
         return self.app
 
@@ -140,8 +143,11 @@ class WeChatDetectionTests(Harness):
         self.assertEqual(sim.launches, 1)
 
     def test_login_completes_advances_to_conversations(self):
+        from types import SimpleNamespace
+
         sim = SimulatedWeChat([WeChatState.NOT_STARTED, WeChatState.WAITING_SCAN, WeChatState.LOGGED_IN])
         app = self.make_app(probe=sim, launcher=sim)
+        app.session = SimpleNamespace(merchant_name="测试商家")
         steps: list[str] = []
         app.wizard.on_step = steps.append
         app.check_wechat()
@@ -154,7 +160,10 @@ class WeChatDetectionTests(Harness):
         self.assertIn("conversations", steps)
 
     def test_already_logged_in_does_not_ask_for_rescan(self):
+        from types import SimpleNamespace
+
         app = self.make_app(probe=SimulatedWeChat([WeChatState.LOGGED_IN]))
+        app.session = SimpleNamespace(merchant_name="测试商家")
         status = app.check_wechat()
         self.assertTrue(status.ready)
         self.assertEqual(app.wizard.step, "conversations")
@@ -167,6 +176,18 @@ class WeChatDetectionTests(Harness):
         status = app.check_wechat()
         self.assertFalse(status.ready)
         self.assertEqual(app.wizard.step, "wechat")
+
+    def test_product_gate_blocks_advance_until_logged_in(self):
+        """微信就绪、但产品没登录时，停在第 1 步不放行。"""
+        from types import SimpleNamespace
+
+        app = self.make_app(probe=SimulatedWeChat([WeChatState.LOGGED_IN]))
+        self.assertIsNone(app.session)
+        app.check_wechat()
+        self.assertEqual(app.wizard.step, "wechat")
+        app.session = SimpleNamespace(merchant_name="测试商家")
+        app.check_wechat()
+        self.assertEqual(app.wizard.step, "conversations")
 
     def test_simulated_results_are_flagged(self):
         app = self.make_app()

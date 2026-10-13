@@ -129,7 +129,7 @@ class ClockIsIndependentTests(unittest.TestCase):
     def test_the_whole_file_reads_what_it_generates(self):
         from tests import test_history_read_modes as modes
 
-        reader = modes.HistoryReader(reader=None, cursor=None)
+        reader = modes.HistoryReader(reader=None, cursor=None, sender_source="members")
         reader._reader = modes._Recorder(
             [modes.message(i, f"第{i}条") for i in range(250)]
         )

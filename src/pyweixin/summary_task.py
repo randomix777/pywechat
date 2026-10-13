@@ -22,41 +22,10 @@
 """
 from __future__ import annotations
 
-import os
-import pathlib
 from typing import Any, Mapping, Sequence
-
-from .summary import DEFAULT_SUMMARY_MODEL, summarize_messages
 
 #: 交给模型的最多消息条数。上下文和钱都有限。
 SUMMARY_MESSAGE_LIMIT = 200
-
-#: 商户本地配置上游密钥用的环境变量名。
-API_KEY_ENV = "PYWEIXIN_OPENROUTER_API_KEY"
-
-#: 本地开发时放密钥的文件。跟着商户数据目录，不进仓库。
-KEY_FILE = pathlib.Path.home() / ".pyweixin_dev" / "openrouter.key"
-
-
-def local_api_key() -> str:
-    """本地配置的上游密钥。读不到返回空串，**不抛异常**。
-
-    **不从一个「会话」对象上取。** 会话里只有商户的 access_token，没有
-    上游密钥 —— 上游密钥是运营配置，不该跟着商户的登录 token 进界面。
-    """
-    key = os.environ.get(API_KEY_ENV, "")
-    if key.strip():
-        return key.strip()
-    try:
-        if KEY_FILE.is_file():
-            return KEY_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
-    try:
-        from .openrouter_adapter import api_key_from_env
-        return api_key_from_env()
-    except Exception:
-        return ""
 
 
 def _app(target: Any) -> Any:
@@ -194,29 +163,124 @@ def _row_to_message(row: Any) -> dict[str, Any]:
             "kind": row["kind"], "sent_at": row["sent_at"]}
 
 
-def run_summary(app: Any, result: Any) -> dict[str, Any]:
-    """真正去调模型。**在后台线程里跑，调用方不许碰界面。**
+#: 云摘要任务轮询间隔（秒）与总超时。网关任务排队+模型执行，
+#: 比直调慢，给足时间；超时不代表扣费（以服务端结算为准）。
+SUMMARY_POLL_INTERVAL = 2.0
+SUMMARY_TIMEOUT = 180.0
 
+
+def _gateway_client(app: Any) -> Any | None:
+    """拿网关客户端：没登录（没 client/没 token）返回 None。"""
+    target = _app(app)
+    client = getattr(target, "client", None)
+    if client is None:
+        return None
+    session = getattr(client, "session", None)
+    if session is None or not getattr(session, "access_token", ""):
+        return None
+    return client
+
+
+def run_summary(app: Any, result: Any) -> dict[str, Any]:
+    """经云网关跑摘要。**在后台线程里跑，调用方不许碰界面。**
+
+    LLM 只走云：这里不再读任何本地密钥。没登录返回"需要登录产品账号"。
     返回 ``{"summary", "error", "cost", "message_count"}``，从不抛异常 ——
     网络不可预期，不该让调用方的线程死掉。
     """
     messages = messages_for_summary(app, result)
     if not messages:
         return {"summary": "", "error": "没读到消息", "cost": None, "message_count": 0}
-    api_key = local_api_key()
-    if not api_key:
-        return {"summary": "", "error": "还没配置模型密钥，联系不上模型",
+    client = _gateway_client(app)
+    if client is None:
+        return {"summary": "", "error": "需要登录产品账号",
                 "cost": None, "message_count": len(messages)}
+    import hashlib as _hashlib
+    import json as _json
+    import time as _time
+
+    payload_messages = [
+        {"sender": str(m.get("sender", ""))[:128],
+         "content": str(m.get("content", ""))[:4000],
+         "sent_at": str(m.get("sent_at", ""))[:64],
+         "kind": str(m.get("kind", "text"))[:32]}
+        for m in messages
+    ]
+    fingerprint = _hashlib.sha256(
+        _json.dumps(payload_messages, ensure_ascii=False).encode("utf-8")).hexdigest()[:32]
+    idempotency_key = f"sum-{fingerprint}"
     try:
-        return summarize_messages(
-            messages,
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key,
-            model=DEFAULT_SUMMARY_MODEL,
-        )
+        submitted = client.submit_summary(
+            {"task": "summarize", "messages": payload_messages},
+            idempotency_key)
+        job_id = str((submitted.get("job") or {}).get("job_id", ""))
+        if not job_id:
+            return {"summary": "", "error": "提交失败，请稍后重试",
+                    "cost": None, "message_count": len(messages)}
     except Exception as exc:
-        return {"summary": "", "error": type(exc).__name__, "cost": None,
-                "message_count": len(messages)}
+        return {"summary": "", "error": _gateway_error_text(exc),
+                "cost": None, "message_count": len(messages)}
+    deadline = _time.time() + SUMMARY_TIMEOUT
+    last_billing: dict = {}
+    while _time.time() < deadline:
+        _time.sleep(SUMMARY_POLL_INTERVAL)
+        try:
+            fetched = client.summary_job(job_id)
+        except Exception:
+            continue  # 轮询失败就下轮再问，不判死刑
+        job = fetched.get("job") or {}
+        billing = fetched.get("billing") or {}
+        if isinstance(billing, dict) and billing.get("available", True):
+            last_billing = billing
+        state = str(job.get("state", ""))
+        if state == "succeeded":
+            text = _summary_text(job.get("result"))
+            if text:
+                return {"summary": text, "error": "",
+                        "cost": _billed_cost(last_billing),
+                        "message_count": len(messages)}
+            return {"summary": "", "error": "摘要结果异常，已转人工核对",
+                    "cost": _billed_cost(last_billing),
+                    "message_count": len(messages)}
+        if state in ("failed", "cancelled"):
+            error = job.get("error") or {}
+            return {"summary": "",
+                    "error": str(error.get("message") or "摘要失败，请稍后重试"),
+                    "cost": _billed_cost(last_billing),
+                    "message_count": len(messages)}
+    return {"summary": "", "error": "摘要超时，结果未知（以服务端结算为准）",
+            "cost": _billed_cost(last_billing), "message_count": len(messages)}
+
+
+def _summary_text(result: Any) -> str:
+    if isinstance(result, Mapping):
+        return str(result.get("summary", "") or "").strip()
+    return ""
+
+
+def _billed_cost(billing: Mapping) -> Any:
+    if not isinstance(billing, Mapping):
+        return None
+    charged = billing.get("charged_micro_usd")
+    try:
+        return int(charged) if charged is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _gateway_error_text(exc: Exception) -> str:
+    """网关异常 → 商户能看懂的一句话。原文透传技术细节的一律改写。"""
+    code = str(getattr(exc, "code", "") or "")
+    message = str(getattr(exc, "message", "") or "")
+    if code in ("network_unavailable", "backend_unavailable"):
+        return "网络暂不可用"
+    if code in ("unauthenticated",):
+        return "需要登录产品账号"
+    if code in ("quota_exhausted", "free_quota_exhausted", "subscription_inactive"):
+        return message or "分析额度不足"
+    if message and len(message) <= 60:
+        return message
+    return "提交失败，请稍后重试"
 
 
 def import_reference(app: Any, kind: str, text: str) -> dict[str, Any]:
@@ -239,10 +303,11 @@ def import_reference(app: Any, kind: str, text: str) -> dict[str, Any]:
 
 __all__ = [
     "SUMMARY_MESSAGE_LIMIT",
+    "SUMMARY_POLL_INTERVAL",
+    "SUMMARY_TIMEOUT",
     "accumulated_coverage",
     "has_messages_for",
     "import_reference",
-    "local_api_key",
     "messages_for_summary",
     "run_summary",
 ]

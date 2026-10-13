@@ -88,7 +88,7 @@ class SequenceReader:
 class ZeroDoesNotStuckTests(unittest.TestCase):
     def setUp(self):
         self.cursor = HistoryCursor(":memory:")
-        self.reader = HistoryReader(reader=None, cursor=self.cursor)
+        self.reader = HistoryReader(reader=None, cursor=self.cursor, sender_source="members")
         self.window = TimeWindow(start_delta=timedelta(days=1), label="recent")
 
     def tearDown(self):

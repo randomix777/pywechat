@@ -56,7 +56,8 @@ class MembersArePassedTests(unittest.TestCase):
         self.friend = Conversation(name="张姐", kind=ConversationKind.FRIEND)
 
     def test_a_group_read_gets_the_member_list(self):
-        reader = HistoryReader(self.reader, group_members=lambda conv: ["张姐", "李叔"])
+        reader = HistoryReader(self.reader, group_members=lambda conv: ["张姐", "李叔"],
+                               sender_source="members")
         reader._read_one(self.group, 20)
         self.assertEqual(self.calls[-1]["groupMembers"], ["张姐", "李叔"],
                          "\u7fa4\u804a\u6ca1\u628a\u6210\u5458\u4f20\u4e0b\u53bb \u2014\u2014 \u8ba4\u4e0d\u51fa\u53d1\u9001\u4eba")
@@ -68,7 +69,7 @@ class MembersArePassedTests(unittest.TestCase):
             asked.append(conv.name)
             return ["不该被叫到"]
 
-        reader = HistoryReader(self.reader, group_members=members)
+        reader = HistoryReader(self.reader, group_members=members, sender_source="members")
         reader._read_one(self.friend, 20)
         self.assertEqual(self.calls[-1]["groupMembers"], [])
         self.assertEqual(asked, [], "\u5355\u804a\u6ca1\u6709\u6210\u5458\u540d\u5355\u8fd9\u56de\u4e8b\uff0c\u4e0d\u8be5\u53bb\u53d6")
@@ -80,14 +81,14 @@ class MembersArePassedTests(unittest.TestCase):
             asked.append(conv.name)
             return ["张姐"]
 
-        reader = HistoryReader(self.reader, group_members=members)
+        reader = HistoryReader(self.reader, group_members=members, sender_source="members")
         reader._read_one(self.group, 20)
         reader._read_one(self.group, 20)
         self.assertEqual(len(asked), 1, "\u6bcf\u6b21\u8bfb\u53d6\u90fd\u53bb\u53d6\u4e00\u904d\u592a\u6162\uff0c\u5e94\u8be5\u7f13\u5b58")
 
     def test_without_a_resolver_it_still_works(self):
         """没配解析器时退回老行为，不能报错。"""
-        reader = HistoryReader(self.reader)
+        reader = HistoryReader(self.reader, sender_source="members")
         reader._read_one(self.group, 20)
         self.assertEqual(self.calls[-1]["groupMembers"], [])
 
@@ -105,7 +106,7 @@ class FailureIsToleratedTests(unittest.TestCase):
             calls.append(kwargs)
             return []
 
-        reader_obj = HistoryReader(reader, group_members=boom)
+        reader_obj = HistoryReader(reader, group_members=boom, sender_source="members")
         group = Conversation(name="鲜果群", kind=ConversationKind.GROUP)
         reader_obj._read_one(group, 20)
         self.assertEqual(calls[-1]["groupMembers"], [],

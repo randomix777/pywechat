@@ -194,6 +194,59 @@ class DeepSeekAdapter:
             },
         )
 
+    def run_summary(
+        self,
+        session_id: str,
+        payload: Mapping[str, Any],
+        job_id: str,
+        deadline: float,
+        cancel_check: Callable[[], bool] | None = None,
+        provider_id: str = "",
+        model_id: str = "",
+    ) -> ParseOutcome:
+        """摘要任务执行：提示词复用 :mod:`pyweixin.summary` 那一份（单源），
+        输出是纯文本简报（不是订单 JSON），用摘要自己的校验。"""
+        from .summary import SUMMARY_MAX_CHARS, SUMMARY_SYSTEM_PROMPT
+        from business_agent.contracts.protocols import PromptPackage
+
+        del session_id
+        if cancel_check is not None and cancel_check():
+            raise AdapterRejected("任务已取消")
+        if str(provider_id) and str(provider_id) != self.provider_id:
+            raise AdapterRejected(MERCHANT_MESSAGES["no_agent"])
+        prompt = PromptPackage(
+            system=SUMMARY_SYSTEM_PROMPT,
+            payload={"messages": payload.get("messages", [])},
+            run_label=job_id,
+            max_output_tokens=2000,
+        )
+        request = _build_agent_request(payload, job_id, deadline)
+        run_model = str(model_id or self._backend.model)
+        try:
+            result = self._backend.run(prompt, request)
+        except UpstreamBalanceExhausted as exc:
+            LOGGER.error("deepseek account balance exhausted: %s", exc)
+            raise AdapterRejected("解析服务账户余额不足，请联系客服") from exc
+        except Exception as exc:
+            raise self._translate(exc) from exc
+        text = validate_summary_result(result.text)
+        return ParseOutcome(
+            result={"summary": text},
+            session_id=session_id,
+            message_id="",
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            model_requested=f"{self.provider_id}/{run_model}",
+            model_reported="",
+            model_confirmed=False,
+            model_warning="上游未返回模型标识，未能独立确认实际执行的模型",
+            request_evidence={
+                "method": "POST",
+                "path_template": "/chat/completions",
+                "provider": self.provider_id,
+            },
+        )
+
     def _translate(self, exc: Exception) -> AdapterError:
         """core 的错误分类 → 网关认识的适配器异常。"""
         category = getattr(exc, "category", None)

@@ -77,6 +77,10 @@ from .utils import traverse_chat_history,traverse_message
 from .utils import parse_chat_history,parse_group_chat_history
 from .utils import parse_messages,parse_group_messages
 from .utils import scan_for_new_messages,get_new_message_num,process_audios
+from .utils import normalize_group_members,match_group_sender,format_sender_display
+from .utils import resolve_group_senders_via_avatar,UNRESOLVED_SENDER,UNRESOLVED_TIMESTAMP
+from .utils import GROUP_SYSTEM_CLASSES as _CHAT_SYSTEM_CLASSES
+from .utils import _group_message_type,_history_timestamp,timestamp_pattern_sub,bubble_side,avatar_group_key
 from .Warnings import ChatHistoryUnavailable, LongTextWarning,NoChatHistoryWarning
 from .WeChatTools import Tools,Navigator,mouse,Desktop
 from .WinSettings import SystemSettings
@@ -93,6 +97,44 @@ from .reliability import MessageDirection,MessageEvent,MessageKind,MessageLedger
 desktop=Desktop(backend='uia')#pywinauto的windows桌面对象(WindowSpecification)实例化
 pyautogui.FAILSAFE=False#防止鼠标在屏幕边缘处造成的误触
 #主要功能：
+
+#: 本人昵称的进程级缓存。昵称不会变，每跑一次读取就去点开自己资料卡
+#: 纯属浪费（还抢焦点、还可能打断遍历）。第一次用到时取一次，此后复用。
+_MY_NICKNAME: str | None = None
+
+
+def _my_nickname() -> str:
+    """取本人昵称，取过一次就缓存。拿不到就填“本人”，不让整次读取失败。"""
+    global _MY_NICKNAME
+    if _MY_NICKNAME:
+        return _MY_NICKNAME
+    try:
+        name = Contacts.check_my_info(close_weixin=False).get('昵称')
+    except Exception:
+        name = None
+    _MY_NICKNAME = name or '本人'
+    return _MY_NICKNAME
+
+
+def _mine_by_side_or_pixels(item, chat_list):
+    """自己发的吗：先看气泡左右位置，拿不准才截图。
+
+    对方在左、自己在右 —— 位置分明的连截图都省了；占满整行的
+    （side == middle）才回落 Tools.is_my_bubble 像素判断。
+    拿不到结论返回 None，调用方按"对不上"处理。
+    """
+    try:
+        side = bubble_side(item, chat_list)
+    except Exception:
+        side = "middle"
+    if side == "right":
+        return True
+    if side == "left":
+        return False
+    try:
+        return Tools.is_my_bubble(item)
+    except Exception:
+        return None
 class AutoReply():
     @staticmethod
     def auto_reply_to_friend(dialog_window:WindowSpecification,duration:str,callback:Callable[[str,list[str]],str],contexts:list[str]=[],save_file:bool=False,save_media:bool=False,target_folder:str=None,close_dialog_window:bool=True)->dict:
@@ -870,6 +912,40 @@ class Contacts():
             print(f'非群聊,无法获取群内成员名称!')
         chat_history_window.close()
         return groupMembers
+
+    @staticmethod
+    def get_groupMembers_detail(group:str,friends_detail:list[dict]=None,is_maximize:bool=None,search_pages:int=None,close_weixin:bool=None)->list[dict]:
+        '''该方法用来获取群聊内所有成员的昵称与备注，一次列全
+        Args:
+            group:群聊名称
+            friends_detail:通讯录明细(Contacts.get_friends_detail)，传入后按昵称
+                补上备注，不传入则只返回UI名、备注为空。传了也不多花时间——
+                只是内存里查表，不再开界面。
+            is_maximize:微信界面是否全屏，默认不全屏
+            search_pages:在会话列表中查找好友时滚动列表的次数
+            close_weixin:任务结束后是否关闭微信，默认关闭
+        Returns:
+            groupMembers_detail:[{'昵称':xxx,'备注':yyy}...]。4.x群成员弹窗的UI
+                文本只暴露一个显示名，拿不到第二个名字时备注为''，调用方可直接
+                把该列表传给dump_chat_history/pull_messages的groupMembers参数，
+                解析时昵称和备注都会拿去匹配，发送人输出「备注(昵称)」。
+        '''
+        names=Contacts.get_groupMembers_info(group=group,is_maximize=is_maximize,search_pages=search_pages,close_weixin=close_weixin)
+        remark_by_nick={}
+        if friends_detail:
+            for info in friends_detail:
+                if isinstance(info,dict):
+                    nick=str(info.get('昵称') or '').strip()
+                    mark=str(info.get('备注') or '').strip()
+                    if nick and mark and mark!='无' and nick not in remark_by_nick:
+                        remark_by_nick[nick]=mark
+        detail=[]
+        for name in names:
+            text=str(name or '').strip()
+            if not text:
+                continue
+            detail.append({'昵称':text,'备注':remark_by_nick.get(text,'')})
+        return detail
 
     @staticmethod
     def get_friends_info(is_maximize:bool=None,close_weixin:bool=None)->list[str]:
@@ -3962,7 +4038,7 @@ class Messages():
             number:获取的消息数量
             is_json:返回结果是否为json字符串,便于导出
             myName:个人昵称
-            groupMembers:friend对应的群成员列表(可提前通过Contacts.get_groupMembers_info导出保存至本地),如果friend是群聊且传入了该参数则无需遍历二次
+            groupMembers:friend对应的群成员列表(可提前通过Contacts.get_groupMembers_info或get_groupMembers_detail导出保存至本地),支持["昵称"]或[{"昵称":..,"备注":..}]，后者按备注和昵称双匹配、发送人输出「备注(昵称)」。如果friend是群聊且传入了该参数则无需遍历二次
             search_pages:打开好友聊天窗口时在会话列表中查找好友时滚动列表的次数,默认为5,一次可查询5-12人,为0时,直接从顶部搜索栏搜索好友信息打开聊天界面
             is_maximize:微信界面是否全屏，默认不全屏
             close_weixin:任务结束后是否关闭微信，默认关闭
@@ -3990,7 +4066,7 @@ class Messages():
                 return messages
             else:
                 is_group_chat=Tools.is_group_chat(main_window)
-                if not is_group_chat and myName is None:myName=Contacts.check_my_info(close_weixin=False).get('昵称')
+                if not is_group_chat and myName is None:myName=_my_nickname()
                 details_with_name=traverse_message(main_window,select=True,number=number)
                 if not is_group_chat:
                     contents,senders,message_tpyes=parse_messages(friend,myName,details_with_name)
@@ -4002,7 +4078,399 @@ class Messages():
             if is_json:chat_history=json.dumps(chat_history,ensure_ascii=False,indent=2)
             if close_weixin:main_window.close()
         return chat_history
-    
+
+    @staticmethod
+    def pull_senders_via_avatar(friend:str,number:int,myName:str=None,max_clicks:int=None,is_json:bool=False,search_pages:int=None,is_maximize:bool=None,close_weixin:bool=None,on_progress=None,cancelled=None)->list[dict]:
+        '''实验性兜底：逐条点头像读资料卡，回填群发送人。
+        4.x 消息文本不带发送人时，普通 pull_messages 只能填"发送人未识别"。
+        该方法对每条对方消息点一次左侧头像，从弹出的资料卡读昵称/备注/微信号。
+        代价：慢（每条约 2~3 秒）、抢鼠标焦点，跑的时候别碰鼠标键盘。
+        先用 max_clicks=3 试跑，探针 examples/avatar_click_probe.py 先过再放开。
+        Args:
+            friend:群聊备注
+            number:要回填发送人的消息条数（最新在前）
+            myName:个人昵称，不传自动取
+            max_clicks:最多点几次头像，默认等于 number，试跑设小
+            is_json:返回结果是否为json字符串
+            search_pages/is_maximize/close_weixin:同 pull_messages
+            on_progress:每回填一条回调一次 ``(已回填条数)``
+            cancelled:无参可调用,返回 True 时立即收工(对应界面上的「取消」)
+        Returns:
+            chat_history:[{'消息发送人':备注(昵称)或昵称,'昵称':..,'备注':..,'微信号':..,'消息内容':..,'消息类型':..}...]，最新在前。
+            点不开的对方消息发送人为"发送人未识别"，自己发的填 myName。
+            注意：聊天窗口气泡不带时间戳，这里没有「消息发送时间」键。
+        '''
+        if is_maximize is None:
+            is_maximize=GlobalConfig.is_maximize
+        if close_weixin is None:
+            close_weixin=GlobalConfig.close_weixin
+        if search_pages is None:
+            search_pages=GlobalConfig.search_pages
+        if max_clicks is None:
+            max_clicks=number
+        records=[]
+        main_window=Navigator.open_dialog_window(friend=friend,is_maximize=is_maximize,search_pages=search_pages)
+        edit_area=main_window.child_window(**Edits.CurrentChatEdit)
+        chat_list=main_window.child_window(**Lists.FriendChatList)
+        if not edit_area.exists(timeout=0.1):
+            print(f'非正常好友或群聊,无法获取聊天信息！')
+            return records
+        if not chat_list.children(control_type='ListItem'):
+            main_window.close()
+            warn(message=f'你与{friend}的聊天记录为空,无法获取聊天信息',category=NoChatHistoryWarning)
+            return records
+        if not Tools.is_group_chat(main_window):
+            # 私聊发送人本来就知道，走正常链路，不点头像
+            if close_weixin:main_window.close()
+            return Messages.pull_messages(friend=friend,number=number,myName=myName,search_pages=search_pages,is_maximize=is_maximize,close_weixin=close_weixin)
+        if myName is None:myName=_my_nickname()
+        try:
+            chat_list.set_focus()
+        except Exception:
+            pass
+        try:
+            chat_list.type_keys('{END}')
+        except Exception:
+            pass
+        time.sleep(0.5)
+        idle_rounds=0
+        last_runtime_id=None
+        guard=0
+        clicks_left=max(0,int(max_clicks))
+        def _cancelled() -> bool:
+            try:
+                return bool(cancelled()) if cancelled is not None else False
+            except Exception:
+                return False
+        def _report() -> None:
+            if on_progress is not None:
+                try:
+                    on_progress(len(records))
+                except Exception:
+                    pass
+        # 焦点逐条往上走（一次上一条），不整页跳：PGUP 跨度不固定会漏条。
+        # 走法与 traverse_message 一致（END 起点 + UP），每条多一次点头像；
+        # 只比相邻两条：虚拟列表会复用条目 id，全局去重会漏消息。
+        while len(records)<number and idle_rounds<3 and not _cancelled() and guard<number*4+30:
+            guard+=1
+            try:
+                selected=[item for item in chat_list.children(control_type='ListItem') if item.has_keyboard_focus()]
+            except Exception:
+                break
+            if not selected:
+                idle_rounds+=1
+                try:
+                    chat_list.type_keys('{PGUP}')
+                except Exception:
+                    break
+                time.sleep(0.3)
+                continue
+            item=selected[0]
+            try:
+                runtime_id=item.element_info.runtime_id
+            except Exception:
+                runtime_id=None
+            key=('rt',runtime_id) if runtime_id is not None else ('id',id(item))
+            if key==last_runtime_id:
+                idle_rounds+=1
+                try:
+                    chat_list.type_keys('{UP}' if idle_rounds<2 else '{PGUP}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+                continue
+            idle_rounds=0
+            last_runtime_id=key
+            try:
+                class_name=item.class_name()
+                content=item.window_text()
+            except Exception:
+                try:
+                    chat_list.type_keys('{UP}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+                continue
+            if class_name in _CHAT_SYSTEM_CLASSES:
+                try:
+                    chat_list.type_keys('{UP}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+                continue
+            mine=_mine_by_side_or_pixels(item, chat_list)
+            if mine is True:
+                records.append({'消息发送人':myName,'昵称':'','备注':'','微信号':'','消息内容':content,'消息类型':_group_message_type(class_name,content)})
+                _report()
+            else:
+                info=None
+                if clicks_left>0:
+                    clicks_left-=1
+                    got=resolve_group_senders_via_avatar(chat_list,[item],max_clicks=1,settle=0.5)
+                    info=got[0] if got else None
+                if info and info.get('昵称'):
+                    nick,mark,wxid=info.get('昵称',''),info.get('备注',''),info.get('微信号','')
+                    sender=format_sender_display(nick,mark)
+                else:
+                    nick,mark,wxid,sender='','','',UNRESOLVED_SENDER
+                records.append({'消息发送人':sender,'昵称':nick,'备注':mark,'微信号':wxid,'消息内容':content,'消息类型':_group_message_type(class_name,content)})
+                _report()
+            if len(records)<number and not _cancelled():
+                try:
+                    chat_list.type_keys('{UP}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+        if is_json:records=json.dumps(records,ensure_ascii=False,indent=2)
+        if close_weixin:main_window.close()
+        return records
+        if is_json:records=json.dumps(records,ensure_ascii=False,indent=2)
+        if close_weixin:main_window.close()
+        return records
+
+    @staticmethod
+    def dump_senders_via_avatar(friend:str,number:int,myName:str=None,max_clicks:int=None,is_json:bool=False,search_pages:int=None,is_maximize:bool=None,close_weixin:bool=None,on_progress=None,cancelled=None)->list[dict]:
+        '''从聊天记录面板逐条点头像，回填群发送人。
+        pull_senders_via_avatar 读的是聊天窗口（只看得到最近的，往上翻不全）；
+        这里读的是聊天记录面板，从头翻到尾，能全量。面板气泡同样左侧带头像，
+        同一套点击与复制逻辑。
+        两遍制：第一遍纯遍历收内容 + 头像指纹，一个都不点（内容零漏读）；
+        第二遍不同头像各点一次，同组一起回填。点不开也不丢条，只是认不出谁。
+        代价：慢、抢鼠标焦点，跑的时候别碰鼠标键盘。
+        Args:
+            friend:群聊备注
+            number:要回填发送人的消息条数（从最早往最新）
+            myName:个人昵称，不传首次遇到自己消息时自动取
+            max_clicks:最多点几次头像，默认等于 number，试跑设小
+            is_json:返回结果是否为json字符串
+            search_pages/is_maximize/close_weixin:同 dump_chat_history
+            on_progress:每回填一条回调一次 ``(已回填条数)``
+            cancelled:无参可调用,返回 True 时立即收工(对应界面上的「取消」)
+        Returns:
+            chat_history:[{'消息发送人':备注(昵称)或昵称,'昵称':..,'备注':..,'微信号':..,'消息内容':..,'消息类型':..,'消息发送时间':..}...]，从早到晚。
+            点不开的对方消息发送人为"发送人未识别"，自己发的填 myName。
+        '''
+        if is_maximize is None:
+            is_maximize=GlobalConfig.is_maximize
+        if close_weixin is None:
+            close_weixin=GlobalConfig.close_weixin
+        if search_pages is None:
+            search_pages=GlobalConfig.search_pages
+        if max_clicks is None:
+            max_clicks=number
+        records=[]
+        chat_history_window=Navigator.open_chat_history(friend=friend,is_maximize=is_maximize,close_weixin=close_weixin,search_pages=search_pages)
+        Tools.cancel_pin(chat_history_window)
+        chat_history_list=chat_history_window.child_window(**Lists.ChatHistoryList)
+        if not _wait_for_chat_history_list(chat_history_list):
+            chat_history_window.close()
+            raise ChatHistoryUnavailable(
+                f'没能打开与{friend}的聊天记录列表（可能微信还没加载完）。'
+                f'这是**读取失败**，不是"没有聊天记录"，重试通常就能读出来。'
+            )
+        win32gui.SendMessage(chat_history_window.handle,win32con.WM_SYSCOMMAND,win32con.SC_MAXIMIZE,0)
+        try:
+            chat_history_list.set_focus()
+            chat_history_list.type_keys('{HOME}')
+        except Exception:
+            pass
+        time.sleep(0.5)
+        def _cancelled() -> bool:
+            try:
+                return bool(cancelled()) if cancelled is not None else False
+            except Exception:
+                return False
+        def _report() -> None:
+            if on_progress is not None:
+                try:
+                    on_progress(len(records))
+                except Exception:
+                    pass
+        # 第一遍：纯遍历收内容 + 头像指纹，一个都不点（除了下面两种当场点）。
+        # 焦点一次下一条（与 _traverse_once 同走法），PGDN 整页跳会漏条。
+        # 注意：只比相邻两条，不做全局去重 —— 聊天列表是虚拟化的
+        # （RecyclerListView），条目 id 会被复用，全局去重会把不同消息
+        # 当同一条跳过，这就是上一版漏读的原因。
+        # runtime 拿不到时用 id() 兜底，保证不卡死（上限 guard 兜底）。
+        avatar_of={}
+        index_of={}
+        idle_rounds=0
+        last_key=None
+        guard=0
+        clicks_left=max(0,int(max_clicks))
+        while len(records)<number and idle_rounds<3 and not _cancelled() and guard<number*4+50:
+            guard+=1
+            try:
+                selected=[item for item in chat_history_list.children(control_type='ListItem') if item.has_keyboard_focus()]
+            except Exception:
+                break
+            if not selected:
+                idle_rounds+=1
+                try:
+                    chat_history_list.type_keys('{PGDN}')
+                except Exception:
+                    break
+                time.sleep(0.3)
+                continue
+            item=selected[0]
+            try:
+                runtime_id=item.element_info.runtime_id
+            except Exception:
+                runtime_id=None
+            key=('rt',runtime_id) if runtime_id is not None else ('id',id(item))
+            if key==last_key:
+                idle_rounds+=1
+                try:
+                    chat_history_list.type_keys('{DOWN}' if idle_rounds<2 else '{PGDN}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+                continue
+            idle_rounds=0
+            last_key=key
+            try:
+                class_name=item.class_name()
+                raw_text=item.window_text()
+            except Exception:
+                try:
+                    chat_history_list.type_keys('{DOWN}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+                continue
+            if class_name=='mmui::ChatItemView':
+                try:
+                    chat_history_list.type_keys('{DOWN}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+                continue
+            timestamp=_history_timestamp(raw_text) or UNRESOLVED_TIMESTAMP
+            content=timestamp_pattern_sub(raw_text)
+            mine=_mine_by_side_or_pixels(item, chat_history_list)
+            if mine is True:
+                if myName is None:
+                    myName=_my_nickname()
+                records.append({'消息发送人':myName,'昵称':'','备注':'','微信号':'','消息内容':content,'消息类型':_group_message_type(class_name,content),'消息发送时间':timestamp})
+                _report()
+            else:
+                akey=avatar_group_key(item)
+                if runtime_id is None or akey is None:
+                    # 当场点：指纹拿不到，或 runtime 缺失（第二遍靠 runtime
+                    # 找条目，缺了它第二遍够不着）—— 趁条目就在眼前。
+                    info=None
+                    if clicks_left>0:
+                        clicks_left-=1
+                        got=resolve_group_senders_via_avatar(chat_history_list,[item],max_clicks=1,settle=0.5)
+                        info=got[0] if got else None
+                    if info and info.get('昵称'):
+                        nick,mark,wxid=info.get('昵称',''),info.get('备注',''),info.get('微信号','')
+                        sender=format_sender_display(nick,mark)
+                    else:
+                        nick,mark,wxid,sender='','','',UNRESOLVED_SENDER
+                else:
+                    avatar_of[key]=akey
+                    nick,mark,wxid,sender='','','',UNRESOLVED_SENDER
+                index_of[key]=len(records)
+                records.append({'消息发送人':sender,'昵称':nick,'备注':mark,'微信号':wxid,'消息内容':content,'消息类型':_group_message_type(class_name,content),'消息发送时间':timestamp})
+                _report()
+            if len(records)<number and not _cancelled():
+                try:
+                    chat_history_list.type_keys('{DOWN}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+        # 第二遍： distinct 头像各点一次，同组一起回填。内容第一遍已收全，
+        # 这里只认人不补内容 —— 点不开也不丢条。
+        pending={}
+        for key,akey in avatar_of.items():
+            pending.setdefault(akey,[]).append(key)
+        if pending and not _cancelled():
+            try:
+                chat_history_list.set_focus()
+                chat_history_list.type_keys('{HOME}')
+            except Exception:
+                pass
+            time.sleep(0.5)
+            seen2=set()
+            idle2=0
+            last2=None
+            guard2=0
+            while pending and idle2<3 and not _cancelled() and guard2<len(pending)*10+50:
+                guard2+=1
+                try:
+                    selected=[item for item in chat_history_list.children(control_type='ListItem') if item.has_keyboard_focus()]
+                except Exception:
+                    break
+                if not selected:
+                    idle2+=1
+                    try:
+                        chat_history_list.type_keys('{PGDN}')
+                    except Exception:
+                        break
+                    time.sleep(0.3)
+                    continue
+                item=selected[0]
+                try:
+                    runtime_id=item.element_info.runtime_id
+                except Exception:
+                    runtime_id=None
+                if runtime_id is None:
+                    # 第一遍 id() 兜底的条目跨遍对不上，第二遍够不着 ——
+                    # 它们在第一遍指纹缺失时已经当场点过，这里跳过。
+                    try:
+                        chat_history_list.type_keys('{DOWN}')
+                    except Exception:
+                        break
+                    time.sleep(0.2)
+                    continue
+                key=('rt',runtime_id)
+                if key==last2 or key in seen2:
+                    idle2+=1
+                    try:
+                        chat_history_list.type_keys('{DOWN}' if idle2<2 else '{PGDN}')
+                    except Exception:
+                        break
+                    time.sleep(0.2)
+                    continue
+                idle2=0
+                last2=key
+                seen2.add(key)
+                akey=avatar_of.get(key)
+                if akey in pending and clicks_left>0:
+                    # 防串：虚拟列表会复用条目，同一个 runtime 滚一圈可能
+                    # 已经是另一条消息。点之前先验指纹，对不上就不点 ——
+                    # 认错人比认不出严重得多。
+                    current=avatar_group_key(item)
+                    if current is not None and current!=akey:
+                        try:
+                            chat_history_list.type_keys('{DOWN}')
+                        except Exception:
+                            break
+                        time.sleep(0.2)
+                        continue
+                    clicks_left-=1
+                    got=resolve_group_senders_via_avatar(chat_history_list,[item],max_clicks=1,settle=0.5)
+                    info=got[0] if got else None
+                    if info and info.get('昵称'):
+                        nick,mark,wxid=info.get('昵称',''),info.get('备注',''),info.get('微信号','')
+                        sender=format_sender_display(nick,mark)
+                        for member_key in pending.pop(akey):
+                            index=index_of.get(member_key)
+                            if index is not None and index<len(records):
+                                records[index]['消息发送人']=sender
+                                records[index]['昵称']=nick
+                                records[index]['备注']=mark
+                                records[index]['微信号']=wxid
+                try:
+                    chat_history_list.type_keys('{DOWN}')
+                except Exception:
+                    break
+                time.sleep(0.2)
+        chat_history_window.close()
+        if is_json:records=json.dumps(records,ensure_ascii=False,indent=2)
+        return records
+
     @staticmethod
     def dump_chat_history(friend:str,number:int,groupMembers:list=[],search_content:str=None,is_json:bool=False,save_detail:bool=False,
     target_folder:str=None,search_pages:int=None,is_maximize:bool=None,close_weixin:bool=None,on_progress=None,cancelled=None)->list[dict]:
@@ -4011,7 +4479,7 @@ class Messages():
         Args:
             friend:好友名称
             number:获取的消息数量
-            groupMembers:friend对应的群成员列表(可提前通过Contacts.get_groupMembers_info导出保存至本地),如果friend是群聊且传入了该参数则直接解析发送人(无需遍历二次)
+            groupMembers:friend对应的群成员列表(可提前通过Contacts.get_groupMembers_info或get_groupMembers_detail导出保存至本地),支持["昵称"]或[{"昵称":..,"备注":..}]，后者按备注和昵称双匹配、发送人输出「备注(昵称)」。如果friend是群聊且传入了该参数则直接解析发送人(无需遍历二次)
             search_content:搜索关键字,传入后会先在顶部搜索关键字然后向下遍历
             is_json:返回结果是否为json字符串,便于导出
             save_detail:是否将保存聊天记录明细包括,图片,视频,文件,聊天记录.json
@@ -4038,7 +4506,7 @@ class Messages():
         main_window=Navigator.open_dialog_window(friend=friend,is_maximize=is_maximize,search_pages=search_pages)
         is_group_chat=Tools.is_group_chat(main_window)
         if not is_group_chat:
-            myName=Contacts.check_my_info(close_weixin=close_weixin).get('昵称')      
+            myName=_my_nickname()
         chat_history_window=Navigator.open_chat_history(friend=friend,is_maximize=is_maximize,close_weixin=close_weixin,search_pages=search_pages)
         Tools.cancel_pin(chat_history_window)
         if isinstance(search_content,str):
@@ -4389,7 +4857,9 @@ class Monitor():
         Args:
             dialog_window:好友单独的聊天窗口或主界面内的聊天窗口,可使用Navigator内的方法打开
             duraiton:监听持续时长,监听消息持续时长,格式:'s','min','h'单位:s/秒,min/分,h/小时
-            groupMembers:如果监听的是群聊需要传入群成员,否则无法获取到具体的消息发送人,需要自行从文本内容中获取
+            groupMembers:群成员列表,可以是昵称 ``["张老板"]``，也可以是
+                ``[{"昵称":..., "备注":...}]``（``Contacts.get_groupMembers_detail``）。
+                备注和昵称都会拿去匹配，发送人输出 ``备注(昵称)``。
             save_file:是否保存文件,需开启自动下载文件并设置为1024MB,默认为False
             save_media:是否保存图片,注意不要在多线程中设置为True,针对单个好友可以设置为True,默认为False
             target_folder:文件或图片视频的保存文件夹
@@ -4429,17 +4899,9 @@ class Monitor():
                     senders.append(sender)
                     contents.append(content)
             if is_group and groupMembers:
+                members=normalize_group_members(groupMembers)
                 for text in texts:
-                    sender=None
-                    for groupMember in sorted(groupMembers,key=lambda value:len(value),reverse=True):
-                        search_result=re.search(rf'^({re.escape(groupMember)})\s',text)
-                        if search_result is not None:
-                            sender=search_result.group(1)
-                            break
-                    if sender is None:
-                        content=text
-                    else:
-                        content=re.sub(rf'^{re.escape(sender)}\s','',text)
+                    sender,content=match_group_sender(str(text),members)
                     senders.append(sender)
                     contents.append(content)
             if is_group and not groupMembers:
