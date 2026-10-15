@@ -391,6 +391,145 @@ class CloudSummaryTests(unittest.TestCase):
         self.assertIn("服务暂时不可用", outcome["error"])
 
 
+class ReduceOverflowTests(unittest.TestCase):
+    """合并超长不能整单失败：保留分段，并列返回。
+
+    回归真机 case：Bond 群 50 条消息，map 段段都很长，reduce 一合并就过
+    8000 字上限，整单失败 —— 而且输入不变，重试必败，等于这个群永远分析
+    不出来。兜底后每段各自合规，只是没能压成一份。
+    """
+
+    class _LongClient:
+        def chat_completions(self, model, messages, **kwargs):
+            return {"choices": [{"message": {"content": "x" * 9000}}]}
+
+    class _EmptyClient:
+        def chat_completions(self, model, messages, **kwargs):
+            return {"choices": [{"message": {"content": ""}}]}
+
+    def test_an_overlong_merge_keeps_both_segments(self):
+        out = summary_task._reduce_summary_reports(
+            self._LongClient(), "m", "", "g",
+            ["【纯文字】\n第一段", "【图片】\n第二段"], {}, None, 8000)
+        self.assertIn("第一段", out)
+        self.assertIn("第二段", out)
+
+    def test_an_empty_merge_still_raises(self):
+        """拿不到内容是模型故障，不是超长 —— 不能拿空段充数，必须抛。"""
+        with self.assertRaises(ValueError):
+            summary_task._reduce_summary_reports(
+                self._EmptyClient(), "m", "", "g", ["a", "b"], {}, None, 8000)
+
+
+class CancelAnalysisTests(unittest.TestCase):
+    """分析必须能取消：已完成的分段保留，没开始的不花钱。
+
+    回归真机 case：Bond 群分析卡在 reduce，第二批就是合并不上，
+    界面只能干等 —— 以前连停都停不下来，只能等 180 秒超时。
+    取消是"停新的、留旧的"：已完成分段入缓存，重试复用。
+    """
+
+    def _messages(self):
+        return [{"sender": "A", "content": "甲要苹果",
+                 "sent_at": "2026-10-13 10:00", "kind": "text",
+                 "group_id": "g1", "group_label": "群一"},
+                {"sender": "B", "content": "乙要梨",
+                 "sent_at": "2026-10-13 10:01", "kind": "text",
+                 "group_id": "g2", "group_label": "群二"}]
+
+    def _jyi_app(self, client):
+        return types.SimpleNamespace(client=client, orders=None, tenant="t")
+
+    def test_jyi_cancel_keeps_the_completed_group(self):
+        from pyweixin.jyi_client import JYIClient
+
+        client = JYIClient()
+        client.session = types.SimpleNamespace(access_token="tok")
+        calls = []
+
+        def _chat(model, messages, **kwargs):
+            calls.append(model)
+            return {"choices": [{"message": {"content": "报告%d" % len(calls)}}]}
+
+        client.chat_completions = _chat
+        with unittest.mock.patch(
+                "pyweixin.summary_task.messages_for_summary",
+                return_value=self._messages()):
+            outcome = summary_task.run_summary(
+                self._jyi_app(client), object(),
+                is_cancelled=lambda: len(calls) >= 1)
+        self.assertTrue(outcome.get("cancelled"), outcome)
+        self.assertEqual(outcome.get("error"), "")
+        self.assertIn("报告1", outcome["summary"])
+        self.assertNotIn("报告2", outcome["summary"])
+        self.assertEqual(outcome["completed_groups"], ["g1"])
+
+    def test_cancel_before_start_makes_no_model_calls(self):
+        from pyweixin.jyi_client import JYIClient
+
+        client = JYIClient()
+        client.session = types.SimpleNamespace(access_token="tok")
+        calls = []
+
+        def _chat(model, messages, **kwargs):
+            calls.append(model)
+            return {"choices": [{"message": {"content": "报告"}}]}
+
+        client.chat_completions = _chat
+        with unittest.mock.patch(
+                "pyweixin.summary_task.messages_for_summary",
+                return_value=self._messages()):
+            outcome = summary_task.run_summary(
+                self._jyi_app(client), object(),
+                is_cancelled=lambda: True)
+        self.assertTrue(outcome.get("cancelled"))
+        self.assertEqual(calls, [])
+        self.assertEqual(outcome["summary"], "")
+        self.assertEqual(outcome.get("error"), "")
+
+    def test_gateway_cancel_reaches_the_server_job(self):
+        cancelled_jobs = []
+        flag = {"stop": False}
+
+        class FakeClient:
+            session = types.SimpleNamespace(access_token="tok")
+
+            def submit_summary(self, request, key):
+                flag["stop"] = True
+                return {"job": {"job_id": "job1"}}
+
+            def summary_job(self, job_id):
+                return {"job": {"job_id": "job1", "state": "running"},
+                        "billing": {}}
+
+            def cancel_summary(self, job_id):
+                cancelled_jobs.append(job_id)
+                return {}
+
+        with unittest.mock.patch(
+                "pyweixin.summary_task.messages_for_summary",
+                return_value=[{"sender": "张姐", "content": "苹果两箱",
+                               "sent_at": "2026-10-13 10:00", "kind": "text"}]), \
+            unittest.mock.patch("pyweixin.summary_task.SUMMARY_POLL_INTERVAL", 0):
+            outcome = summary_task.run_summary(
+                self._jyi_app(FakeClient()), object(),
+                is_cancelled=lambda: flag["stop"])
+        self.assertTrue(outcome.get("cancelled"), outcome)
+        self.assertEqual(outcome.get("error"), "")
+        self.assertEqual(cancelled_jobs, ["job1"],
+                         "取消必须顺手撤掉服务端的 job，不然它在那边空转")
+
+    def test_reduce_cancel_raises_instead_of_merging(self):
+        class FakeClient:
+            def chat_completions(self, model, messages, **kwargs):
+                return {"choices": [{"message": {"content": "合并结果"}}]}
+
+        with self.assertRaises(summary_task.AnalysisCancelled):
+            summary_task._reduce_summary_reports(
+                FakeClient(), "m", "", "g", ["分段一", "分段二"],
+                {}, None, 8000, is_cancelled=lambda: True)
+
+
 class GatewayErrorTextTests(unittest.TestCase):
     """网关原话不能掉地上：读错字段就是一句"提交失败"打发人。"""
 

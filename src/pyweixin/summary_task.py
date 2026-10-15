@@ -542,11 +542,26 @@ def _emit_stream(on_stream: Any, text: str, chunk: int = 1000) -> None:
         on_stream(text[start:start + step])
 
 
+class AnalysisCancelled(Exception):
+    """用户取消了分析。
+
+    不是失败：已完成的分段已经入缓存、调用方按部分完成组装结果，
+    商户重试时会复用它们。只在工作线程内部流转，不出这个模块。
+    """
+
+
+def _raise_if_cancelled(is_cancelled: Any) -> None:
+    """检查取消标记。界面在工作线程外置位，这里只读。"""
+    if callable(is_cancelled) and is_cancelled():
+        raise AnalysisCancelled()
+
+
 def _complete_summary_prompt(client: Any, model: str,
                              prompt_messages: list[dict[str, Any]],
                              max_output_tokens: int | None = None,
                              on_progress: Any = None,
-                             on_stream: Any = None) -> str:
+                             on_stream: Any = None,
+                             is_cancelled: Any = None) -> str:
     """Complete one bounded report, continuing once the model hits its output cap."""
     from .jyi_parse import (
         SUMMARY_MAX_OUTPUT_TOKENS, empty_text_detail, extract_text,
@@ -587,6 +602,8 @@ def _complete_summary_prompt(client: Any, model: str,
         raise ValueError(empty_text_detail(body))
     continuations = 0
     while output_was_truncated(body) and continuations < 2:
+        # 续写是一次新的模型调用：取消就停，别再花一次钱。
+        _raise_if_cancelled(is_cancelled)
         original_user = prompt_messages[-1].get("content", "")
         if isinstance(original_user, list):
             original_user = "\n".join(
@@ -618,7 +635,8 @@ def _complete_jyi_chunk(client: Any, model: str, role_id: str,
                         max_output_tokens: int | None = None,
                         max_document_chars: int = 20000,
                         split_depth: int = 0,
-                        on_stream: Any = None) -> str:
+                        on_stream: Any = None,
+                        is_cancelled: Any = None) -> str:
     """Analyze a chunk, splitting it further only if the model hits its output cap."""
     from .jyi_parse import (
         add_document_text,
@@ -638,7 +656,7 @@ def _complete_jyi_chunk(client: Any, model: str, role_id: str,
                                    max_chars_per_document=max_document_chars)
     try:
         return _complete_summary_prompt(client, model, prompt, max_output_tokens,
-                                        on_progress, on_stream)
+                                        on_progress, on_stream, is_cancelled)
     except ValueError as exc:
         reason = str(exc)
         hit_output_cap = "长度上限" in reason or "输出上限" in reason
@@ -650,25 +668,29 @@ def _complete_jyi_chunk(client: Any, model: str, role_id: str,
         middle = len(chunk) // 2
         if on_progress:
             on_progress(f"本批内容较长，自动拆分为 {middle} 条和 {len(chunk) - middle} 条继续分析")
+        _raise_if_cancelled(is_cancelled)
         first = _complete_jyi_chunk(client, model, role_id, chunk[:middle], on_progress,
                                     max_output_tokens, max_document_chars, split_depth + 1,
-                                    on_stream)
+                                    on_stream, is_cancelled)
+        _raise_if_cancelled(is_cancelled)
         second = _complete_jyi_chunk(client, model, role_id, chunk[middle:], on_progress,
                                      max_output_tokens, max_document_chars, split_depth + 1,
-                                     on_stream)
+                                     on_stream, is_cancelled)
         return first + "\n\n" + second
 
 
 def _reduce_summary_reports(client: Any, model: str, role_id: str, group: str,
                             reports: list[str], cache: dict[str, str], app: Any,
                             max_output_tokens: int, on_progress: Any = None,
-                            on_stream: Any = None) -> str:
+                            on_stream: Any = None,
+                            is_cancelled: Any = None) -> str:
     """Merge analysis batches pairwise so document-heavy chats never make one huge reducer prompt."""
     from .jyi_parse import build_role_analysis_messages, build_summary_messages
 
     level = 1
     current = list(reports)
     while len(current) > 1:
+        _raise_if_cancelled(is_cancelled)
         merged: list[str] = []
         pairs = (len(current) + 1) // 2
         for index in range(0, len(current), 2):
@@ -694,22 +716,38 @@ def _reduce_summary_reports(client: Any, model: str, role_id: str, group: str,
                     "\n以上是同一会话不同类别或批次的分析结果。请合并为一份报告，"
                     "去重并保留原有事实、发送人、数量、时间和不确定项；"
                     "保留每部分的来源类别，不得添加原分析中没有的信息。")
-                result = _complete_summary_prompt(
-                    client, model, prompt, max_output_tokens, on_progress,
-                    on_stream)
+                try:
+                    result = _complete_summary_prompt(
+                        client, model, prompt, max_output_tokens, on_progress,
+                        on_stream, is_cancelled)
+                except ValueError as exc:
+                    if "过长" not in str(exc):
+                        raise
+                    # 合完还超上限：这一对不合并，直接保留两份。
+                    # 每份各自都通过了长度校验，合在一起超了而已 —— 为此丢掉
+                    # 整单（且重试必败）不值得。分段头本来就带类别，可读性仍在。
+                    LOGGER.warning("AI analysis merge too long, keeping segments "
+                                   "(stage=reduce, group=%s, level=%s)", group, level)
+                    merged.extend(pair)
+                    continue
                 cache[key] = result
                 if app is not None:
                     _persist_summary_cache(app, cache)
             merged.append(result)
+        if merged == current:
+            # 这一层一个都没合上（全超长兜底）：再循环只会原地打转。
+            # 直接返回并列分段 —— 每份各自合规，只是没能压成一份。
+            break
         current = merged
         level += 1
-    return current[0] if current else ""
+    return "\n\n".join(current) if len(current) > 1 else (current[0] if current else "")
 
 
 def _run_summary_jyi(client: Any, messages: list[dict[str, Any]], role_id: str = "",
                      model_alias: str = "", app: Any = None,
                      on_progress: Any = None,
-                     on_stream: Any = None) -> dict[str, Any]:
+                     on_stream: Any = None,
+                     is_cancelled: Any = None) -> dict[str, Any]:
     """JYI 直调摘要：提示词同样复用 `summary` 那一份，不另写。
 
     计费不在本地算（JYI 按账号计量），cost 恒为 None —— 别让界面
@@ -736,88 +774,99 @@ def _run_summary_jyi(client: Any, messages: list[dict[str, Any]], role_id: str =
     # 单群分析的结果就是干干净净的一份报告。
     show_group = len(grouped) > 1
     streamed_groups: set[str] = set()
-    for group_index, (group, group_messages) in enumerate(grouped.items(), start=1):
-        if on_progress:
-            on_progress(f"正在分析第 {group_index}/{group_total} 个会话：{group_labels[group]}")
-        chunk_reports: list[str] = []
-        group_error = ""
-        work_batches = _summary_work_batches(
-            group_messages, token_budget=chunk_tokens,
-            max_document_chars=max_document_chars)
-        if not work_batches:
-            failures.append(f"{group_labels[group]}：没有可供模型分析的文字内容")
-            continue
-        category_totals = {category: sum(item_category == category
-                                         for item_category, _ in work_batches)
-                           for category, _ in work_batches}
-        category_seen: dict[str, int] = {}
-        for _chunk_index, (category, chunk) in enumerate(work_batches, start=1):
-            category_seen[category] = category_seen.get(category, 0) + 1
+    cancelled = False
+    try:
+        for group_index, (group, group_messages) in enumerate(grouped.items(), start=1):
+            _raise_if_cancelled(is_cancelled)
             if on_progress:
-                on_progress(f"{group_labels[group]}：分析{category}第 "
-                            f"{category_seen[category]}/{category_totals[category]} 批")
-            cache_key = _summary_cache_key("text-only-map-v1", model, role_id, group, chunk)
-            report = cache.pop(cache_key, None)
-            if not report:
-                try:
-                    batch_stream = None
+                on_progress(f"正在分析第 {group_index}/{group_total} 个会话：{group_labels[group]}")
+            chunk_reports: list[str] = []
+            group_error = ""
+            work_batches = _summary_work_batches(
+                group_messages, token_budget=chunk_tokens,
+                max_document_chars=max_document_chars)
+            if not work_batches:
+                failures.append(f"{group_labels[group]}：没有可供模型分析的文字内容")
+                continue
+            category_totals = {category: sum(item_category == category
+                                             for item_category, _ in work_batches)
+                               for category, _ in work_batches}
+            category_seen: dict[str, int] = {}
+            for _chunk_index, (category, chunk) in enumerate(work_batches, start=1):
+                _raise_if_cancelled(is_cancelled)
+                category_seen[category] = category_seen.get(category, 0) + 1
+                if on_progress:
+                    on_progress(f"{group_labels[group]}：分析{category}第 "
+                                f"{category_seen[category]}/{category_totals[category]} 批")
+                cache_key = _summary_cache_key("text-only-map-v1", model, role_id, group, chunk)
+                report = cache.pop(cache_key, None)
+                if not report:
+                    try:
+                        batch_stream = None
+                        if on_stream:
+                            prefix = (f"【{group_labels[group]}】\n"
+                                      if show_group and group not in streamed_groups
+                                      else ("\n\n" if show_group else ""))
+                            streamed_groups.add(group)
+                            if prefix:
+                                on_stream(prefix)
+                            batch_stream = on_stream
+                        report = _complete_jyi_chunk(
+                            client, model, role_id, chunk, on_progress,
+                            max_output_tokens, max_document_chars,
+                            on_stream=batch_stream, is_cancelled=is_cancelled)
+                        if app is not None:
+                            cache[cache_key] = report
+                            _persist_summary_cache(app, cache)
+                    except AnalysisCancelled:
+                        raise
+                    except Exception as exc:
+                        LOGGER.exception("AI analysis batch failed (stage=map, group=%s, code=%s, status=%s)",
+                                         group, getattr(exc, "code", ""), getattr(exc, "status", ""))
+                        group_error = _analysis_error(exc)
+                        break
+                else:
+                    cache[cache_key] = report
                     if on_stream:
+                        # 缓存命中以前是静默的：界面一直转圈，最后全文突然出现，
+                        # 看起来和"卡死后突然恢复"一模一样。回放出来。
                         prefix = (f"【{group_labels[group]}】\n"
                                   if show_group and group not in streamed_groups
                                   else ("\n\n" if show_group else ""))
                         streamed_groups.add(group)
                         if prefix:
                             on_stream(prefix)
-                        batch_stream = on_stream
-                    report = _complete_jyi_chunk(
-                        client, model, role_id, chunk, on_progress,
-                        max_output_tokens, max_document_chars,
-                        on_stream=batch_stream)
-                    if app is not None:
-                        cache[cache_key] = report
-                        _persist_summary_cache(app, cache)
-                except Exception as exc:
-                    LOGGER.exception("AI analysis batch failed (stage=map, group=%s, code=%s, status=%s)",
-                                     group, getattr(exc, "code", ""), getattr(exc, "status", ""))
-                    group_error = _analysis_error(exc)
-                    break
-            else:
-                cache[cache_key] = report
-                if on_stream:
-                    # 缓存命中以前是静默的：界面一直转圈，最后全文突然出现，
-                    # 看起来和"卡死后突然恢复"一模一样。回放出来。
-                    prefix = (f"【{group_labels[group]}】\n"
-                              if show_group and group not in streamed_groups
-                              else ("\n\n" if show_group else ""))
-                    streamed_groups.add(group)
-                    if prefix:
-                        on_stream(prefix)
-                    _emit_stream(on_stream, report)
-            chunk_reports.append(f"【{category}】\n{report}")
-        if group_error:
-            failures.append(f"{group_labels[group]}：{group_error}")
-            continue
-
-        if len(chunk_reports) == 1:
-            final_report = chunk_reports[0]
-        else:
-            try:
-                if on_stream:
-                    header = (f"\n\n【{group_labels[group]}·合并分段】\n" if show_group
-                              else "\n\n【合并分段】\n")
-                    on_stream(header)
-                final_report = _reduce_summary_reports(
-                    client, model, role_id, group, chunk_reports, cache, app,
-                    max_output_tokens, on_progress, on_stream)
-            except Exception as exc:
-                LOGGER.exception("AI analysis batch failed (stage=reduce, group=%s, code=%s, status=%s)",
-                                 group, getattr(exc, "code", ""), getattr(exc, "status", ""))
-                failures.append(f"{group_labels[group]}（合并分批结果）：{_analysis_error(exc)}")
+                        _emit_stream(on_stream, report)
+                chunk_reports.append(f"【{category}】\n{report}")
+            if group_error:
+                failures.append(f"{group_labels[group]}：{group_error}")
                 continue
-        reports.append(f"【{group_labels[group]}】\n{final_report}" if show_group
-                       else final_report)
-        completed_groups.append(group)
-        processed += sum(len(chunk) for _, chunk in work_batches)
+
+            if len(chunk_reports) == 1:
+                final_report = chunk_reports[0]
+            else:
+                try:
+                    if on_stream:
+                        header = (f"\n\n【{group_labels[group]}·合并分段】\n" if show_group
+                                  else "\n\n【合并分段】\n")
+                        on_stream(header)
+                    final_report = _reduce_summary_reports(
+                        client, model, role_id, group, chunk_reports, cache, app,
+                        max_output_tokens, on_progress, on_stream, is_cancelled)
+                except AnalysisCancelled:
+                    raise
+                except Exception as exc:
+                    LOGGER.exception("AI analysis batch failed (stage=reduce, group=%s, code=%s, status=%s)",
+                                     group, getattr(exc, "code", ""), getattr(exc, "status", ""))
+                    failures.append(f"{group_labels[group]}（合并分批结果）：{_analysis_error(exc)}")
+                    continue
+            reports.append(f"【{group_labels[group]}】\n{final_report}" if show_group
+                           else final_report)
+            completed_groups.append(group)
+            processed += sum(len(chunk) for _, chunk in work_batches)
+    except AnalysisCancelled:
+        # 已完成的分段和缓存都在，尾巴照常组装成部分结果。
+        cancelled = True
 
     # Bound process-local reuse while preserving the most recent completed batches.
     while len(cache) > 4096:
@@ -827,16 +876,20 @@ def _run_summary_jyi(client: Any, messages: list[dict[str, Any]], role_id: str =
     combined = "\n\n".join(reports)
     partial_error = ("部分会话未完成：" + "；".join(failures)
                      + "。返回第六步重试时，已完成的分批结果会复用。" if failures and reports else "")
+    if cancelled:
+        note = "已取消分析：已完成的分段已保留，未完成的会话下次重试会继续。"
+        partial_error = (partial_error + "；" + note) if partial_error else (note if reports else "")
     error = ("分析未完成：" + "；".join(failures)) if failures and not reports else ""
     if on_progress:
-        on_progress("会话分析完成" if not failures else "部分会话分析完成")
+        on_progress("已取消分析" if cancelled else ("会话分析完成" if not failures else "部分会话分析完成"))
     return {"summary": combined, "error": error, "partial_error": partial_error,
             "completed_groups": completed_groups, "cost": None,
-            "message_count": processed}
+            "message_count": processed, "cancelled": cancelled}
 
 
 def _run_summary_gateway_job(client: Any, messages: list[dict[str, Any]],
-                              role_id: str, idempotency_key: str) -> tuple[str, int | None, str]:
+                              role_id: str, idempotency_key: str,
+                              is_cancelled: Any = None) -> tuple[str, int | None, str]:
     """Submit and poll one bounded, billable gateway batch."""
     import time
 
@@ -859,6 +912,15 @@ def _run_summary_gateway_job(client: Any, messages: list[dict[str, Any]],
     deadline = time.time() + SUMMARY_TIMEOUT
     last_billing: dict = {}
     while time.time() < deadline:
+        if callable(is_cancelled) and is_cancelled():
+            # 服务端 job 一并撤掉，别让它在那边空转扣费。
+            try:
+                cancel = getattr(client, "cancel_summary", None)
+                if callable(cancel):
+                    cancel(job_id)
+            except Exception:
+                pass
+            raise AnalysisCancelled()
         time.sleep(SUMMARY_POLL_INTERVAL)
         try:
             fetched = client.summary_job(job_id)
@@ -892,7 +954,8 @@ def _run_summary_gateway_job(client: Any, messages: list[dict[str, Any]],
 
 def _run_summary_gateway(app: Any, client: Any, messages: list[dict[str, Any]],
                           role_id: str, on_progress: Any = None,
-                          on_stream: Any = None) -> dict[str, Any]:
+                          on_stream: Any = None,
+                          is_cancelled: Any = None) -> dict[str, Any]:
     """Run the same per-conversation map/reduce flow through asynchronous jobs.
 
     网关任务是"提交 → 轮询"的异步 job，服务端在模型写完之前不会吐任何东西，
@@ -925,7 +988,8 @@ def _run_summary_gateway(app: Any, client: Any, messages: list[dict[str, Any]],
             return cached, ""
         submitted_batches += 1
         idempotency = "sum-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
-        report, cost, error = _run_summary_gateway_job(client, batch, role_id, idempotency)
+        report, cost, error = _run_summary_gateway_job(
+            client, batch, role_id, idempotency, is_cancelled)
         if cost is None:
             cost_known = False
         else:
@@ -934,79 +998,91 @@ def _run_summary_gateway(app: Any, client: Any, messages: list[dict[str, Any]],
             cache[key] = report
         return report, error
 
-    for group_index, (group, group_messages) in enumerate(grouped.items(), start=1):
-        if on_progress:
-            on_progress(f"正在分析第 {group_index}/{len(grouped)} 个会话：{group_labels[group]}")
-        show_group = len(grouped) > 1
-        if on_stream and show_group:
-            prefix = (f"【{group_labels[group]}】\n" if group_index == 1 else f"\n\n【{group_labels[group]}】\n")
-            on_stream(prefix)
-        chunks = [chunk for _, chunk in _summary_work_batches(
-            group_messages, token_budget=SUMMARY_CHUNK_FALLBACK_TOKENS,
-            max_document_chars=SUMMARY_CHUNK_MAX_DOCUMENT_CHARS)]
-        if not chunks:
-            failures.append(f"{group_labels[group]}：没有可供模型分析的文字内容")
-            continue
-        chunk_reports: list[str] = []
-        failed = ""
-        for index, chunk in enumerate(chunks, start=1):
+    cancelled = False
+    try:
+        for group_index, (group, group_messages) in enumerate(grouped.items(), start=1):
+            _raise_if_cancelled(is_cancelled)
             if on_progress:
-                on_progress(f"{group_labels[group]}：分析第 {index}/{len(chunks)} 批消息")
-            report, error = run_batch("map", group, chunk)
-            if error:
-                failed = error
-                break
-            chunk_reports.append(report)
-            # 每一批完成就推一段：网关轮询要等很久，这是这条链路上唯一的增量输出。
-            _emit_stream(on_stream, report)
-        if failed:
-            failures.append(f"{group_labels[group]}：{failed}")
-            continue
-        if len(chunk_reports) == 1:
-            final_report = chunk_reports[0]
-        else:
-            reduced = [
-                {"sender": f"第 {index} 批分析结果", "content": report,
-                 "sent_at": "", "kind": "text"}
-                for index, report in enumerate(chunk_reports, start=1)
-            ]
-            reduced[0]["content"] += (
-                "\n请将以下同一会话的分批分析结果合并，去重并保留事实、发送人、数量、时间和不确定项；"
-                "不得添加原分析中没有的信息。")
-            final_report, error = run_batch("reduce", group, reduced)
-            if error:
-                failures.append(f"{group_labels[group]}（合并分批结果）：{error}")
+                on_progress(f"正在分析第 {group_index}/{len(grouped)} 个会话：{group_labels[group]}")
+            show_group = len(grouped) > 1
+            if on_stream and show_group:
+                prefix = (f"【{group_labels[group]}】\n" if group_index == 1 else f"\n\n【{group_labels[group]}】\n")
+                on_stream(prefix)
+            chunks = [chunk for _, chunk in _summary_work_batches(
+                group_messages, token_budget=SUMMARY_CHUNK_FALLBACK_TOKENS,
+                max_document_chars=SUMMARY_CHUNK_MAX_DOCUMENT_CHARS)]
+            if not chunks:
+                failures.append(f"{group_labels[group]}：没有可供模型分析的文字内容")
                 continue
-            merge_header = (f"\n\n【{group_labels[group]}·合并分段】\n" if show_group
-                            else "\n\n【合并分段】\n")
-            _emit_stream(on_stream, f"{merge_header}{final_report}")
-        reports.append(f"【{group_labels[group]}】\n{final_report}" if show_group
-                       else final_report)
-        completed_groups.append(group)
-        processed += sum(len(chunk) for chunk in chunks)
+            chunk_reports: list[str] = []
+            failed = ""
+            for index, chunk in enumerate(chunks, start=1):
+                _raise_if_cancelled(is_cancelled)
+                if on_progress:
+                    on_progress(f"{group_labels[group]}：分析第 {index}/{len(chunks)} 批消息")
+                report, error = run_batch("map", group, chunk)
+                if error:
+                    failed = error
+                    break
+                chunk_reports.append(report)
+                # 每一批完成就推一段：网关轮询要等很久，这是这条链路上唯一的增量输出。
+                _emit_stream(on_stream, report)
+            if failed:
+                failures.append(f"{group_labels[group]}：{failed}")
+                continue
+            if len(chunk_reports) == 1:
+                final_report = chunk_reports[0]
+            else:
+                reduced = [
+                    {"sender": f"第 {index} 批分析结果", "content": report,
+                     "sent_at": "", "kind": "text"}
+                    for index, report in enumerate(chunk_reports, start=1)
+                ]
+                reduced[0]["content"] += (
+                    "\n请将以下同一会话的分批分析结果合并，去重并保留事实、发送人、数量、时间和不确定项；"
+                    "不得添加原分析中没有的信息。")
+                final_report, error = run_batch("reduce", group, reduced)
+                if error:
+                    failures.append(f"{group_labels[group]}（合并分批结果）：{error}")
+                    continue
+                merge_header = (f"\n\n【{group_labels[group]}·合并分段】\n" if show_group
+                                else "\n\n【合并分段】\n")
+                _emit_stream(on_stream, f"{merge_header}{final_report}")
+            reports.append(f"【{group_labels[group]}】\n{final_report}" if show_group
+                           else final_report)
+            completed_groups.append(group)
+            processed += sum(len(chunk) for chunk in chunks)
+    except AnalysisCancelled:
+        cancelled = True
     while len(cache) > 4096:
         cache.pop(next(iter(cache)))
     combined = "\n\n".join(reports)
     partial_error = ("部分会话未完成：" + "；".join(failures)
                      + "。返回第六步重试时，已完成的分批结果会复用。" if failures and reports else "")
+    if cancelled:
+        note = "已取消分析：已完成的分段已保留，未完成的会话下次重试会继续。"
+        partial_error = (partial_error + "；" + note) if partial_error else (note if reports else "")
     error = ("分析未完成：" + "；".join(failures)) if failures and not reports else ""
     if on_progress:
-        on_progress("会话分析完成" if not failures else "部分会话分析完成")
+        on_progress("已取消分析" if cancelled else ("会话分析完成" if not failures else "部分会话分析完成"))
     return {"summary": combined, "error": error, "partial_error": partial_error,
             "completed_groups": completed_groups,
             "cost": (total_cost / 1_000_000 if submitted_batches and cost_known else None),
-            "message_count": processed}
+            "message_count": processed, "cancelled": cancelled}
 
 
 def run_summary(app: Any, result: Any, role_id: str = "",
                 messages_override: list[dict[str, Any]] | None = None,
                 on_progress: Any = None,
-                on_stream: Any = None) -> dict[str, Any]:
+                on_stream: Any = None,
+                is_cancelled: Any = None) -> dict[str, Any]:
     """经云网关跑摘要。**在后台线程里跑，调用方不许碰界面。**
 
     LLM 只走云：这里不再读任何本地密钥。没登录返回"需要登录产品账号"。
     返回 ``{"summary", "error", "cost", "message_count"}``，从不抛异常 ——
     网络不可预期，不该让调用方的线程死掉。
+    ``is_cancelled`` 为可调用对象时，每个批次/轮询间隙检查一次；
+    取消后返回已完成分段与 ``cancelled=True``。
     """
     messages = messages_override if messages_override is not None else messages_for_summary(app, result)
     if not messages:
@@ -1024,9 +1100,9 @@ def run_summary(app: Any, result: Any, role_id: str = "",
             settings = getattr(target, "settings", None)
             model_alias = str(getattr(settings, "model_alias", "") or "")
             return _run_summary_jyi(client, messages, role_id, model_alias, target,
-                                    on_progress, on_stream)
+                                    on_progress, on_stream, is_cancelled)
         return _run_summary_gateway(target, client, messages, role_id,
-                                    on_progress, on_stream)
+                                    on_progress, on_stream, is_cancelled)
     finally:
         _SUMMARY_RUN_LOCK.release()
 
@@ -1112,6 +1188,7 @@ def import_reference(app: Any, kind: str, text: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "AnalysisCancelled",
     "SUMMARY_MESSAGE_LIMIT",
     "SUMMARY_POLL_INTERVAL",
     "SUMMARY_TIMEOUT",

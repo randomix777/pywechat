@@ -42,10 +42,19 @@ DEFAULT_GATEWAY = JYI_GATEWAY
 
 
 def default_data_dir() -> Path:
+    """默认数据目录，和 launcher.data_dir() 是同一份逻辑。
+
+    发版入口（.bat/.vbs → launcher）固定用 ``%LOCALAPPDATA%\\pyweixin``。
+    这里以前少了最后一段 ``pyweixin``，直接 ``-m`` 调起（自检、web_dev）
+    会把订单库建在 Local 根目录，和 launcher 跑出来的凭证/缓存分家 ——
+    一边有登录态没订单，另一边有订单没登录态。两边只能各信一半。
+    """
     base = os.environ.get("PYWEIXIN_CLIENT_DATA_DIR")
     if base:
         return Path(base)
-    return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".pyweixin"))
+    root_base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    root = Path(root_base) if root_base else Path.home() / ".pyweixin"
+    return root / "pyweixin"
 
 
 def default_device_name() -> str:

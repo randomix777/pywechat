@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import hmac as hmac_mod
 import json
+import platform
 import sqlite3
 import struct
 import sys
@@ -902,6 +903,108 @@ class WcdbReimportUpgradeTests(unittest.TestCase):
             self.assertEqual(row["content"], "苹果两箱")
         finally:
             store.close()
+
+
+class KeysFileProtectionTests(unittest.TestCase):
+    """钥匙文件 DPAPI 落盘：收银电脑多人用，明文钥匙等于把微信库钥匙放桌上。
+
+    读侧两种都认 —— 第三方工具写的是明文，老文件不能变砖。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="pyw-keys-")
+        self.root = Path(self.tmp.name)
+        self.keys = self.root / "wcdb_keys.json"
+        self.keys.write_text(json.dumps({
+            "contact/contact.db": {"enc_key": TEST_KEY.hex(), "salt": "00" * 16},
+            wcdb.KEYS_VERSION_META: "4.0.1.1"}), encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @unittest.skipUnless(platform.system() == "Windows", "DPAPI requires Windows")
+    def test_protect_round_trip_and_no_plaintext(self):
+        self.assertTrue(wcdb.protect_keys_file(self.keys))
+        raw = self.keys.read_bytes()
+        self.assertNotIn(b"enc_key", raw, "密文里不该出现明文字段名")
+        reader = WcdbReader(self.root, self.keys)
+        self.assertEqual(reader.load_keys()["contact/contact.db"]["enc_key"],
+                         TEST_KEY.hex())
+        # 幂等：已包过的再包一次还是 True，不会套娃。
+        self.assertTrue(wcdb.protect_keys_file(self.keys))
+
+    def test_legacy_plaintext_still_loads(self):
+        reader = WcdbReader(self.root, self.keys)
+        self.assertEqual(reader.load_keys()["contact/contact.db"]["enc_key"],
+                         TEST_KEY.hex())
+
+    def test_corrupt_envelope_reports_reextract(self):
+        import base64 as _b64
+
+        self.keys.write_text(json.dumps({
+            "_protected": "dpapi-v1",
+            "blob": _b64.b64encode(b"not-a-dpapi-blob").decode("ascii")}),
+            encoding="utf-8")
+        reader = WcdbReader(self.root, self.keys)
+        with self.assertRaises(WcdbUnavailable) as ctx:
+            reader.load_keys()
+        self.assertIn("重提", str(ctx.exception))
+
+    def test_version_record_and_stale(self):
+        self.assertTrue(wcdb.record_keys_version(self.keys, "4.1.5.13"))
+        self.assertEqual(wcdb.read_keys_version(self.keys), "4.1.5.13")
+        self.assertFalse(wcdb.keys_version_stale("4.1.5.13", "4.1.6.0"),
+                         "小版本升级不该催重提")
+        self.assertTrue(wcdb.keys_version_stale("4.0.9.9", "4.1.0.1"))
+        self.assertFalse(wcdb.keys_version_stale("", "4.1.0.1"),
+                         "版本号未知时不催，免得误报循环")
+        self.assertFalse(wcdb.keys_version_stale("garbage", "4.1.0.1"))
+        self.assertEqual(wcdb.wechat_major_minor("4.1.5.13"), "4.1")
+
+
+class VerifyKeysTests(unittest.TestCase):
+    """验钥匙真能开门：合成加密页，不碰真实微信。
+
+    回归方向：微信升级换盐后，读一半才炸 —— 验钥要在读取之前先报错。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="pyw-verify-")
+        self.root = Path(self.tmp.name)
+        (self.root / "contact").mkdir()
+        body = b"A" * (PAGE_SIZE - RESERVE_SIZE - wcdb.SALT_SIZE)
+        (self.root / "contact" / "contact.db").write_bytes(_encrypt_page1(body))
+        self.keys = self.root / "wcdb_keys.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_keys(self, enc_hex):
+        self.keys.write_text(json.dumps({
+            "contact/contact.db": {"enc_key": enc_hex}}), encoding="utf-8")
+
+    def test_good_key_verifies(self):
+        self._write_keys(TEST_KEY.hex())
+        ok, reason = WcdbReader(self.root, self.keys).verify_keys()
+        self.assertTrue(ok, reason)
+
+    def test_wrong_key_reports_upgrade_not_crash(self):
+        self._write_keys("01" * 32)
+        ok, reason = WcdbReader(self.root, self.keys).verify_keys()
+        self.assertFalse(ok)
+        self.assertIn("升级", reason)
+
+    def test_missing_keys_file_reports_plainly(self):
+        ok, reason = WcdbReader(self.root, self.root / "nope.json").verify_keys()
+        self.assertFalse(ok)
+        self.assertIn("密钥", reason)
+
+    def test_short_file_is_skipped_not_blamed_on_key(self):
+        (self.root / "contact" / "contact.db").write_bytes(b"short")
+        self._write_keys(TEST_KEY.hex())
+        ok, reason = WcdbReader(self.root, self.keys).verify_keys()
+        self.assertFalse(ok)
+        self.assertIn("没有能验证", reason)
 
 
 if __name__ == "__main__":

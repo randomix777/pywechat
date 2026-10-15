@@ -27,11 +27,14 @@
 """
 from __future__ import annotations
 
+import base64
 import ctypes
 import hashlib
 import hmac as hmac_mod
 import json
 import logging
+import os
+import platform
 import shutil
 import sqlite3
 import struct
@@ -60,6 +63,147 @@ MESSAGE_SHARD_SUFFIX = ".db"
 
 #: 密钥文件名（应用数据目录下）。内容是 `{库相对路径: {enc_key, salt}}`。
 WCDB_KEYS_NAME = "wcdb_keys.json"
+
+#: DPAPI 信封标记。第三方提取工具写的是明文 JSON，应用拿到后包一层再落盘；
+#: 读侧两种都认，老的明文文件直接可用（首次读到后由调用方包起来）。
+KEYS_PROTECTED_MARK = "dpapi-v1"
+#: 钥匙文件里的微信版本元信息。load_keys 建索引时跳过（见下）。
+KEYS_VERSION_META = "_wechat_version"
+
+
+def _dpapi_blob(data: bytes, protect: bool) -> bytes:
+    """DPAPI 加解密（当前 Windows 用户绑定）。不可用抛错，调用方定去留。"""
+    if platform.system() != "Windows":
+        raise WcdbUnavailable("DPAPI 只在 Windows 可用")
+    try:
+        import win32crypt  # type: ignore
+    except ImportError as exc:
+        raise WcdbUnavailable("缺少 pywin32，钥匙保护暂不可用") from exc
+    if protect:
+        return win32crypt.CryptProtectData(data, "pyweixin-wcdb", None, None, None, 0x1)
+    return win32crypt.CryptUnprotectData(data, None, None, None, 0x1)[1]
+
+
+def _write_keys_raw(path: Path, data: dict) -> None:
+    """原子写钥匙文件（临时文件 + 替换），顺手收紧权限。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:  # pragma: no cover - best effort on Windows
+        pass
+
+
+def _read_keys_raw(path: Path | str) -> dict:
+    """读原始钥匙文件：明文 JSON 和 DPAPI 信封都认。坏了就直说。"""
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise WcdbUnavailable(f"没有密钥文件（先提取一次）：{exc}")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise WcdbUnavailable("密钥文件损坏")
+    if not isinstance(data, dict):
+        raise WcdbUnavailable("密钥文件损坏")
+    if data.get("_protected") != KEYS_PROTECTED_MARK:
+        return data
+    try:
+        blob = base64.b64decode(str(data.get("blob") or ""))
+        inner = json.loads(_dpapi_blob(blob, protect=False).decode("utf-8"))
+    except Exception:
+        raise WcdbUnavailable("密钥文件已加密但本机解不开（换了电脑或用户？），重提一次")
+    if not isinstance(inner, dict):
+        raise WcdbUnavailable("密钥文件损坏")
+    return inner
+
+
+def protect_keys_file(path: Path | str) -> bool:
+    """把明文钥匙文件包成 DPAPI 信封。已包过返回 True，失败返回 False。
+
+    从不抛异常：DPAPI 不可用就保持明文（现状），绝不能把一次成功的
+    提取因为"包不上信封"变成失败。
+    """
+    path = Path(path)
+    try:
+        raw = path.read_bytes()
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("_protected") == KEYS_PROTECTED_MARK:
+        return True
+    try:
+        blob = _dpapi_blob(json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                           protect=True)
+    except WcdbUnavailable:
+        LOGGER.debug("DPAPI unavailable, keys file stays plaintext", exc_info=True)
+        return False
+    try:
+        _write_keys_raw(path, {"_protected": KEYS_PROTECTED_MARK,
+                               "blob": base64.b64encode(blob).decode("ascii")})
+    except OSError:
+        return False
+    return True
+
+
+def record_keys_version(path: Path | str, version: str) -> bool:
+    """记下提钥匙时的微信版本。失败返回 False，不影响主流程。"""
+    if not version:
+        return False
+    try:
+        data = _read_keys_raw(Path(path))
+    except WcdbUnavailable:
+        return False
+    data[KEYS_VERSION_META] = str(version)
+    try:
+        raw = json.loads(Path(path).read_bytes().decode("utf-8"))
+        enveloped = isinstance(raw, dict) and raw.get("_protected") == KEYS_PROTECTED_MARK
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
+    if enveloped:
+        # 已加密的文件保持加密：重包一次，不让它变回明文。
+        try:
+            blob = _dpapi_blob(json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                               protect=True)
+        except WcdbUnavailable:
+            return False
+        data = {"_protected": KEYS_PROTECTED_MARK,
+                "blob": base64.b64encode(blob).decode("ascii")}
+    try:
+        _write_keys_raw(Path(path), data)
+    except OSError:
+        return False
+    return True
+
+
+def read_keys_version(path: Path | str) -> str:
+    """读出记录的微信版本。没有/读不出返回 ""（调用方当未知，不催重提）。"""
+    try:
+        data = _read_keys_raw(Path(path))
+    except WcdbUnavailable:
+        return ""
+    value = data.get(KEYS_VERSION_META, "")
+    return str(value) if isinstance(value, (str, int, float)) else ""
+
+
+def wechat_major_minor(version: str) -> str:
+    """大版本比对只看到 minor：4.1.5 和 4.1.6 用同一套盐的概率极大。"""
+    try:
+        parts = str(version or "").strip().split(".")
+        return f"{int(parts[0])}.{int(parts[1])}"
+    except (IndexError, ValueError, TypeError):
+        return ""
+
+
+def keys_version_stale(recorded: str, current: str) -> bool:
+    """记录版和当前版大版本不同 → 盐很可能换了。任一未知都不算过期。"""
+    old, new = wechat_major_minor(recorded), wechat_major_minor(current)
+    return bool(old and new and old != new)
 
 
 class WcdbUnavailable(Exception):
@@ -644,18 +788,16 @@ class WcdbReader:
         return self._error
 
     def load_keys(self) -> dict:
-        """读密钥文件。结构 `{库相对路径: {enc_key, salt}}`，坏了当没有。"""
+        """读密钥文件。结构 `{库相对路径: {enc_key, salt}}`，坏了当没有。
+
+        明文老文件和 DPAPI 信封都认（见 :func:`_read_keys_raw`）；
+        ``_`` 开头的元信息（比如微信版本）不进索引。
+        """
         if self._keys is not None:
             return self._keys
-        try:
-            raw = json.loads(self.keys_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise WcdbUnavailable(f"没有密钥文件（先提取一次）：{exc}")
-        if not isinstance(raw, dict):
-            raise WcdbUnavailable("密钥文件损坏")
-        # 上游工具存的是系统相对路径（Windows 下反斜杠），统一成正斜杠。
+        data = _read_keys_raw(self.keys_path)
         normalized = {}
-        for key, value in raw.items():
+        for key, value in data.items():
             text = str(key)
             if text.startswith("_"):
                 continue
@@ -763,6 +905,48 @@ class WcdbReader:
                 return False
         self._error = ""
         return True
+
+    def verify_keys(self) -> tuple[bool, str]:
+        """验一把钥匙真能开门：挑有钥匙的库读首页验签。
+
+        毫秒级，只读 4K，不扫内存。微信升级换盐后这里先报错，
+        商户在"读取"之前就知道要重提，而不是读一半才炸。
+        有一个库能打开就算可用；文件残缺（不够一页）跳过，
+        那不是钥匙的错。
+        """
+        try:
+            keys = self.load_keys()
+        except WcdbUnavailable as exc:
+            return False, str(exc)
+        first_failure = ""
+        candidates = (*NEEDED_DATABASES,
+                      MESSAGE_SHARD_PREFIX + "0" + MESSAGE_SHARD_SUFFIX)
+        for rel in candidates:
+            info = keys.get(rel) or keys.get(rel.replace("/", "\\"))
+            if not isinstance(info, dict) or not info.get("enc_key"):
+                continue
+            src = self.db_storage / rel
+            if not src.is_file():
+                continue
+            try:
+                with open(src, "rb") as handle:
+                    page1 = handle.read(PAGE_SIZE)
+            except OSError:
+                continue
+            if len(page1) < PAGE_SIZE:
+                continue
+            try:
+                enc_key = bytes.fromhex(str(info["enc_key"]))
+            except ValueError:
+                return False, f"密钥不是十六进制：{rel}"
+            if verify_enc_key(enc_key, page1):
+                return True, "钥匙可用"
+            if not first_failure:
+                first_failure = (f"钥匙打不开 {rel}：微信可能升级换了盐，"
+                                 "点「重新提取密钥」提一次再读")
+        if first_failure:
+            return False, first_failure
+        return False, "没有能验证的库文件"
 
     def unkeyed_databases(self) -> list[str]:
         """磁盘上有、钥匙里没有的库（微信新建了分片/库，钥匙还是旧的）。

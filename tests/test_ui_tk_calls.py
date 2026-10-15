@@ -185,5 +185,49 @@ class FieldsAreInitialisedTests(unittest.TestCase):
                           f"{field} \u6ca1\u6709\u521d\u59cb\u503c\uff0c\u9875\u9762\u91cd\u5efa\u540e\u4f1a AttributeError")
 
 
+class AnalysisCancelTests(unittest.TestCase):
+    """取消分析：按钮只在运行时出现，置位后线程在批次间隙停下。
+
+    出过什么事：分析一旦开始只能干等，reduce 合并不上时只能等超时。
+    取消键置位一个 Event，后台线程每个批次/轮询前检查 —— 不 join、
+    不碰 Tk（还是走 _post 回主线程）。
+    """
+
+    def setUp(self):
+        self.source = MERCHANT_UI.read_text(encoding="utf-8")
+        self.tree = ast.parse(self.source)
+
+    def _function(self, name):
+        return next(n for n in ast.walk(self.tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == name)
+
+    def test_the_worker_receives_the_cancel_flag(self):
+        body = ast.unparse(self._function("_on_analyze"))
+        self.assertIn("is_cancelled", body,
+                      "取消标记必须交到 run_summary 手里，否则按钮摆设")
+
+    def test_the_results_page_has_a_cancel_button(self):
+        body = ast.unparse(self._function("_page_analysis_results"))
+        self.assertIn("analysis_cancel_button", body)
+
+    def test_cancel_only_sets_a_flag(self):
+        """取消处理器只许置位：join 会卡住主线程，碰 Tk 会跨线程。"""
+        body = ast.unparse(self._function("_on_analysis_cancel"))
+        self.assertIn(".set()", body)
+        self.assertNotIn("join", body)
+        self.assertNotIn("Thread", body)
+
+    def test_finishing_clears_the_cancel_flag(self):
+        body = ast.unparse(self._function("_on_analysis_finished"))
+        self.assertIn("_analysis_cancel", body,
+                      "不清理的话，下一次分析会带着上次的取消标记直接停掉")
+
+    def test_the_cancel_button_hides_when_idle(self):
+        body = ast.unparse(self._function("_render_analysis_results"))
+        self.assertIn("analysis_cancel_button", body)
+        self.assertIn("pack_forget", body,
+                      "平时摆着会让人以为随时能停，没跑时点它又没反应 —— 等于骗人")
+
+
 if __name__ == "__main__":
     unittest.main()

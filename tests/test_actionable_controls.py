@@ -38,8 +38,10 @@ class ErrorMustBeVisibleTests(unittest.TestCase):
         """不能只往某一个控件写 —— 那个控件不在当前页就等于没写。"""
         start = self.source.index("def _on_error")
         block = self.source[start:start + 1200]
-        self.assertIn('for key in ("read_state", "analyze_notice")', block,
-                      "错误必须按当前屏挑一个存在的落点")
+        # 第 7 步分析结果页新增了 analysis_result_summary 落点，
+        # 加进来后测试的元组也要跟上（行为本身是对的：多一处落点）。
+        self.assertIn('for key in ("read_state", "analysis_result_summary", "analyze_notice"',
+                      block, "错误必须按当前屏挑一个存在的落点")
 
     def test_when_there_is_nowhere_it_still_tells_the_user(self):
         """实在没有落点时也要弹窗。静默永远比打扰更糟。"""

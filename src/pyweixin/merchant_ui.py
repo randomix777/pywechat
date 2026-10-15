@@ -306,6 +306,8 @@ class MerchantWindow:
         self._analysis_results_mode = False
         self._analysis_call_active = False
         self._analysis_running = False
+        #: 取消分析的标记。工作线程每个批次间隙检查一次；界面只置位不等待。
+        self._analysis_cancel: Any = None
         self._last_analysis_error = ""
         #: 最近一次角色整理的分类报告。同上，跨页面重建存活。
         self._last_role_report: dict[str, Any] = {}
@@ -1198,8 +1200,9 @@ class MerchantWindow:
         except Exception:
             keys_complete = ok
         # 页面初始状态可能还没有钥匙；刷新列表会自动尝试提取，只有失败/缺钥匙
-        # 的情况才需要把人工重试入口露出来。
-        show_retry = attempted and not keys_complete
+        # 的情况才需要把人工重试入口露出来。钥匙过期（微信升级）时 status 也是
+        # 不可用，同样要露出来 —— 不然商户看到"钥匙可能失效"却找不到重提的键。
+        show_retry = attempted and (not keys_complete or not ok)
         if hint is not None and self._alive(hint):
             if not show_retry:
                 hint.pack_forget()
@@ -2160,8 +2163,13 @@ class MerchantWindow:
             actions, text="回到首页", command=self._return_home_from_results,
         ).pack(side="left", padx=8)
         home_button = actions.winfo_children()[-1]
+        cancel_button = ttk.Button(
+            actions, text="取消分析", command=self._on_analysis_cancel,
+        )
+        cancel_button.pack(side="left", padx=8)
         self._widgets["analysis_back_button"] = back_button
         self._widgets["analysis_home_button"] = home_button
+        self._widgets["analysis_cancel_button"] = cancel_button
         self._render_analysis_results()
 
     def _open_selected_analysis_attachment(self) -> None:
@@ -2177,6 +2185,19 @@ class MerchantWindow:
     def _return_home_from_results(self) -> None:
         self._analysis_results_mode = False
         self._show_step(WizardStep.DONE)
+
+    def _on_analysis_cancel(self) -> None:
+        """点"取消分析"：只置位，后台线程在批次间隙停下来。
+
+        不等待工作线程结束 —— 界面立刻恢复可点，线程自己收尾后发
+        analysis_finished。已完成的分段已入缓存，重试会复用。
+        """
+        cancel = self._analysis_cancel
+        if cancel is not None:
+            cancel.set()
+        status = self._summary_status
+        if status is not None and self._alive(status):
+            status.configure(text="正在取消……已完成的分段会保留")
 
     def _render_analysis_results(self) -> None:
         summary = self._last_summary
@@ -2201,6 +2222,15 @@ class MerchantWindow:
             button = self._widgets.get(key)
             if button is not None and self._alive(button):
                 button.configure(state=button_state)
+        # 取消键只在运行时出现：平时摆着会让人以为"分析可以随时停"，
+        # 而没跑的时候点它什么都不会发生 —— 等于骗人。
+        cancel_button = self._widgets.get("analysis_cancel_button")
+        if cancel_button is not None and self._alive(cancel_button):
+            if self._analysis_running:
+                cancel_button.pack(side="left", padx=8)
+                cancel_button.configure(state="normal")
+            else:
+                cancel_button.pack_forget()
 
         tree = self._widgets.get("analysis_detail_tree")
         attachment_tree = self._widgets.get("analysis_attachments_tree")
@@ -3106,6 +3136,7 @@ class MerchantWindow:
         self._analysis_results_mode = True
         self._analysis_call_active = True
         self._analysis_running = True
+        self._analysis_cancel = threading.Event()
         self._summary_started = time.monotonic()
         self._last_analysis_error = ""
         self._last_summary = {}
@@ -3147,10 +3178,12 @@ class MerchantWindow:
 
                 text_messages = summary_task._text_analysis_messages(analysis_messages)
                 if text_messages:
+                    cancel = self._analysis_cancel
                     outcome = summary_task.run_summary(
                         self.app, result, role_id=role, messages_override=analysis_messages,
                         on_progress=lambda text: self._post("analysis_progress", text=text),
-                        on_stream=lambda text: self._post("analysis_stream", text=text))
+                        on_stream=lambda text: self._post("analysis_stream", text=text),
+                        is_cancelled=(cancel.is_set if cancel is not None else None))
                 else:
                     outcome = {
                         "summary": "本次读取只有附件，没有可供 AI 分析的文字内容。附件已列在下方。",
@@ -3169,6 +3202,7 @@ class MerchantWindow:
                     "role_name": get_role(role).name,
                     "analysis_text": outcome.get("summary", ""),
                     "partial_error": outcome.get("partial_error", ""),
+                    "cancelled": bool(outcome.get("cancelled")),
                     "scope_note": scope_note,
                     "attachments": attachment_rows,
                     "details": [
@@ -3190,6 +3224,7 @@ class MerchantWindow:
     def _on_analysis_finished(self, success: bool) -> None:
         self._analysis_running = False
         self._analysis_call_active = False
+        self._analysis_cancel = None
         if self._alive(self._summary_bar):
             self._summary_bar.stop()
             self._summary_bar.configure(value=0)
@@ -3233,9 +3268,12 @@ class MerchantWindow:
             }
             self._set_summary(analysis_text)
             if self._alive(self._summary_status):
-                status = f"AI 已分析 {summary.get('processed', 0)} 条消息"
-                if summary.get("partial_error"):
-                    status = "部分完成，可返回第六步重试失败会话"
+                if summary.get("cancelled"):
+                    status = "已取消分析：上面是已完成部分，已分析过的分段重试会复用"
+                else:
+                    status = f"AI 已分析 {summary.get('processed', 0)} 条消息"
+                    if summary.get("partial_error"):
+                        status = "部分完成，可返回第六步重试失败会话"
                 self._summary_status.configure(text=status)
         self._render_analyzed()
         self._render_role_report()

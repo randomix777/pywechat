@@ -680,16 +680,41 @@ class MerchantApplication:
         return path if path.is_dir() else None
 
     def wcdb_status(self) -> tuple[bool, str]:
-        """解密库能不能用。(ok, 说明)。界面据此显示入口或引导。"""
+        """解密库能不能用。(ok, 说明)。界面据此显示入口或引导。
+
+        有钥匙还要验一把真能开门（读一页验签，毫秒级）：微信升级换盐后，
+        在这里就告诉商户重提，而不是等读一半才炸。
+        """
         from .wcdb import WcdbReader
 
         storage = self._wcdb_db_storage()
         if storage is None:
             return False, "微信还没登录，看不到本机数据库"
         reader = WcdbReader(storage, self.wcdb_keys_path())
-        if reader.available:
-            return True, "本机数据库可读，列表带真名和人数"
-        return False, reader.error or "还没有提取密钥，提一次以后一直能用"
+        if not reader.available:
+            return False, reader.error or "还没有提取密钥，提一次以后一直能用"
+        stale = self._wcdb_keys_stale_message()
+        if stale:
+            return False, stale
+        ok, reason = reader.verify_keys()
+        if not ok:
+            return False, reason
+        return True, "本机数据库可读，列表带真名和人数"
+
+    def _wcdb_keys_stale_message(self) -> str:
+        """钥匙是上个大版本提的 → 盐很可能换了。版本号任一未知就不催。"""
+        from . import wcdb as wcdb_mod
+
+        try:
+            from .WeChatTools import Tools
+            current = str(Tools.get_weixin_version() or "")
+        except Exception:
+            return ""
+        recorded = wcdb_mod.read_keys_version(self.wcdb_keys_path())
+        if wcdb_mod.keys_version_stale(recorded, current):
+            return (f"微信已从 {recorded} 升级到 {current}，钥匙可能失效，"
+                    "点「重新提取密钥」提一次再读")
+        return ""
 
     def _wcdb_reader(self) -> Any | None:
         """给 HistoryReader 的解密库来源：有钥匙才有，没有返回 None。
@@ -764,8 +789,29 @@ class MerchantApplication:
             return False, f"提取没成功：{tail}"
         ok, _ = self.wcdb_status()
         if ok:
+            self._seal_wcdb_keys()
             return True, "密钥已就绪，点「刷新列表」刷新即带真名"
         return False, "工具跑完了但钥匙对不上，微信可能刚升级，重提一次试试"
+
+    def _seal_wcdb_keys(self) -> None:
+        """提钥匙成功后：记下微信版本 + 钥匙文件 DPAPI 落盘。
+
+        全程 best-effort：这里的任何失败都不该把一次成功的提取
+        变成失败，只记日志。
+        """
+        from . import wcdb as wcdb_mod
+
+        try:
+            from .WeChatTools import Tools
+            version = str(Tools.get_weixin_version() or "")
+        except Exception:
+            version = ""
+        try:
+            if version:
+                wcdb_mod.record_keys_version(self.wcdb_keys_path(), version)
+            wcdb_mod.protect_keys_file(self.wcdb_keys_path())
+        except Exception:
+            LOGGER.debug("seal wcdb keys failed", exc_info=True)
 
     def choose_history_conversations(self, selected: Sequence[Conversation]) -> None:
         self.wizard.choose_history_conversations(selected)

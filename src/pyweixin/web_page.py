@@ -136,6 +136,7 @@ PAGE = r"""<!DOCTYPE html>
     <p class="hint">把读到的消息交给模型汇总成可读的说明，不生成订单。</p>
     <div class="row">
       <button id="sumBtn" class="primary" onclick="post('/api/summary')">整理成一段话</button>
+      <button onclick="post('/api/summary/cancel')">取消整理</button>
       <span class="muted" id="sumHint"></span>
     </div>
     <div id="summary" style="margin-top:12px"></div>
@@ -288,7 +289,8 @@ function render(data) {
   if (s) {
     $("summary").innerHTML = s.error
       ? '<div class="msg bad">' + esc(s.error) + "</div>"
-      : '<div class="out">' + esc(s.summary) + "</div>";
+      : '<div class="out">' + esc(s.summary) +
+        (s.cancelled ? '<br><span class="hint">已取消：以上是已完成部分</span>' : "") + "</div>";
   } else if (data.summary_stream) {
     $("summary").innerHTML = '<div class="out">' + esc(data.summary_stream) +
       '<br><span class="hint">正在生成……</span></div>';

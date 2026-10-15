@@ -85,6 +85,8 @@ class WebState:
         #: ``/api/state`` 就能看到"正在一段段出来"，不用等最后全文。
         #: 只保留最近 ~200KB，多会话长分析不会把内存撑爆。
         self.summary_stream: str = ""
+        #: 取消本次摘要。浏览器点取消即置位，后台线程在批次间隙停下。
+        self.summary_cancel = threading.Event()
         self.conversations: list[dict[str, Any]] = []
         self.orders: list[dict[str, Any]] = []
         self.notice: str = ""
@@ -336,6 +338,10 @@ class DevHandler(BaseHTTPRequestHandler):
             elif path == "/api/summary":
                 self._send_json(200, {"ok": True, "started": self._run_blocking(
                     "\u6574\u7406\u6210\u4e00\u6bb5\u8bdd", self._do_summary)})
+            elif path == "/api/summary/cancel":
+                self.state.summary_cancel.set()
+                self.state.log("已请求取消摘要（当前批次完成后停下）")
+                self._send_json(200, {"ok": True})
             elif path == "/api/login":
                 # 登录是**前置条件**，不是第一步。没登录时智能整理必然失败
                 # （排序依赖云端账号），所以页面开头就要能登录。
@@ -431,12 +437,16 @@ class DevHandler(BaseHTTPRequestHandler):
 
     def _do_summary(self) -> None:
         self.state.reset_summary_stream()
+        self.state.summary_cancel.clear()
         result = summary_task.run_summary(
             self.app, self.state.history,
             on_progress=self.state.log,
-            on_stream=self.state.stream_summary)
+            on_stream=self.state.stream_summary,
+            is_cancelled=self.state.summary_cancel.is_set)
         self.state.set(summary=result)
-        if result.get("error"):
+        if result.get("cancelled"):
+            self.state.log("摘要已取消：已完成的分段已保留，重试会复用")
+        elif result.get("error"):
             self.state.log(f"\u6458\u8981\u5931\u8d25\uff1a{result['error']}")
         else:
             self.state.log(f"\u6458\u8981\u5b8c\u6210\uff0c{result.get('message_count', 0)} \u6761\u6d88\u606f")

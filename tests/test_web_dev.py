@@ -339,6 +339,15 @@ class BlockingWorkTests(unittest.TestCase):
         self.assertEqual(code, 409)
         self.assertIn("\u6b63\u5728\u505a\u5176\u4ed6\u4e8b", data["error"])
 
+    def test_summary_cancel_sets_the_flag(self):
+        """取消接口只置位：后台线程在批次间隙自己停，不占处理线程。"""
+        state = self.server.dev_state
+        self.assertFalse(state.summary_cancel.is_set())
+        status, data = self.client.post("/api/summary/cancel")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertTrue(state.summary_cancel.is_set())
+
 
 if __name__ == "__main__":
     unittest.main()
