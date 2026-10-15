@@ -782,7 +782,11 @@ def _network_or_login(exc: Exception) -> str:
         return "分析额度已用完"
     if code == "subscription_inactive":
         return "套餐已到期"
-    return f"查询额度失败：{exc}"
+    from .client_login import merchant_safe_error
+    return "查询额度失败：" + merchant_safe_error(
+        code, getattr(exc, "merchant_message", "") or str(exc),
+        fallback="请稍后重试",
+    )
 
 
 __all__ = [

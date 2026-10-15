@@ -2,8 +2,10 @@
 
 ## 为什么不能用百分比进度条
 
-汇总是**一次 HTTP 请求**——不流式、也没有分步回报。服务端在让模型写完之前
-不会送出任何东西。所以商户手里**没有**可换算成百分比的信息。
+网关任务是"提交 → 轮询"的异步 job：服务端在让模型写完之前不会送出任何
+东西。所以商户手里**没有**可换算成百分比的信息（JYI 直调链路是 SSE
+token 流式，会一段段冒出来；网关链路是逐批完成后一段段冒出来 —— 都是
+增量，但都不是百分比）。
 
 常见但错误的做法：画一条会自己往前走的进度条，日志里写着「模型正在思考」。
 它给出的是**结束时间**，不是进度。商户盯着它走到 80% 而请求其实才刚开始，
@@ -41,8 +43,10 @@ class NoFakeProgressTests(unittest.TestCase):
         self.tree = ast.parse(MERCHANT_UI.read_text(encoding="utf-8"))
 
     def _summary_function(self):
+        # 进度条现在画在第 7 步分析结果页里（以前叫 _build_summary_card，
+        # 页面流程改版时改名了，断言的属性还在同一处）。
         return next(n for n in ast.walk(self.tree)
-                    if isinstance(n, ast.FunctionDef) and n.name == "_build_summary_card")
+                    if isinstance(n, ast.FunctionDef) and n.name == "_page_analysis_results")
 
     def test_the_bar_is_indeterminate(self):
         """determinate + maximum=100 就是假的百分比。"""

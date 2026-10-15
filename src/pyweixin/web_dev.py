@@ -81,6 +81,10 @@ class WebState:
         self.history: Any = None
         self.summary: dict[str, Any] | None = None
         self.analysis: dict[str, Any] | None = None
+        #: 本次摘要的流式增量（token/分段到达即追加）。浏览器轮询
+        #: ``/api/state`` 就能看到"正在一段段出来"，不用等最后全文。
+        #: 只保留最近 ~200KB，多会话长分析不会把内存撑爆。
+        self.summary_stream: str = ""
         self.conversations: list[dict[str, Any]] = []
         self.orders: list[dict[str, Any]] = []
         self.notice: str = ""
@@ -92,6 +96,17 @@ class WebState:
     def log(self, line: str) -> None:
         with self._lock:
             self.logs.append(line)
+
+    def stream_summary(self, fragment: str) -> None:
+        """追加一段分析流式增量。后台线程调，浏览器轮询取。"""
+        if not fragment:
+            return
+        with self._lock:
+            self.summary_stream = (self.summary_stream + fragment)[-200_000:]
+
+    def reset_summary_stream(self) -> None:
+        with self._lock:
+            self.summary_stream = ""
 
     def fail(self, message: str) -> None:
         with self._lock:
@@ -144,6 +159,7 @@ class WebState:
                 "conversations": list(self.conversations),
                 "orders": list(self.orders),
                 "summary": dict(self.summary) if self.summary else None,
+                "summary_stream": self.summary_stream,
                 "analysis": dict(self.analysis) if self.analysis else None,
                 "history": _history_view(history),
                 # 判据直接用共用逻辑，和 Tk 界面是同一份。
@@ -414,7 +430,11 @@ class DevHandler(BaseHTTPRequestHandler):
         self.state.log(f"\u6574\u7406\u5b8c\u6210\uff1a\u5904\u7406 {summary.get('processed', 0)} \u6761\u6d88\u606f")
 
     def _do_summary(self) -> None:
-        result = summary_task.run_summary(self.app, self.state.history)
+        self.state.reset_summary_stream()
+        result = summary_task.run_summary(
+            self.app, self.state.history,
+            on_progress=self.state.log,
+            on_stream=self.state.stream_summary)
         self.state.set(summary=result)
         if result.get("error"):
             self.state.log(f"\u6458\u8981\u5931\u8d25\uff1a{result['error']}")

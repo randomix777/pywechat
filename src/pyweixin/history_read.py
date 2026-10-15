@@ -995,6 +995,7 @@ class HistoryReader:
                 "来源": "wcdb",
                 "source_id": message.source_id,
                 "stable_source_id": True,
+                "media": message.media,
             })
             if on_progress is not None:
                 try:

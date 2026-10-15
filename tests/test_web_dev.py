@@ -121,7 +121,8 @@ class PageAndStateTests(unittest.TestCase):
         status, body = self.client.get("/")
         html = body.decode("utf-8")
         self.assertEqual(status, 200)
-        self.assertIn("接单助手", html)
+        # 品牌名跟着桌面端叫「微信AI智能助理」（以前叫接单助手，改名时测试没跟上）。
+        self.assertIn("微信AI智能助理", html)
         for term in ("读取历史", "智能整理", "整理成一段话", "商品与客户名单", "订单", "运行日志"):
             self.assertIn(term, html, f"\u9875\u9762\u91cc\u6ca1\u6709\u300c{term}\u300d")
 

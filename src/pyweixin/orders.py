@@ -51,7 +51,7 @@ except ImportError:  # pragma: no cover
     PARSER_SYSTEM_PROMPT = ""
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 ALLOWED_INTENTS = ("new_order", "append", "modify", "cancel", "inquiry", "follow_up", "payment_claim", "chitchat", "unclear")
 
@@ -341,7 +341,7 @@ class OrderStore:
         CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY,merchant_id TEXT NOT NULL REFERENCES merchants(id),sku TEXT NOT NULL,name TEXT NOT NULL,unit TEXT NOT NULL,price_cents INTEGER NOT NULL,UNIQUE(merchant_id,sku));
         CREATE TABLE IF NOT EXISTS product_aliases(id TEXT PRIMARY KEY,product_id TEXT NOT NULL REFERENCES products(id),alias TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY,merchant_id TEXT NOT NULL,group_id TEXT NOT NULL,source TEXT NOT NULL,status TEXT NOT NULL,message_count INTEGER NOT NULL DEFAULT 0,min_sent_at TEXT,max_sent_at TEXT,known_gap TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(merchant_id,source));
-        CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,merchant_id TEXT NOT NULL,import_id TEXT NOT NULL REFERENCES imports(id),group_id TEXT NOT NULL,sender TEXT,customer_id TEXT REFERENCES customers(id),content TEXT NOT NULL,kind TEXT NOT NULL,sent_at TEXT,sent_at_epoch REAL,observed_at TEXT NOT NULL,time_precision TEXT NOT NULL,source_id TEXT,match_confidence REAL NOT NULL,UNIQUE(merchant_id,group_id,source_id));
+        CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,merchant_id TEXT NOT NULL,import_id TEXT NOT NULL REFERENCES imports(id),group_id TEXT NOT NULL,sender TEXT,customer_id TEXT REFERENCES customers(id),content TEXT NOT NULL,kind TEXT NOT NULL,sent_at TEXT,sent_at_epoch REAL,observed_at TEXT NOT NULL,time_precision TEXT NOT NULL,source_id TEXT,match_confidence REAL NOT NULL,media_json TEXT NOT NULL DEFAULT '{}',UNIQUE(merchant_id,group_id,source_id));
         CREATE TABLE IF NOT EXISTS message_matches(merchant_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES messages(id),candidate_message_id TEXT NOT NULL REFERENCES messages(id),match_basis TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,PRIMARY KEY(merchant_id,message_id,candidate_message_id));
         CREATE INDEX IF NOT EXISTS messages_tenant_time ON messages(merchant_id,group_id,sent_at);
         CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY,merchant_id TEXT NOT NULL,customer_id TEXT REFERENCES customers(id),group_id TEXT NOT NULL,status TEXT NOT NULL,delivery_date TEXT,source_import_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,history_order_id TEXT,claim_payment INTEGER NOT NULL DEFAULT 0,change_type TEXT NOT NULL DEFAULT 'new',business_at_epoch REAL,parse_run_id TEXT);
@@ -376,6 +376,9 @@ class OrderStore:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc).lower():raise
         try:self.db.execute("ALTER TABLE messages ADD COLUMN sent_at_epoch REAL")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():raise
+        try:self.db.execute("ALTER TABLE messages ADD COLUMN media_json TEXT NOT NULL DEFAULT '{}'")
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc).lower():raise
         try:self.db.execute("ALTER TABLE orders ADD COLUMN business_at_epoch REAL")
@@ -1221,6 +1224,7 @@ class OrderStore:
                 content=str(m.get("content",m.get("消息内容",""))).strip(); sender=str(m.get("sender",m.get("消息发送人",""))).strip() or None
                 sent=str(m.get("sent_at",m.get("消息发送时间",""))).strip() or None
                 kind=normalize_message_kind(m.get("kind",m.get("消息类型","text")))
+                media_json=json.dumps(m.get("media") or {},ensure_ascii=False,separators=(",",":"))
                 source_id=str(m.get("source_id",m.get("message_id",""))).strip() or None
                 if not source_id: source_id="import:"+hashlib.sha256(f"{iid}:{n}:{sender}:{sent}:{content}".encode()).hexdigest()
                 stable_source=bool(m.get("stable_source_id",False))
@@ -1229,7 +1233,7 @@ class OrderStore:
                 cid=customer[0]["customer_id"] if len({r["customer_id"] for r in customer})==1 and customer else None
                 mid="msg_"+hashlib.sha256(f"{tenant}:{group}:{source_id}".encode()).hexdigest()[:20]
                 epoch=self._sent_epoch(sent)
-                cursor=self.db.execute("INSERT OR IGNORE INTO messages(id,merchant_id,import_id,group_id,sender,customer_id,content,kind,sent_at,sent_at_epoch,observed_at,time_precision,source_id,match_confidence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(mid,tenant,iid,group,sender,cid,content,kind,sent,epoch,self.now(),"exact" if epoch is not None else ("unknown" if not sent else "timezone_unknown"),source_id,float(m.get("source_confidence",.95 if m.get("stable_source_id") else .55))))
+                cursor=self.db.execute("INSERT OR IGNORE INTO messages(id,merchant_id,import_id,group_id,sender,customer_id,content,kind,sent_at,sent_at_epoch,observed_at,time_precision,source_id,match_confidence,media_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(mid,tenant,iid,group,sender,cid,content,kind,sent,epoch,self.now(),"exact" if epoch is not None else ("unknown" if not sent else "timezone_unknown"),source_id,float(m.get("source_confidence",.95 if m.get("stable_source_id") else .55)),media_json))
                 if cursor.rowcount:
                     normalized.append(mid)
                     if not stable_source and epoch is not None and sender:
@@ -1245,7 +1249,7 @@ class OrderStore:
                     # 只升级，不降级 —— 原发送人已经是名字的、或新名字带 XML
                     # 碎片的，都不动；正文只填空不覆盖（同 ID 即同消息）。
                     old=self.db.execute(
-                        "SELECT sender,sent_at,sent_at_epoch,content FROM messages WHERE id=?",
+                        "SELECT sender,sent_at,sent_at_epoch,content,media_json,kind FROM messages WHERE id=?",
                         (mid,)).fetchone()
                     if old is not None:
                         updates={}
@@ -1256,6 +1260,10 @@ class OrderStore:
                             updates["sender"]=sender
                         if not str(old["content"] or "").strip() and content:
                             updates["content"]=content
+                        if old["media_json"] in (None, "", "{}") and media_json != "{}":
+                            updates["media_json"]=media_json
+                        if old["kind"] == "other" and kind == "file":
+                            updates["kind"] = "file"
                         if epoch is not None and old["sent_at_epoch"] is None \
                                 and (not old["sent_at"] or "未识别" in str(old["sent_at"])):
                             updates["sent_at"]=sent

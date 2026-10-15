@@ -39,6 +39,17 @@ def production_oauth_config() -> OAuthConfig:
     )
 
 
+def _model_integer(row: Mapping[str, Any], *keys: str) -> int:
+    for key in keys:
+        try:
+            value = int(row.get(key) or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if 0 < value <= 10_000_000:
+            return value
+    return 0
+
+
 class JYIClient(MerchantClient):
     def __init__(self, base_url: str = JYI_GATEWAY, session: Session | None = None,
                  timeout: float = 15.0, config: OAuthConfig | None = None):
@@ -156,10 +167,30 @@ class JYIClient(MerchantClient):
 
     def list_models(self) -> dict[str, Any]:
         body = self._request("GET", "/v1/models")
-        return {"catalog": {"models": [
-            {"alias": row["id"], "display_name": row["id"]}
-            for row in body.get("data", []) if isinstance(row, Mapping) and row.get("id")
-        ], "free_available": False, "notice": BUSINESS_NOTICE}}
+        models = []
+        for row in body.get("data", []):
+            if not isinstance(row, Mapping) or not row.get("id"):
+                continue
+            model: dict[str, Any] = {
+                "alias": str(row["id"]),
+                "display_name": str(row.get("name") or row["id"]),
+            }
+            # Preserve only public capability metadata. OpenAI-compatible
+            # model lists vary in field names, so accept common variants and
+            # leave missing limits unknown instead of inventing defaults.
+            context = _model_integer(row, "context_window", "context_length", "max_context_tokens")
+            output = _model_integer(row, "max_output_tokens", "max_completion_tokens", "max_tokens")
+            if context:
+                model["context_window"] = context
+            if output:
+                model["max_output_tokens"] = output
+            modalities = row.get("input_modalities", row.get("modalities"))
+            if isinstance(modalities, (list, tuple)):
+                model["input_modalities"] = [str(value).lower() for value in modalities
+                                              if str(value).lower() in {"text", "image", "audio", "video"}]
+            models.append(model)
+        return {"catalog": {"models": models, "free_available": False,
+                            "notice": BUSINESS_NOTICE}}
 
     def text_model(self) -> str:
         """本次文字任务用的模型。环境变量优先，方便切模型实测。"""
@@ -182,9 +213,46 @@ class JYIClient(MerchantClient):
             "temperature": 0,
         }
         payload.update(kwargs)
+        # OpenCode Go requires a stable opaque session identifier. Derive it
+        # from the conversation input so retries of the same request retain
+        # the same routing/cache identity without exposing message contents.
+        import hashlib
+        import json
+        import uuid
+
+        session_material = json.dumps(
+            {"model": model, "messages": messages},
+            ensure_ascii=False, sort_keys=True, default=str,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        session_digest = hashlib.sha256(session_material).digest()[:16]
+        conversation_id = str(uuid.UUID(bytes=session_digest))
         client = MerchantClient(self.base_url, session=self.session,
                                 timeout=timeout)
-        return client._request("POST", "/v1/chat/completions", payload)
+        return client._request(
+            "POST", "/v1/chat/completions", payload,
+            extra_headers={"x-opencode-session": conversation_id},
+        )
+
+    def chat_completions_stream(self, model: str, messages: list[dict[str, Any]],
+                                timeout: float = 120.0, on_chunk: Any = None,
+                                **kwargs: Any) -> dict[str, Any]:
+        """Stream one completion while retaining the normal chat response shape."""
+        import hashlib
+        import json
+        import uuid
+
+        payload: dict[str, Any] = {"model": model, "messages": messages,
+                                   "temperature": 0, "stream": True}
+        payload.update(kwargs)
+        material = json.dumps({"model": model, "messages": messages},
+                              ensure_ascii=False, sort_keys=True, default=str,
+                              separators=(",", ":")).encode("utf-8")
+        conversation_id = str(uuid.UUID(bytes=hashlib.sha256(material).digest()[:16]))
+        client = MerchantClient(self.base_url, session=self.session, timeout=timeout)
+        return client._request_stream(
+            "POST", "/v1/chat/completions", payload,
+            extra_headers={"x-opencode-session": conversation_id}, on_chunk=on_chunk)
 
     def refresh_models(self) -> dict[str, Any]:
         return self.list_models()

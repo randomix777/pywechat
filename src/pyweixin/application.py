@@ -90,6 +90,10 @@ MODEL_STALE_NOTICE = (
     "暂时连不上服务，下面显示的是最近一次获取的模型列表，可能不是最新。"
     "已读取的消息都保留着，可以稍后点「刷新模型列表」重试。"
 )
+MODEL_UNAVAILABLE_NOTICE = (
+    "暂时无法获取分析模型列表，当前显示已保存的模型选择。"
+    "请稍后点「刷新」重试；这次失败不会清除原有选择。"
+)
 
 
 @dataclass
@@ -1120,9 +1124,34 @@ class MerchantApplication:
     # ------------------------------------------------------------- 模型
 
     def load_models(self, force: bool = False) -> dict[str, Any]:
-        """拉取模型目录。失败时保留上一次并明确标记不是最新。"""
+        """拉取模型目录；网络失败时回退到本机上次成功的目录。"""
         if self.client is None:
             self.model_catalog = _empty_model_view()
+            return self.model_catalog
+        # 桩对象/单测可能没有 data_dir：没有就不走本机缓存，直接调网关。
+        # 所有文件读写本来就有 OSError 兜底，这里只是别在拼路径时先炸。
+        base = getattr(self, "data_dir", "") or ""
+        cache_path = Path(base) / "model_catalog_cache.json"
+        cooldown_path = Path(base) / "model_catalog_retry_after.txt"
+        if not (self.model_catalog or {}).get("models"):
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and isinstance(cached.get("models"), list):
+                    self.model_catalog = cached
+            except (OSError, ValueError, TypeError):
+                pass
+        try:
+            retry_at = float(cooldown_path.read_text(encoding="ascii").strip())
+        except (OSError, ValueError, TypeError):
+            retry_at = 0.0
+        remaining = retry_at - time.time()
+        if remaining > 0:
+            self.model_catalog = dict(self.model_catalog or _empty_model_view())
+            self.model_catalog["stale"] = True
+            self.model_catalog["notice"] = (
+                f"模型列表请求繁忙，请约 {int(remaining + 0.99)} 秒后刷新。"
+                "已保存的模型选择仍保留。"
+            )
             return self.model_catalog
         try:
             refresh = getattr(self.client, "refresh_models", None) if force else None
@@ -1135,9 +1164,33 @@ class MerchantApplication:
             # 结果界面上冒出 "'DemoGateway' object has no attribute 'list_models'"
             # 这种东西 —— 商户看不懂，只会觉得软件坏了。技术细节只进日志。
             LOGGER.warning("model catalog refresh failed: %s", exc, exc_info=True)
-            self.model_catalog["notice"] = MODEL_STALE_NOTICE
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after:
+                try:
+                    cooldown_path.parent.mkdir(parents=True, exist_ok=True)
+                    cooldown_path.write_text(
+                        str(time.time() + min(max(float(retry_after), 1.0), 120.0)),
+                        encoding="ascii",
+                    )
+                except OSError:
+                    LOGGER.debug("Could not persist model catalog cooldown", exc_info=True)
+            self.model_catalog["notice"] = (
+                MODEL_STALE_NOTICE if self.model_catalog.get("models")
+                else MODEL_UNAVAILABLE_NOTICE
+            )
             return self.model_catalog
+        try:
+            cooldown_path.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.debug("Could not clear model catalog cooldown", exc_info=True)
         self.model_catalog = payload.get("catalog") or _empty_model_view()
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(self.model_catalog, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(cache_path)
+        except OSError:
+            LOGGER.debug("Could not persist model catalog cache", exc_info=True)
         self._reconcile_model_choice()
         self._adopt_pricing_version()
         return self.model_catalog

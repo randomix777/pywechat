@@ -122,6 +122,64 @@ class MessagesForSummaryTests(unittest.TestCase):
         self.assertIn("LIMIT", source)
 
 
+class SummaryBatchPlannerTests(unittest.TestCase):
+    def test_text_images_and_document_segments_are_separate_and_bounded(self):
+        messages = [
+            {"sender": "A", "content": "文字一", "kind": "text"},
+            {"sender": "B", "content": "文字二", "kind": "text"},
+            *[{"sender": "C", "content": f"图片说明{i}", "kind": "image",
+               "attachments": [f"image-{i}.jpg"]} for i in range(6)],
+            {"sender": "D", "content": "文件说明", "kind": "file",
+             "attachments": ["orders.docx"]},
+        ]
+        document = "段落\n" + ("DOCX正文 " * 5000)
+        with unittest.mock.patch("pyweixin.media_attachments.document_text",
+                                 return_value=document) as extract:
+            batches = summary_task._summary_work_batches(
+                messages, token_budget=20_000, max_document_chars=4_000)
+
+        self.assertEqual(extract.call_count, 1)
+        categories = [category for category, _ in batches]
+        self.assertEqual(categories[0], "纯文字")
+        self.assertEqual(categories.count("图片"), 2)
+        self.assertGreater(categories.count("DOCX/PDF 文档"), 1)
+        self.assertEqual(len(set(categories)), 3)
+        for category, batch in batches:
+            self.assertEqual({item["kind"] for item in batch}, {
+                {"纯文字": "text", "图片": "image", "DOCX/PDF 文档": "file"}[category]})
+            if category == "图片":
+                self.assertLessEqual(len(batch), summary_task.SUMMARY_CHUNK_MAX_IMAGES)
+            if category == "DOCX/PDF 文档":
+                self.assertTrue(all(len(item["_analysis_document_text"]) <= 4_000
+                                    for item in batch))
+                self.assertTrue(all(item["_analysis_document_name"] == "orders.docx"
+                                    for item in batch))
+        recovered = "".join(item["_analysis_document_text"] for category, batch in batches
+                            if category == "DOCX/PDF 文档" for item in batch)
+        self.assertEqual(recovered, document)
+
+        from pyweixin.jyi_parse import add_document_text
+        document_batch = next(batch for category, batch in batches
+                              if category == "DOCX/PDF 文档")
+        prompt = [{"role": "system", "content": "role"},
+                  {"role": "user", "content": "分析文件"}]
+        with unittest.mock.patch("pyweixin.media_attachments.document_text",
+                                 side_effect=AssertionError("prepared text should be reused")):
+            enriched = add_document_text(prompt, document_batch)
+        parts = enriched[-1]["content"]
+        self.assertTrue(any("文件附件正文（orders.docx" in part.get("text", "")
+                            for part in parts if isinstance(part, dict)))
+
+    def test_audio_video_attachments_do_not_enter_model_batches(self):
+        batches = summary_task._summary_work_batches([
+            {"sender": "A", "content": "文字", "kind": "text"},
+            {"sender": "B", "content": "语音", "kind": "voice", "attachments": ["x.silk"]},
+            {"sender": "C", "content": "视频", "kind": "video", "attachments": ["x.mp4"]},
+        ], token_budget=20_000, max_document_chars=4_000)
+        self.assertEqual([category for category, _ in batches], ["纯文字"])
+        self.assertEqual([item["content"] for _, batch in batches for item in batch], ["文字"])
+
+
 class HasMessagesForTests(unittest.TestCase):
     """放行的唯一判据。"""
 
@@ -270,7 +328,8 @@ class CloudSummaryTests(unittest.TestCase):
                 return_value=[{"sender": "张姐", "content": "苹果两箱",
                                "sent_at": "2026-10-13 10:00", "kind": "text"}]):
             outcome = summary_task.run_summary(self._app(client), object())
-        self.assertEqual(outcome["summary"], "张姐要两箱苹果")
+        self.assertIn("【纯文字】", outcome["summary"])
+        self.assertIn("张姐要两箱苹果", outcome["summary"])
         self.assertEqual(outcome["error"], "")
         self.assertIsNone(outcome["cost"])
         self.assertTrue(seen["model"])
@@ -305,7 +364,9 @@ class CloudSummaryTests(unittest.TestCase):
             outcome = summary_task.run_summary(self._app(FakeClient()), object())
         self.assertEqual(outcome["summary"], "张姐要两箱苹果")
         self.assertEqual(outcome["error"], "")
-        self.assertEqual(outcome["cost"], 7)
+        # cost 的单位是美元（界面按 `本次费用 ${cost:.6f}` 展示），
+        # 网关按微美元结算，这里是 7 微美元。
+        self.assertAlmostEqual(outcome["cost"], 7 / 1_000_000)
 
     def test_failed_job_reports_message(self):
         class FakeClient:
@@ -345,6 +406,15 @@ class GatewayErrorTextTests(unittest.TestCase):
     def test_unknown_technical_error_stays_generic(self):
         text = summary_task._gateway_error_text(OSError("boom"))
         self.assertEqual(text, "提交失败，请稍后重试")
+
+    def test_unsettled_upstream_requests_use_neutral_wait_message(self):
+        from pyweixin.client_login import GatewayError
+
+        text = summary_task._analysis_error(GatewayError(
+            "too_many_concurrent", "Too many unsettled requests. Wait for them to finish.", 429))
+        self.assertIn("稍等片刻", text)
+        self.assertIn("重试时复用", text)
+        self.assertNotIn("unsettled", text.lower())
 
 
 if __name__ == "__main__":

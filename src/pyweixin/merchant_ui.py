@@ -1041,6 +1041,16 @@ class MerchantWindow:
         self._widgets["conv_checked_count"] = tk.StringVar(value="已选 0 个")
         ttk.Label(search_row, textvariable=self._widgets["conv_checked_count"],
                   foreground="#1a7f37").pack(side="left", padx=8)
+        self._widgets["conv_search"] = tk.StringVar()
+        ttk.Label(search_row, text="搜索").pack(side="left", padx=(12, 4))
+        search_entry = ttk.Entry(search_row, textvariable=self._widgets["conv_search"], width=28)
+        search_entry.pack(side="left", fill="x", expand=True)
+        search_entry.bind(
+            "<Escape>",
+            lambda _event: self._widgets["conv_search"].set(""),
+        )
+        self._widgets["conv_search"].trace_add(
+            "write", lambda *_args: self._on_redraw_conversations())
         wcdb_row = ttk.Frame(frame)
         wcdb_row.pack(fill="x", pady=(0, 8))
         self._widgets["conv_wcdb_btn"] = ttk.Button(
@@ -1144,8 +1154,7 @@ class MerchantWindow:
         self._maybe_auto_refresh_conversations()
 
     def _split_visible(self) -> dict[str, list[Conversation]]:
-        """按栏拆分会话。搜索框已下掉（商户反馈多余），这里保留按词过滤的
-        能力位，供单测与以后扩展用；界面上不建框时即不过滤。"""
+        """按当前搜索词筛选会话，再拆分到群聊和联系人两栏。"""
         # 注意别写成 self._widgets.get("conv_search", tk.StringVar()) ——
         # dict.get 的第二个参数是**急切求值**的，key 存在也照样先造一个
         # StringVar，白白要求一个 Tk root。
@@ -1162,27 +1171,45 @@ class MerchantWindow:
         return buckets
 
     def _refresh_wcdb_hint(self) -> None:
-        """解密库状态行：只在没钥匙时出现（钥匙+重试按钮）。
+        """只有自动提取失败或钥匙不完整时才显示重试入口。
 
-        有钥匙是常态，不占一行字。点「刷新列表」时没钥匙会
-        自动提一次（提完直接读），这个按钮只留作重试 —— 商户正常
-        流程里不需要点它。
+        未登录时 ``wcdb_status`` 也会返回不可用，但这不代表提取失败；
+        初次提取由「刷新列表」自动执行，只有尝试过仍不可用才显示重试按钮。
         """
         hint = self._widgets.get("conv_wcdb_hint")
         button = self._widgets.get("conv_wcdb_btn")
         try:
+            logged_in = self.app.monitor.latest.state == WeChatState.LOGGED_IN
+        except Exception:
+            logged_in = False
+        if not logged_in:
+            if hint is not None and self._alive(hint):
+                hint.pack_forget()
+            if button is not None and self._alive(button):
+                button.pack_forget()
+            return
+        try:
             ok, message = self.app.wcdb_status()
         except Exception:
             return
+        attempted = bool(getattr(self.app, "_wcdb_ensure_attempted", False))
+        try:
+            keys_complete = bool(self.app._wcdb_keys_complete())
+        except Exception:
+            keys_complete = ok
+        # 页面初始状态可能还没有钥匙；刷新列表会自动尝试提取，只有失败/缺钥匙
+        # 的情况才需要把人工重试入口露出来。
+        show_retry = attempted and not keys_complete
         if hint is not None and self._alive(hint):
-            if ok:
+            if not show_retry:
                 hint.pack_forget()
             else:
-                hint.configure(text=f"本机数据库：{message}。点读取时会自动提一次。")
+                detail = message if not ok else "检测到尚未提取密钥的新数据库"
+                hint.configure(text=f"本机数据库：{detail}。可重新提取密钥后再刷新列表。")
                 if not hint.winfo_ismapped():
                     hint.pack(side="left", padx=8)
         if button is not None and self._alive(button):
-            if ok:
+            if not show_retry:
                 button.pack_forget()
             else:
                 button.configure(text="重新提取密钥")
@@ -2001,6 +2028,11 @@ class MerchantWindow:
         )
         self._widgets["analyze_scope"].pack(anchor="w", pady=(4, 0))
         self._render_analyze_scope(self._last_read_result or self.app.wizard.history_result)
+        ttk.Label(
+            frame,
+            text="多会话和长消息会按会话分批调用模型；实际用量会随会话数量和消息量变化。",
+            foreground="#7b8794", wraplength=760,
+        ).pack(anchor="w", pady=(6, 0))
 
         self._widgets["analyze"] = ttk.Label(frame, text="", font=("Microsoft YaHei", 11, "bold"), wraplength=700)
         self._widgets["analyze"].pack(anchor="w", pady=(14, 0))
@@ -2058,11 +2090,15 @@ class MerchantWindow:
         summary_box = ttk.LabelFrame(frame, text="AI角色分析报告", padding=8)
         summary_box.pack(fill="x", pady=(0, 8))
         self._widgets["summary_box"] = summary_box
-        self._summary_text = tk.Text(summary_box, height=5, wrap="word", relief="flat")
-        self._summary_text.pack(fill="x", expand=True)
+        self._summary_text = tk.Text(summary_box, height=8, wrap="word", relief="flat")
+        summary_scroll = ttk.Scrollbar(summary_box, orient="vertical",
+                                       command=self._summary_text.yview)
+        self._summary_text.configure(yscrollcommand=summary_scroll.set)
+        self._summary_text.pack(side="left", fill="both", expand=True)
+        summary_scroll.pack(side="right", fill="y")
         self._summary_text.configure(state="disabled")
         summary_bar = ttk.Frame(summary_box)
-        summary_bar.pack(fill="x", pady=(6, 0))
+        self._widgets["analysis_activity_row"] = summary_bar
         self._summary_bar = ttk.Progressbar(summary_bar, length=150, mode="indeterminate")
         self._summary_bar.pack(side="left")
         self._summary_elapsed = tk.StringVar(value="")
@@ -2074,6 +2110,27 @@ class MerchantWindow:
             summary_bar, text="", foreground="#7b8794", wraplength=600,
         )
         self._summary_status.pack(side="left", padx=(8, 0))
+        if self._analysis_running:
+            summary_bar.pack(fill="x", pady=(6, 0))
+            self._summary_started = time.monotonic()
+            self._summary_status.configure(text="正在分析本次读取的消息……")
+            self._summary_bar.start(12)
+            self._summary_tick()
+
+        attachment_frame = ttk.LabelFrame(frame, text="本次读取的附件（仅展示，不提交给 AI）", padding=8)
+        self._widgets["analysis_attachments_box"] = attachment_frame
+        attachment_frame.pack(fill="x", pady=(0, 8))
+        attachment_table, attachment_tree = self._tree_with_scroll(
+            attachment_frame, columns=("group", "type", "name", "path"),
+            show="headings", height=4,
+        )
+        attachment_table.pack(fill="x", expand=False)
+        for key, heading, width in (("group", "会话", 140), ("type", "类型", 70),
+                                    ("name", "附件", 220), ("path", "本地位置", 360)):
+            attachment_tree.heading(key, text=heading)
+            attachment_tree.column(key, width=width, anchor="w")
+        attachment_tree.bind("<Double-1>", lambda _event: self._open_selected_analysis_attachment())
+        self._widgets["analysis_attachments_tree"] = attachment_tree
 
         detail_box = ttk.LabelFrame(frame, text="本次纳入分析的消息", padding=8)
         detail_box.pack(fill="both", expand=True)
@@ -2107,6 +2164,16 @@ class MerchantWindow:
         self._widgets["analysis_home_button"] = home_button
         self._render_analysis_results()
 
+    def _open_selected_analysis_attachment(self) -> None:
+        tree = self._widgets.get("analysis_attachments_tree")
+        if tree is None or not self._alive(tree):
+            return
+        selection = tree.selection()
+        if selection:
+            path = str(tree.set(selection[0], "path") or "")
+            if path:
+                self._open_media_attachment(path)
+
     def _return_home_from_results(self) -> None:
         self._analysis_results_mode = False
         self._show_step(WizardStep.DONE)
@@ -2120,6 +2187,8 @@ class MerchantWindow:
                         f"{summary.get('processed', 0)} 条消息。详细分析报告见下方。")
                 if summary.get("scope_note"):
                     text += "\n" + str(summary["scope_note"])
+                if summary.get("partial_error"):
+                    text += "\n" + str(summary["partial_error"])
                 label.configure(text=text)
             elif self._analysis_running:
                 label.configure(text="正在分析本次读取的消息……")
@@ -2134,6 +2203,23 @@ class MerchantWindow:
                 button.configure(state=button_state)
 
         tree = self._widgets.get("analysis_detail_tree")
+        attachment_tree = self._widgets.get("analysis_attachments_tree")
+        attachment_box = self._widgets.get("analysis_attachments_box")
+        if attachment_tree is not None and self._alive(attachment_tree):
+            attachment_tree.delete(*attachment_tree.get_children())
+            attachments = list(summary.get("attachments") or []) if summary else []
+            for index, item in enumerate(attachments):
+                if not isinstance(item, dict):
+                    continue
+                attachment_tree.insert("", "end", iid=f"attachment-{index}", values=(
+                    item.get("group", ""), item.get("type", "附件"),
+                    item.get("name", ""), item.get("path", ""),
+                ))
+            if attachment_box is not None and self._alive(attachment_box):
+                if attachments:
+                    attachment_box.pack(fill="x", pady=(0, 8))
+                else:
+                    attachment_box.pack_forget()
         if tree is not None and self._alive(tree):
             tree.delete(*tree.get_children())
             self._analysis_detail_rows: dict[str, dict[str, Any]] = {}
@@ -2185,17 +2271,20 @@ class MerchantWindow:
                 if order_summary:
                     analysis = f"{analysis}；{order_summary}" if analysis else order_summary
                 iid = tree.insert("", "end", iid=str(index), values=(
-                    message.get("group_id", ""), _cell(message.get("content", ""), 42),
+                    message.get("group_label") or message.get("group_id", ""), _cell(message.get("content", ""), 42),
                     _cell(analysis, 58), status_label,
                 ))
                 self._analysis_detail_rows[iid] = {
-                    "group": str(message.get("group_id", "")),
+                    "group": str(message.get("group_label") or message.get("group_id", "")),
                     "sender": str(message.get("sender", "")),
                     "sent_at": str(message.get("sent_at", "")),
                     "content": str(message.get("content", "")),
+                    "kind": str(message.get("kind", "")),
                     "analysis": analysis,
                     "status": status_label,
                     "trace": trace,
+                    "attachments": list(message.get("attachments") or []),
+                    "media_status": str(message.get("media_status") or ""),
                 }
 
         self._render_analysis_paragraph()
@@ -2235,12 +2324,32 @@ class MerchantWindow:
         ttk.Label(box, text=f"会话：{detail['group']}　发送人：{detail['sender']}"
                            f"　时间：{detail['sent_at']}").pack(anchor="w", pady=(0, 8))
         body = tk.Text(box, wrap="word")
-        body.pack(fill="both", expand=True)
-        body.insert("1.0", f"原消息：\n{detail['content']}\n\n"
+        attachments = list(detail.get("attachments") or [])
+        if attachments:
+            ttk.Label(box, text="附件（仅展示，不提交给 AI）：").pack(anchor="w", pady=(8, 2))
+            for path in attachments:
+                row = ttk.Frame(box)
+                row.pack(fill="x", pady=1)
+                ttk.Label(row, text=str(path), wraplength=530).pack(side="left", fill="x", expand=True)
+                ttk.Button(row, text="打开", command=lambda p=str(path): self._open_media_attachment(p)).pack(side="right")
+        elif detail.get("media_status"):
+            ttk.Label(box, text=str(detail["media_status"])).pack(anchor="w", pady=(8, 2))
+        original_content = str(detail.get("content") or "").strip()
+        if not original_content:
+            original_content = f"[{detail.get('kind') or '媒体'}消息]"
+        body.pack(fill="both", expand=True, pady=(8, 0))
+        body.insert("1.0", f"原消息：\n{original_content}\n\n"
                             f"AI分析：\n{detail['analysis']}\n\n"
                             f"处理结果：{detail['status']}\n\n"
                             f"任务追踪：{json.dumps(detail['trace'], ensure_ascii=False, indent=2)}")
         body.configure(state="disabled")
+
+    @staticmethod
+    def _open_media_attachment(path: str) -> None:
+        try:
+            os.startfile(path)
+        except OSError as exc:
+            messagebox.showerror("无法打开附件", f"附件文件无法打开：{exc}")
 
     def _render_role_report(self) -> None:
         """角色整理报告：按桶列出消息（群｜发送人｜时间｜内容｜抽到的事实）。
@@ -2285,7 +2394,7 @@ class MerchantWindow:
 
     def _summary_tick(self) -> None:
         """每半秒刷一次已等待时长。给的是**真实秒数**。"""
-        if not self._summary_running or not self._alive(self._summary_elapsed_label):
+        if not (self._summary_running or self._analysis_running) or not self._alive(self._summary_elapsed_label):
             return
         waited = int(time.monotonic() - self._summary_started)
         self._summary_elapsed.set(f"已等待 {waited} 秒")
@@ -2793,19 +2902,66 @@ class MerchantWindow:
         ).pack(side="left")
         ttk.Label(row, text="分析模型：").pack(side="left", padx=(18, 4))
         labels = self._model_options()
-        model_var = tk.StringVar(value=self._selected_model_label(labels))
+        model_var = tk.StringVar(value=(self._selected_model_label(labels)
+                                        if labels else self._model_picker_placeholder()))
         self._widgets["model_picker"] = model_var
         picker = ttk.Combobox(row, textvariable=model_var, values=list(labels),
-                              state="readonly", width=28)
+                              state="readonly" if labels else "disabled", width=28)
         picker.pack(side="left")
         picker.bind("<<ComboboxSelected>>", self._on_model_selected)
-        ttk.Button(row, text="刷新", command=self._refresh_models).pack(side="left", padx=(6, 0))
         self._widgets["model_picker_widget"] = picker
+        retry = ttk.Button(row, text=self._model_retry_text(),
+                           command=self._refresh_models)
+        retry.pack(side="left", padx=(8, 0))
+        if self.app.session is None:
+            retry.configure(state="disabled")
+        self._widgets["model_retry_button"] = retry
+        notice = ttk.Label(parent, text=self._model_picker_notice(),
+                           foreground="#a8590b", wraplength=560, justify="left")
+        notice.pack(anchor="w", padx=(18, 0), pady=(0, 4))
+        self._widgets["model_picker_notice"] = notice
+
+    def _model_retry_text(self) -> str:
+        catalog = self.app.model_catalog or {}
+        return "重试" if catalog.get("stale") or not catalog.get("models") else "刷新列表"
+
+    def _model_picker_notice(self) -> str:
+        catalog = self.app.model_catalog or {}
+        if catalog.get("stale"):
+            return str(catalog.get("notice") or self.app.model_notice())
+        if not catalog.get("models"):
+            return ("登录后自动加载可用模型列表。" if self.app.session is None
+                    else "正在加载可用模型列表…")
+        return ""
+
+    def _model_picker_placeholder(self) -> str:
+        alias = str(getattr(self.app.settings, "model_alias", "") or "")
+        if not alias:
+            return "暂无可用模型"
+        display = "JYI DEFAULT" if alias.casefold() == "jyi-default" else alias
+        return f"{display}（保留上次选择）"
 
     def _model_options(self) -> dict[str, str]:
-        return {str(item.get("display_name") or item.get("alias")): str(item.get("alias"))
-                for item in (self.app.model_catalog or {}).get("models") or []
-                if item.get("alias")}
+        labels = {}
+        for item in (self.app.model_catalog or {}).get("models") or []:
+            alias = str(item.get("alias") or "")
+            if not alias:
+                continue
+            label = str(item.get("display_name") or alias)
+            context = item.get("context_window")
+            output = item.get("max_output_tokens")
+            details = []
+            if context:
+                details.append(f"上下文 {int(context):,}")
+            if output:
+                details.append(f"输出上限 {int(output):,}")
+            modalities = item.get("input_modalities") or []
+            if "image" in modalities:
+                details.append("支持图片")
+            if details:
+                label += "（" + " · ".join(details) + "）"
+            labels[label] = alias
+        return labels
 
     def _selected_model_label(self, labels: Mapping[str, str]) -> str:
         alias = str(getattr(self.app.settings, "model_alias", "") or "")
@@ -2820,6 +2976,12 @@ class MerchantWindow:
             self._refresh_analyze_button()
 
     def _refresh_models(self) -> None:
+        retry = self._widgets.get("model_retry_button")
+        notice = self._widgets.get("model_picker_notice")
+        if retry is not None and self._alive(retry):
+            retry.configure(state="disabled", text="正在重试…")
+        if notice is not None and self._alive(notice):
+            notice.configure(text="正在重新获取可用模型列表…")
         self._spawn("models", lambda: self._post("models_loaded", catalog=self.app.load_models(force=True)))
 
     def _refresh_model_picker(self) -> None:
@@ -2828,9 +2990,19 @@ class MerchantWindow:
         if picker is None or not self._alive(picker):
             return
         labels = self._model_options()
-        picker.configure(values=list(labels))
+        picker.configure(values=list(labels), state="readonly" if labels else "disabled")
         if variable is not None:
-            variable.set(self._selected_model_label(labels))
+            variable.set(self._selected_model_label(labels)
+                         if labels else self._model_picker_placeholder())
+        notice = self._widgets.get("model_picker_notice")
+        if notice is not None and self._alive(notice):
+            notice.configure(text=self._model_picker_notice())
+        retry = self._widgets.get("model_retry_button")
+        if retry is not None and self._alive(retry):
+            retry.configure(
+                text=self._model_retry_text(),
+                state="normal" if self.app.session is not None else "disabled",
+            )
 
     def _picked_role(self) -> str:
         """当前选中的整理角色 id。控件不在（测试/旧页面）就回订单助手。"""
@@ -2909,7 +3081,7 @@ class MerchantWindow:
                  if is_update else
                  "本次读取没有读到消息。要分析所选会话中已保存的历史消息吗？\n\n")
                 + "\n".join(lines)
-                + f"\n\n共 {total_history} 条；单次最多向 AI 发送最近 {summary_task.SUMMARY_MESSAGE_LIMIT} 条。"
+                + f"\n\n共 {total_history} 条；将按会话分批分析，可能产生多次模型调用。"
             )
             if not messagebox.askyesno("分析历史消息？", prompt, parent=self.root):
                 return
@@ -2920,9 +3092,9 @@ class MerchantWindow:
             analysis_messages = summary_task.messages_for_summary(self.app, result)
             if read_errors:
                 names = "、".join(item.conversation.disambiguation for item in read_errors)
-                scope_note = f"本次只分析有新增的消息；以下会话读取失败，未纳入分析：{names}。"
+                scope_note = f"本次按会话分析全部已存消息；以下会话读取失败，未纳入分析：{names}。"
             else:
-                scope_note = "本次只分析读取到的新消息。"
+                scope_note = "本次按会话分析全部已存消息（含本次新增）。"
         if not analysis_messages:
             messagebox.showinfo(
                 "没有可分析的消息",
@@ -2934,29 +3106,75 @@ class MerchantWindow:
         self._analysis_results_mode = True
         self._analysis_call_active = True
         self._analysis_running = True
+        self._summary_started = time.monotonic()
         self._last_analysis_error = ""
         self._last_summary = {}
         self._last_analysis_details = []
         self._last_paragraph_outcome = {}
         self._show_step(WizardStep.RESULTS)
+        self._set_summary("")
         def work() -> None:
             try:
                 from .roles import get_role
 
-                outcome = summary_task.run_summary(
-                    self.app, result, role_id=role, messages_override=analysis_messages)
-                if outcome.get("error"):
+                attachment_kinds = {
+                    "image": "图片", "audio": "音频", "voice": "音频",
+                    "video": "视频", "file": "文档/文件",
+                }
+                attachment_rows = []
+                for item in analysis_messages:
+                    kind = str(item.get("kind", "") or "").lower()
+                    paths = [str(path) for path in item.get("attachments") or []]
+                    for path in paths:
+                        suffix = Path(path).suffix.lower()
+                        media_type = attachment_kinds.get(kind, "附件")
+                        if kind == "file" and suffix in {".docx", ".pdf"}:
+                            media_type = suffix[1:].upper()
+                        path = str(path)
+                        attachment_rows.append({
+                            "group": str(item.get("group_label") or item.get("group_id") or ""),
+                            "type": media_type,
+                            "name": Path(path).name,
+                            "path": path,
+                        })
+                    if not paths and kind in attachment_kinds:
+                        attachment_rows.append({
+                            "group": str(item.get("group_label") or item.get("group_id") or ""),
+                            "type": attachment_kinds[kind],
+                            "name": str(item.get("media_status") or "附件未缓存到本地"),
+                            "path": "",
+                        })
+
+                text_messages = summary_task._text_analysis_messages(analysis_messages)
+                if text_messages:
+                    outcome = summary_task.run_summary(
+                        self.app, result, role_id=role, messages_override=analysis_messages,
+                        on_progress=lambda text: self._post("analysis_progress", text=text),
+                        on_stream=lambda text: self._post("analysis_stream", text=text))
+                else:
+                    outcome = {
+                        "summary": "本次读取只有附件，没有可供 AI 分析的文字内容。附件已列在下方。",
+                        "message_count": 0, "completed_groups": [], "partial_error": "",
+                    }
+                if outcome.get("error") and not outcome.get("summary"):
                     raise RuntimeError(str(outcome["error"]))
+                completed_groups = set(outcome.get("completed_groups") or ())
+                detail_messages = [
+                    item for item in text_messages
+                    if not completed_groups or str(item.get("group_id") or item.get("group") or "所选会话") in completed_groups
+                ]
                 summary = {
-                    "processed": len(analysis_messages),
+                    "processed": int(outcome.get("message_count", len(detail_messages)) or 0),
                     "role_id": outcome.get("role_id", role),
                     "role_name": get_role(role).name,
                     "analysis_text": outcome.get("summary", ""),
+                    "partial_error": outcome.get("partial_error", ""),
                     "scope_note": scope_note,
+                    "attachments": attachment_rows,
                     "details": [
                         {"message": item, "analysis": "已纳入上方角色分析报告",
                          "status": "已纳入分析", "trace": {}}
-                        for item in analysis_messages
+                        for item in detail_messages
                     ],
                 }
             except Exception as exc:
@@ -2972,9 +3190,34 @@ class MerchantWindow:
     def _on_analysis_finished(self, success: bool) -> None:
         self._analysis_running = False
         self._analysis_call_active = False
+        if self._alive(self._summary_bar):
+            self._summary_bar.stop()
+            self._summary_bar.configure(value=0)
+        self._summary_elapsed.set("")
+        activity_row = self._widgets.get("analysis_activity_row")
+        if activity_row is not None and self._alive(activity_row):
+            activity_row.pack_forget()
         if not success and not self._last_analysis_error:
             self._last_analysis_error = "AI分析未完成，请返回第六步重试。"
         self._render_analysis_results()
+
+    def _on_analysis_progress(self, text: str) -> None:
+        status = self._summary_status
+        if status is not None and self._alive(status):
+            status.configure(text=str(text or "正在分析……"))
+
+    def _on_analysis_stream(self, text: str) -> None:
+        """Render model deltas on Tk's event thread as soon as they arrive."""
+        widget = self._summary_text
+        if not text or not self._alive(widget):
+            return
+        widget.configure(state="normal")
+        widget.insert("end", str(text))
+        widget.see("end")
+        widget.configure(state="disabled")
+        status = self._summary_status
+        if status is not None and self._alive(status):
+            status.configure(text="AI 正在生成分析内容……")
 
     def _on_analyzed(self, summary: dict) -> None:
         # 结果先存下来：页面随时可能被一次导航重建，事后再渲染也拿得到。
@@ -2986,10 +3229,14 @@ class MerchantWindow:
             self._last_paragraph_outcome = {
                 "summary": analysis_text,
                 "message_count": summary.get("processed", 0),
+                "partial_error": summary.get("partial_error", ""),
             }
             self._set_summary(analysis_text)
             if self._alive(self._summary_status):
-                self._summary_status.configure(text=f"AI 已分析 {summary.get('processed', 0)} 条消息")
+                status = f"AI 已分析 {summary.get('processed', 0)} 条消息"
+                if summary.get("partial_error"):
+                    status = "部分完成，可返回第六步重试失败会话"
+                self._summary_status.configure(text=status)
         self._render_analyzed()
         self._render_role_report()
         self._render_analysis_results()
@@ -3015,6 +3262,8 @@ class MerchantWindow:
         skipped = summary.get("already_analyzed") or 0
         if skipped:
             text += f"\n已整理过的 {skipped} 条本次没有重复提交"
+        if summary.get("partial_error"):
+            text += f"\n{summary['partial_error']}"
         label.configure(text=text)
 
     def _refresh_analyze_button(self) -> None:

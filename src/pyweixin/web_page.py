@@ -283,12 +283,15 @@ function render(data) {
       "</div>";
   }
 
-  // 摘要
+  // 摘要：最终结果优先；还在跑时显示流式增量，不用干等。
   const s = data.summary;
   if (s) {
     $("summary").innerHTML = s.error
       ? '<div class="msg bad">' + esc(s.error) + "</div>"
       : '<div class="out">' + esc(s.summary) + "</div>";
+  } else if (data.summary_stream) {
+    $("summary").innerHTML = '<div class="out">' + esc(data.summary_stream) +
+      '<br><span class="hint">正在生成……</span></div>';
   }
 
   $("sumBtn").disabled = !data.can_summarize;

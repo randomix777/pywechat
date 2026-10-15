@@ -18,13 +18,17 @@ Design constraints:
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
+import re
 import sqlite3
+import socket
 import threading
 import time
 import uuid
 import webbrowser
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -60,6 +64,7 @@ _STATE_LABELS = {
 
 _ERROR_LABELS = {
     "network_unavailable": STATUS_NETWORK_DOWN,
+    "request_timeout_unknown": "本批分析等待超时，服务端结果状态未知",
     "subscription_inactive": STATUS_SUBSCRIPTION_EXPIRED,
     "quota_exhausted": "剩余额度不足",
     "free_quota_exhausted": "今天的可用分析次数已用完，已为您保留",
@@ -71,6 +76,7 @@ _ERROR_LABELS = {
     "pricing_version_required": "提交前需要先确认这次分析的费用",
     "concurrency_limit": "当前解析任务较多，请稍后再试",
     "model_concurrency_limit": "当前解析任务较多，请稍后再试",
+    "too_many_concurrent": "当前请求较多或仍有任务处理中，请稍后重试。",
     "unauthenticated": "登录已过期，请重新登录",
     "forbidden": "当前设备已被停用，请联系客服",
     "device_revoked": "当前设备已被停用，请联系客服",
@@ -109,6 +115,40 @@ HELD_ERRORS = {
 #: 需要**商户重新确认价格**的错误。客户端只把新事实展示出来，
 #: 绝**不自动**把版本号更新成新的然后重发 —— 那等于替商户同意了涨价。
 PRICING_CONFIRM_ERRORS = {"pricing_changed", "pricing_version_required"}
+
+# Upstream error bodies are not merchant copy. Replace the whole line rather
+# than trying to edit vendor names out of an otherwise technical message.
+_UPSTREAM_NAME = re.compile(
+    r"(?i)(?<![a-z0-9])(?:open\s*go|opencode|openrouter|openai|deepseek|"
+    r"anthropic|claude|gemini|google|qwen|tongyi|moonshot|kimi|mistral|"
+    r"groq|cohere|together(?:\.ai)?|fireworks(?:\.ai)?|siliconflow|"
+    r"perplexity|azure(?:\s+openai)?|bedrock|vertex(?:\s+ai)?|jyi|aws|grok|ollama|"
+    r"cerebras|sambanova|hugging\s*face|modelscope)(?![a-z0-9])"
+    r"|供应商|上游服务|服务商|火山方舟|火山引擎|百度千帆|阿里云百炼|智谱|腾讯混元"
+    r"|\b(?:provider|upstream)\b"
+)
+_CAMEL_CASE_SERVICE = re.compile(r"\b[a-z]+[A-Z][A-Za-z0-9]*\b")
+
+
+def merchant_safe_error(code: str = "", message: str = "", *,
+                        fallback: str = "操作暂时未能完成，请稍后重试") -> str:
+    """Translate upstream failures into provider-neutral merchant copy."""
+    code = str(code or "").strip().lower()
+    text = str(message or "").strip()
+    lowered = text.casefold()
+    if code in _ERROR_LABELS:
+        return _ERROR_LABELS[code]
+    if _UPSTREAM_NAME.search(text) or _CAMEL_CASE_SERVICE.search(text):
+        if any(term in lowered for term in ("price", "bill", "model", "模型", "计费", "价格")):
+            return "所选分析模型暂不可用，请更换模型或稍后重试。"
+        if any(term in lowered for term in ("quota", "balance", "credit", "额度", "余额")):
+            return "分析额度暂时不可用，请稍后重试。"
+        return "智能分析暂时不可用，请稍后重试。"
+    if "no published price" in lowered or ("cannot be billed" in lowered and "model" in lowered):
+        return "所选分析模型暂不可用，请更换模型或稍后重试。"
+    if code in {"adapter_error", "internal_error", "business_api_unavailable", "provider_error", "upstream_error"}:
+        return "智能分析暂时不可用，请稍后重试。"
+    return text or fallback
 
 
 def status_label(state: str, error_code: str = "") -> str:
@@ -201,11 +241,16 @@ class CredentialStore:
 
 
 class GatewayError(RuntimeError):
-    def __init__(self, code: str, message: str, status: int = 0, billing: Mapping[str, Any] | None = None):
-        super().__init__(message or code)
+    def __init__(self, code: str, message: str, status: int = 0,
+                 billing: Mapping[str, Any] | None = None, retry_after: float | None = None):
         self.code = code or "internal_error"
-        self.merchant_message = message or "服务暂时不可用"
+        self.raw_message = str(message or "")
+        self.merchant_message = merchant_safe_error(
+            self.code, self.raw_message, fallback="服务暂时不可用，请稍后重试",
+        )
+        super().__init__(self.merchant_message)
         self.status = status
+        self.retry_after = retry_after
         #: 服务端在某些错误里附带的**机器可读计费事实**（例如价格变了要重新
         #: 确认、平台预算用尽）。客户端只把它转述给商户，不自己重算。
         self.billing = dict(billing or {})
@@ -247,18 +292,66 @@ class MerchantClient:
         self.session = session
         self.timeout = timeout
         self._opener = build_opener()
+        self._request_lock = threading.RLock()
+        self._rate_limit_until = 0.0
+        self._rate_limit_streak = 0
 
-    def _request(
+    @staticmethod
+    def _retry_after(headers: Any) -> float | None:
+        value = str(headers.get("Retry-After", "") or "").strip()
+        if not value:
+            return None
+        try:
+            delay = float(value)
+            return max(0.0, delay) if math.isfinite(delay) else None
+        except ValueError:
+            try:
+                return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+    def _request_allowed(self) -> None:
+        remaining = self._rate_limit_until - time.time()
+        if remaining > 0:
+            raise GatewayError("too_many_concurrent", "请求较多，请稍后重试", 429,
+                               retry_after=remaining)
+
+    def _record_http_error(self, exc: HTTPError) -> float | None:
+        if exc.code != 429:
+            return None
+        supplied = self._retry_after(exc.headers or {})
+        self._rate_limit_streak = min(self._rate_limit_streak + 1, 6)
+        # Respect Retry-After. If absent, use bounded exponential cooldown
+        # (2, 4, 8... up to 60 seconds); never replay the rejected request.
+        delay = supplied if supplied is not None else min(2 ** self._rate_limit_streak, 60)
+        delay = min(max(delay, 1.0), 120.0)
+        self._rate_limit_until = max(self._rate_limit_until, time.time() + delay)
+        return delay
+
+    def _request(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        with self._request_lock:
+            self._request_allowed()
+            try:
+                result = self._request_once(*args, **kwargs)
+            except GatewayError:
+                raise
+            self._rate_limit_streak = 0
+            return result
+
+    def _request_once(
         self,
         method: str,
         path: str,
         payload: Mapping[str, Any] | None = None,
         authenticated: bool = True,
         idempotency_key: str = "",
+        extra_headers: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}/{path.lstrip('/')}"
         data = json.dumps(dict(payload), ensure_ascii=False, default=str).encode("utf-8") if payload is not None else None
         headers = {"Accept": "application/json", "User-Agent": "pyweixin-shop/1"}
+        if extra_headers:
+            headers.update({str(key): str(value) for key, value in extra_headers.items()})
         if data is not None:
             headers["Content-Type"] = "application/json"
         if authenticated and self.session is not None and self.session.access_token:
@@ -270,6 +363,7 @@ class MerchantClient:
             with self._opener.open(request, timeout=self.timeout) as response:
                 raw = response.read(4 * 1024 * 1024 + 1)
         except HTTPError as exc:
+            retry_after = self._record_http_error(exc)
             raw = b""
             try:
                 raw = exc.read(256 * 1024)
@@ -290,6 +384,7 @@ class MerchantClient:
                 str(error_fields.get("message", "")),
                 exc.code,
                 billing=body.get("billing"),
+                retry_after=retry_after,
             ) from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise GatewayError("network_unavailable", STATUS_NETWORK_DOWN) from exc
@@ -298,6 +393,99 @@ class MerchantClient:
         except ValueError as exc:
             raise GatewayError("invalid_response", "服务返回异常，请稍后重试") from exc
         return body if isinstance(body, dict) else {}
+
+    def _request_stream(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        with self._request_lock:
+            self._request_allowed()
+            try:
+                result = self._request_stream_once(*args, **kwargs)
+            except GatewayError:
+                raise
+            self._rate_limit_streak = 0
+            return result
+
+    def _request_stream_once(
+        self, method: str, path: str, payload: Mapping[str, Any],
+        authenticated: bool = True,
+        extra_headers: Mapping[str, str] | None = None,
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Read OpenAI-compatible SSE and return the same shape as a normal completion."""
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        data = json.dumps(dict(payload), ensure_ascii=False, default=str).encode("utf-8")
+        headers = {"Accept": "text/event-stream", "Content-Type": "application/json",
+                   "Cache-Control": "no-cache", "User-Agent": "pyweixin-shop/1"}
+        if extra_headers:
+            headers.update({str(key): str(value) for key, value in extra_headers.items()})
+        if authenticated and self.session is not None and self.session.access_token:
+            headers["Authorization"] = "Bearer " + self.session.access_token
+        request = Request(url, data=data, headers=headers, method=method)
+        fragments: list[str] = []
+        finish_reason = None
+        usage = None
+        saw_done = False
+        try:
+            with self._opener.open(request, timeout=self.timeout) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    value = line[5:].strip()
+                    if value == "[DONE]":
+                        saw_done = True
+                        break
+                    try:
+                        event = json.loads(value)
+                    except ValueError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    usage = event.get("usage") or usage
+                    choices = event.get("choices") or []
+                    if not choices or not isinstance(choices[0], Mapping):
+                        continue
+                    choice = choices[0]
+                    finish_reason = choice.get("finish_reason") or finish_reason
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content", "") if isinstance(delta, Mapping) else ""
+                    if isinstance(content, str) and content:
+                        fragments.append(content)
+                        if on_chunk:
+                            on_chunk(content)
+            if not saw_done and finish_reason is None:
+                raise GatewayError("request_timeout_unknown", "响应流未完整结束，结果状态未知")
+        except HTTPError as exc:
+            retry_after = self._record_http_error(exc)
+            raw = b""
+            try:
+                raw = exc.read(256 * 1024)
+            except Exception:
+                pass
+            finally:
+                exc.close()
+            try:
+                body = json.loads(raw.decode("utf-8")) if raw else {}
+            except ValueError:
+                body = {}
+            error = body.get("error") if isinstance(body, dict) else None
+            fields = error if isinstance(error, Mapping) else body if isinstance(body, dict) else {}
+            raise GatewayError(str(fields.get("code") or (error if isinstance(error, str) else f"http_{exc.code}")),
+                               str(fields.get("message", "")), exc.code,
+                               billing=body.get("billing") if isinstance(body, dict) else None,
+                               retry_after=retry_after) from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise GatewayError("request_timeout_unknown", "请求超时，结果状态未知") from exc
+        except URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                raise GatewayError("request_timeout_unknown", "请求超时，结果状态未知") from exc
+            raise GatewayError("network_unavailable", STATUS_NETWORK_DOWN) from exc
+        except OSError as exc:
+            if isinstance(exc, (TimeoutError, socket.timeout)):
+                raise GatewayError("request_timeout_unknown", "请求超时，结果状态未知") from exc
+            raise GatewayError("network_unavailable", STATUS_NETWORK_DOWN) from exc
+        return {"choices": [{"message": {"content": "".join(fragments)},
+                             "finish_reason": finish_reason}],
+                **({"usage": usage} if isinstance(usage, Mapping) else {})}
 
     # ------------------------------------------------------------- device flow
 

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .local_parse import (
@@ -29,7 +30,10 @@ from .local_parse import (
     ParseProgress,
 )
 
-SUMMARY_MAX_OUTPUT_TOKENS = 2000
+# Output budget is independent from the model's input context window. JYI's
+# DEFAULT alias does not publish per-model limits, so use a practical larger
+# request and keep adaptive chunk splitting as the fallback.
+SUMMARY_MAX_OUTPUT_TOKENS = 16000
 ORDER_MAX_OUTPUT_TOKENS = 2000
 
 
@@ -67,6 +71,110 @@ def build_summary_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
     ]
 
 
+def add_image_parts(prompt_messages: list[dict[str, Any]],
+                    messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add cached images as OpenAI-compatible image_url parts; leave AV out."""
+    from .media_attachments import image_data_url
+
+    parts: list[dict[str, Any]] = []
+    added = 0
+    missing = 0
+    for item in messages:
+        if str(item.get("kind", "")).lower() != "image":
+            continue
+        paths = item.get("attachments") or []
+        if not paths:
+            missing += 1
+        for path in paths:
+            if added >= 20:
+                break
+            try:
+                data_url = image_data_url(str(path))
+            except (OSError, ValueError):
+                missing += 1
+                item["media_status"] = "图片缓存无法解码，未纳入视觉分析"
+                continue
+            parts.append({"type": "text", "text":
+                          f"图片消息：{item.get('sender', '')} {item.get('sent_at', '')}"})
+            parts.append({"type": "image_url", "image_url":
+                          {"url": data_url, "detail": "high"}})
+            added += 1
+    if not added and not missing:
+        return prompt_messages
+    if len(prompt_messages) < 2:
+        return prompt_messages
+    result = [dict(message) for message in prompt_messages]
+    user = dict(result[-1])
+    text = str(user.get("content") or "")
+    guidance = ("\n说明：图片附件会参与分析；音频和视频仅作为附件保留，不分析其内容。"
+                "没有成功附加的图片不可推测。")
+    if missing:
+        guidance += f"另有 {missing} 条图片消息未能从本地缓存取得图片内容。"
+    if added >= 20:
+        guidance += "本次最多发送 20 张图片，其余图片不参与视觉分析。"
+    user["content"] = [{"type": "text", "text": text + guidance}, *parts]
+    result[-1] = user
+    return result
+
+
+def add_document_text(prompt_messages: list[dict[str, Any]],
+                      messages: list[dict[str, Any]], *,
+                      max_chars_per_document: int = 20000) -> list[dict[str, Any]]:
+    """Extract supported document attachments locally and send their text."""
+    from .media_attachments import document_text
+
+    parts: list[dict[str, str]] = []
+    unavailable: list[str] = []
+    for item in messages:
+        if str(item.get("kind", "")).lower() != "file":
+            continue
+        prepared_text = str(item.get("_analysis_document_text") or "")
+        prepared_name = str(item.get("_analysis_document_name") or "")
+        prepared_part = str(item.get("_analysis_document_part") or "")
+        if prepared_text:
+            label = prepared_name or "附件"
+            if prepared_part:
+                label += f"（第 {prepared_part} 段）"
+            parts.append({"type": "text", "text":
+                          f"\n\n文件附件正文（{label}）：\n{prepared_text}"})
+            continue
+        extracted_any = False
+        for path in item.get("attachments") or []:
+            try:
+                extracted = document_text(str(path), max_chars=max_chars_per_document)
+            except (OSError, ValueError, RuntimeError):
+                extracted = ""
+            if extracted:
+                name = Path(str(path)).name
+                parts.append({"type": "text", "text":
+                              f"\n\n文件附件正文（{name}）：\n{extracted}"})
+                extracted_any = True
+                break
+        if not extracted_any:
+            unavailable.append(str(item.get("_analysis_document_name")
+                                   or ", ".join(Path(str(path)).name
+                                                 for path in item.get("attachments") or [])
+                                   or "未读取的文档附件"))
+    if (not parts and not unavailable) or len(prompt_messages) < 2:
+        return prompt_messages
+    result = [dict(message) for message in prompt_messages]
+    user = dict(result[-1])
+    content = user.get("content") or ""
+    if unavailable:
+        note = ("\n\n说明：以下文档未能提取到正文，请勿推测文件内容："
+                + "、".join(unavailable))
+        if isinstance(content, list):
+            content = [*content, {"type": "text", "text": note}]
+        else:
+            content = str(content) + note
+    if isinstance(content, list):
+        user["content"] = [*content, *parts]
+    else:
+        user["content"] = [{"type": "text", "text": str(content)}, *parts]
+    result[-1] = user
+    return result
+
+
 def build_role_analysis_messages(messages: list[dict[str, Any]], role_id: str) -> list[dict[str, Any]]:
     """Build role-directed analysis instructions and the current batch."""
     from .roles import analysis_instruction
@@ -92,13 +200,95 @@ def build_role_analysis_messages(messages: list[dict[str, Any]], role_id: str) -
 
 
 def extract_text(body: Any) -> str:
-    """从 chat 响应里拿正文。拿不到返回空串，调用方判空处理。"""
-    try:
-        choices = (body or {}).get("choices") or []
-        message = (choices[0] or {}).get("message") or {}
-        return str(message.get("content") or "").strip()
-    except (AttributeError, IndexError, TypeError):
+    """从常见 OpenAI 兼容响应中提取可展示正文。"""
+    if not isinstance(body, Mapping):
         return ""
+
+    def text_value(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, Mapping):
+                    # Chat Completions multimodal/text content parts and
+                    # Responses API output_text parts.
+                    if item.get("type") in {"text", "output_text", None}:
+                        part = item.get("text", item.get("output_text"))
+                        if isinstance(part, str):
+                            parts.append(part)
+            return "".join(parts)
+        return ""
+
+    direct = text_value(body.get("output_text"))
+    if direct.strip():
+        return direct.strip()
+
+    choices = body.get("choices") or []
+    if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+        choice = choices[0]
+        message = choice.get("message") or {}
+        if isinstance(message, Mapping):
+            content = text_value(message.get("content"))
+            if content.strip():
+                return content.strip()
+        # Some compatible gateways return a text completion or streaming-like
+        # delta object even for a non-streaming request.
+        content = text_value(choice.get("text"))
+        if not content:
+            delta = choice.get("delta") or {}
+            if isinstance(delta, Mapping):
+                content = text_value(delta.get("content"))
+        if content.strip():
+            return content.strip()
+
+    # Responses API style: output[].content[].text
+    output = body.get("output") or []
+    if isinstance(output, list):
+        parts = []
+        for item in output:
+            if not isinstance(item, Mapping):
+                continue
+            parts.append(text_value(item.get("content")))
+            parts.append(text_value(item.get("text")))
+        combined = "".join(parts).strip()
+        if combined:
+            return combined
+    return ""
+
+
+def empty_text_detail(body: Any) -> str:
+    """Return provider-neutral metadata explaining an empty model response."""
+    if not isinstance(body, Mapping):
+        return "模型未生成可展示的分析内容。"
+    choices = body.get("choices") or []
+    if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+        reason = str(choices[0].get("finish_reason") or "").strip().lower()
+        if reason == "length":
+            return "模型输出达到长度上限，未生成可展示的分析内容；请缩短消息范围后重试。"
+        if reason in {"content_filter", "safety"}:
+            return "模型未能生成可展示的分析内容，请调整消息范围后重试。"
+    status = str(body.get("status") or "").strip().lower()
+    if status in {"incomplete", "failed", "cancelled"}:
+        return "模型未能完成本次分析，请稍后重试。"
+    return "模型未生成可展示的分析内容。"
+
+
+def output_was_truncated(body: Any) -> bool:
+    """Detect common OpenAI-compatible output-token limit indicators."""
+    if not isinstance(body, Mapping):
+        return False
+    choices = body.get("choices") or []
+    if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+        if str(choices[0].get("finish_reason") or "").strip().lower() == "length":
+            return True
+    details = body.get("incomplete_details") or {}
+    return (str(body.get("status") or "").strip().lower() == "incomplete"
+            and isinstance(details, Mapping)
+            and str(details.get("reason") or "").strip().lower()
+            in {"max_output_tokens", "length"})
 
 
 def extract_usage(body: Any) -> dict[str, int]:
@@ -155,13 +345,17 @@ class JYIParseService(LocalParseService):
             text = extract_text(body)
             result = parse_order_json(text)
         except Exception as exc:
-            from .client_login import GatewayError
+            from .client_login import GatewayError, merchant_safe_error
 
             if isinstance(exc, GatewayError) and exc.code in {
                     "network_unavailable", "backend_unavailable"}:
                 emit(ParseProgress(LOCAL_NEEDS_RETRY, STATUS_NETWORK_DOWN, message_id=message_id))
                 return ParseProgress(LOCAL_NEEDS_RETRY, STATUS_NETWORK_DOWN, message_id=message_id)
-            message = getattr(exc, "merchant_message", "") or str(exc) or "解析失败"
+            message = merchant_safe_error(
+                getattr(exc, "code", ""),
+                getattr(exc, "merchant_message", "") or str(exc),
+                fallback="解析暂时未能完成，请稍后重试。",
+            )
             emit(ParseProgress(LOCAL_NEEDS_RETRY, message, message_id=message_id, needs_review=True))
             return ParseProgress(LOCAL_NEEDS_RETRY, message, message_id=message_id, needs_review=True)
         usage = extract_usage(body)
@@ -211,8 +405,11 @@ __all__ = [
     "SUMMARY_MAX_OUTPUT_TOKENS",
     "build_order_messages",
     "build_summary_messages",
+    "add_image_parts",
+    "add_document_text",
     "build_role_analysis_messages",
     "extract_text",
+    "output_was_truncated",
     "extract_usage",
     "parse_order_json",
 ]

@@ -36,7 +36,7 @@ import shutil
 import sqlite3
 import struct
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -377,6 +377,7 @@ class WcdbMessage:
     kind: str = "文本"
     timestamp: int = 0
     source_id: str = ""
+    media: dict = field(default_factory=dict)
 
 
 def _strip_tags(text: str, limit: int = 200) -> str:
@@ -386,6 +387,35 @@ def _strip_tags(text: str, limit: int = 200) -> str:
     clean = re.sub(r"<[^>]{1,200}>", " ", text or "")
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean[:limit]
+
+
+def _media_metadata(value: object) -> dict[str, str]:
+    """Keep the non-secret attachment identifiers from a media message XML."""
+    if isinstance(value, (bytes, bytearray)):
+        value = _maybe_decompress(value)
+        value = bytes(value).decode("utf-8", errors="replace") if isinstance(value, (bytes, bytearray)) else value
+    raw = str(value or "")
+    if "<" not in raw or ">" not in raw:
+        return {}
+    import re
+    import xml.etree.ElementTree as ET
+
+    attrs: dict[str, str] = {}
+    try:
+        root = ET.fromstring(raw)
+        for node in root.iter():
+            for key, item in node.attrib.items():
+                if item and key.lower() in {"md5", "videomd5", "filemd5", "filename", "name"}:
+                    attrs[key.lower()] = str(item)
+            for child in node:
+                key = child.tag.rsplit("}", 1)[-1].lower()
+                if child.text and key in {"md5", "videomd5", "filemd5", "filename", "name"}:
+                    attrs[key] = child.text.strip()
+    except ET.ParseError:
+        # Some exports include control bytes around otherwise valid XML.
+        for key, item in re.findall(r'(?i)\b(md5|videomd5|filemd5|filename|name)=["\']([^"\']+)', raw):
+            attrs[key.lower()] = item
+    return attrs
 
 
 #: ZSTD 帧魔数（小端）。WCDB 把压缩列直接存成 ZSTD 帧：
@@ -560,6 +590,11 @@ def read_messages(message_dbs: Sequence[Path], contact_db: Path, username: str,
         except (TypeError, ValueError):
             local_type = 0
         kind = MESSAGE_KINDS.get(local_type, "其他")
+        media = _media_metadata(row["message_content"])
+        if kind == "应用" and (media.get("filemd5") or
+                                Path(media.get("filename", "")).suffix.lower() in
+                                {".docx", ".pdf", ".doc", ".txt", ".md", ".rtf"}):
+            kind = "文件"
         sender, body = ("", "")
         if local_type == 1:
             # 解压过的正文直接用（上面批量解备注时已解好，不解两遍）。
@@ -583,7 +618,8 @@ def read_messages(message_dbs: Sequence[Path], contact_db: Path, username: str,
             sender_username=sender,
             sender_display=resolved.get(sender, sender),
             content=body if kind in ("文本", "系统通知") else "",
-            kind=kind, timestamp=timestamp, source_id=source_id))
+            kind=kind, timestamp=timestamp, source_id=source_id,
+            media=media if kind in {"图片", "语音", "视频", "文件"} else {}))
     # rows 进来已经是时间正序（合并时排好），直接返回。
     return out
 

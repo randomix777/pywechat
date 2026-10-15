@@ -36,6 +36,7 @@ dependencies=[
     "packaging>=23.2",
     # 微信 4.x 消息正文长一点就存成 ZSTD 整帧，不解连发送人都看不到。
     "zstandard>=0.20",
+    "pypdf>=5.0",
     # Windows has no system IANA time zone database, so `zoneinfo` cannot
     # resolve `Asia/Shanghai` & co. without it. The gateway counts the daily
     # free quota in the operator's configured time zone; without this package
