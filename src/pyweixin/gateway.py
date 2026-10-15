@@ -981,6 +981,7 @@ class ProductGateway:
             raise ValidationFailed("消息内容为空", code="empty_message")
         return {
             "model": str(payload.get("model", ""))[:128],
+            "role_id": str(payload.get("role_id", ""))[:32],
             "messages": messages,
         }
 

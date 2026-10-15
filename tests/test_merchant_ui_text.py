@@ -25,7 +25,6 @@ from pyweixin.conversations import Conversation, ConversationKind, SimulatedConv
 from pyweixin.dashboard import STATUS_LABELS, DashboardBuilder  # noqa: E402
 from pyweixin.history_read import HistoryRange, SimulatedHistory  # noqa: E402
 from pyweixin.merchant_ui import (  # noqa: E402
-    DISCOVERY_NOTE,
     FORBIDDEN_TERMS,
     PRIVACY_TEXT,
     audit_text,
@@ -62,7 +61,7 @@ class MerchantTextTests(unittest.TestCase):
         self.assertEqual(audit_text("好的，已记单：苹果 2箱"), [])
 
     def test_no_forbidden_term_appears_in_any_merchant_string(self):
-        strings = [DISCOVERY_NOTE, PRIVACY_TEXT]
+        strings = [PRIVACY_TEXT]
         strings += [copy[0] for copy in STATE_COPY.values()]
         strings += [copy[1] for copy in STATE_COPY.values()]
         strings += [copy[2] for copy in STATE_COPY.values()]
@@ -142,6 +141,89 @@ class DisplayContentTests(unittest.TestCase):
         self.assertEqual(display_content("other", ""), "［非文字消息］")
         self.assertEqual(display_content("whatever", ""), "［非文字消息］")
         self.assertEqual(display_content("", ""), "［非文字消息］")
+
+    def test_export_uses_display_text(self):
+        """导出和核对页一个口径：图片/语音行导出占位，不导空白格。"""
+        import types
+
+        from pyweixin.merchant_ui import MerchantWindow
+
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._last_review_rows = [
+            {"id": "m1", "group": "群", "sender": "a", "content": "",
+             "kind": "image", "sent_at": "t"},
+            {"id": "m2", "group": "群", "sender": "b", "content": "苹果两箱",
+             "kind": "text", "sent_at": "t"},
+        ]
+        window.app = types.SimpleNamespace(
+            orders=types.SimpleNamespace(
+                processed_message_ids=lambda tenant: {"m1", "m2"}),
+            tenant="t")
+        rows = window._export_review_rows()
+        self.assertEqual(rows[0]["content"], "［图片］")
+        self.assertEqual(rows[1]["content"], "苹果两箱")
+
+
+class ExportGateTests(unittest.TestCase):
+    """导出只放过了一遍 AI 的：没整理的要么指路，要么问完只导已整理的。"""
+
+    def _window(self, rows, processed):
+        import types
+
+        from pyweixin.merchant_ui import MerchantWindow
+
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._last_review_rows = list(rows)
+        store = types.SimpleNamespace(
+            processed_message_ids=lambda tenant: set(processed))
+        window.app = types.SimpleNamespace(orders=store, tenant="t")
+        return window
+
+    def _row(self, mid, content="苹果两箱"):
+        return {"id": mid, "group": "群", "sender": "a",
+                "content": content, "kind": "text", "sent_at": "t"}
+
+    def test_all_processed_passes_quietly(self):
+        import unittest.mock
+
+        window = self._window([self._row("m1")], {"m1"})
+        with unittest.mock.patch(
+                "pyweixin.merchant_ui.messagebox") as box:
+            rows = window._check_exportable()
+        self.assertEqual(len(rows), 1)
+        box.showinfo.assert_not_called()
+        box.askyesno.assert_not_called()
+
+    def test_nothing_processed_points_to_analyze(self):
+        import unittest.mock
+
+        window = self._window([self._row("m1")], set())
+        with unittest.mock.patch(
+                "pyweixin.merchant_ui.messagebox") as box:
+            self.assertIsNone(window._check_exportable())
+        box.showinfo.assert_called_once()
+        self.assertIn("智能整理", box.showinfo.call_args.args[1])
+
+    def test_partial_asks_and_exports_subset(self):
+        import unittest.mock
+
+        window = self._window(
+            [self._row("m1"), self._row("m2")], {"m1"})
+        with unittest.mock.patch(
+                "pyweixin.merchant_ui.messagebox") as box:
+            box.askyesno.return_value = True
+            rows = window._check_exportable()
+        self.assertEqual([row["id"] for row in rows], ["m1"])
+
+    def test_partial_decline_exports_nothing(self):
+        import unittest.mock
+
+        window = self._window(
+            [self._row("m1"), self._row("m2")], {"m1"})
+        with unittest.mock.patch(
+                "pyweixin.merchant_ui.messagebox") as box:
+            box.askyesno.return_value = False
+            self.assertIsNone(window._check_exportable())
 
 
 class HomeContentTests(unittest.TestCase):
@@ -368,10 +450,10 @@ class EmptySpaceTests(unittest.TestCase):
         """主按钮只有 padding 没有别的，一眼看不出该点哪个。"""
         import inspect
 
-        from pyweixin import merchant_ui
+        from pyweixin import ui_theme
 
-        build = inspect.getsource(merchant_ui.MerchantWindow._build)
-        big = build[build.index('"Big.TButton"'):build.index('"Pause.TButton"')]
+        build = inspect.getsource(ui_theme.apply_theme)
+        big = build[build.index('for name in ("Big.TButton"'):build.index('"Subtle.TButton"')]
         self.assertIn("font", big, "主按钮没有字体层级")
         self.assertIn("borderwidth", big, "主按钮没有描边")
 

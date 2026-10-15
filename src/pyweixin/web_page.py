@@ -18,7 +18,7 @@ PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>接单助手 · 开发调试</title>
+<title>微信AI智能助理 · 开发调试</title>
 <style>
   :root {
     --ink: #1b2430; --muted: #667486; --line: #dfe4ea; --bg: #f5f7f9;
@@ -62,7 +62,7 @@ PAGE = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>接单助手 · 开发调试</h1>
+  <h1>微信AI智能助理 · 开发调试</h1>
   <span class="badge" id="step">—</span>
   <span class="badge" id="busy" hidden></span>
   <span style="margin-left:auto"></span>

@@ -48,6 +48,10 @@ class Conversation:
     ordinal: int = 0
     #: 微信侧可用于二次核对的标识；读不到时为空，界面会显示"无法二次核对"。
     wxid: str = ""
+    #: 最后活跃时间（会话表里的 last_timestamp，秒）。0 = 不知道，
+    #: 界面把不知道的排在后面。有它的会话按微信一样：越新越靠上。
+    #: 注意：它不进 identity —— 时间一直在变，进去身份就永不稳定了。
+    last_active: int = 0
 
     def __post_init__(self) -> None:
         if not str(self.name).strip():
@@ -83,6 +87,7 @@ class Conversation:
             "member_count": self.member_count,
             "ordinal": self.ordinal,
             "wxid": self.wxid,
+            "last_active": self.last_active,
             "disambiguation": self.disambiguation,
             "identity": self.identity,
         }
@@ -95,15 +100,18 @@ class Conversation:
             member_count=int(data.get("member_count", 0)),
             ordinal=int(data.get("ordinal", 0)),
             wxid=str(data.get("wxid", "")),
+            last_active=int(data.get("last_active", 0) or 0),
         )
 
 
 def disambiguate(entries: Sequence[Conversation]) -> tuple[Conversation, ...]:
-    """给同名会话加上稳定序号，并按 (名称, 人数) 排序。
+    """给同名会话加上稳定序号，并排序：有新消息的在上（和微信一致），
+    不知道时间的保持原来的名字排序。
 
     排序是必要的：界面列表顺序如果随发现顺序抖动，商户会以为自己换了群。
+    没时间戳时退回 (名称, 人数) —— 老行为原样保留。
     """
-    ordered = sorted(entries, key=lambda c: (c.name, c.member_count))
+    ordered = sorted(entries, key=lambda c: (-int(c.last_active or 0), c.name, c.member_count))
     seen: dict[tuple[str, int], int] = {}
     result: list[Conversation] = []
     for item in ordered:
@@ -195,8 +203,13 @@ class RealConversationSource:
                     members = int(getattr(item, "member_count", 0) or 0)
                 except (TypeError, ValueError):
                     members = 0
+                try:
+                    active = int(getattr(item, "last_timestamp", 0) or 0)
+                except (TypeError, ValueError):
+                    active = 0
                 found.append(Conversation(name=show, kind=item_kind,
-                                          member_count=members, wxid=username))
+                                          member_count=members, wxid=username,
+                                          last_active=active))
             if found:
                 return disambiguate(found)
         memory_groups: list[tuple[str, str]] = []

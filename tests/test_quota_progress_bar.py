@@ -25,16 +25,17 @@ from pyweixin.wizard import QuotaView  # noqa: E402
 
 
 class PercentageTests(unittest.TestCase):
-    def test_it_shows_a_percentage(self):
+    def test_it_shows_remaining_percentage(self):
         text = QuotaView(logged_in=True, active=True, remaining=5,
                          total_micro_usd=8, used_micro_usd=3).headline()
-        self.assertIn("38%", text)   # 3/8
+        self.assertIn("剩余 62%", text)   # 5/8, rounded
 
     def test_reservations_count_as_used(self):
         """已接单尚未结算的额度也算已用 —— 否则进度条会跳回去。"""
         view = QuotaView(logged_in=True, active=True, remaining=4,
                          total_micro_usd=8, used_micro_usd=3, reserved_micro_usd=1)
         self.assertEqual(view.used_percent, 50)
+        self.assertEqual(view.remaining_percent, 50)
 
     def test_it_is_clamped(self):
         """超兜的数据不能让条长超出条本身。"""
@@ -70,6 +71,11 @@ class HonestyTests(unittest.TestCase):
         self.assertTrue(view.unlimited)
         self.assertEqual(view.used_percent, 0)
         self.assertIn("不限", view.headline())
+
+    def test_an_unknown_balance_is_not_mistaken_for_unlimited(self):
+        view = QuotaView(logged_in=True, balance_known=False)
+        self.assertFalse(view.unlimited)
+        self.assertEqual(view.headline(), "额度未知，联网后自动刷新")
 
     def test_an_exhausted_quota_says_so_without_inventing_a_count(self):
         text = QuotaView(logged_in=True, active=True, remaining=0,

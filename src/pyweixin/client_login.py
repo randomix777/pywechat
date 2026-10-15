@@ -220,6 +220,9 @@ class Session:
     device_name: str = ""
     subscription: dict[str, Any] = field(default_factory=dict)
     expires_at: float = 0.0
+    provider: str = "product"
+    gateway_url: str = ""
+    auth_origin: str = ""
 
     @property
     def remaining_micro_usd(self) -> int:
@@ -278,9 +281,13 @@ class MerchantClient:
                 body = json.loads(raw.decode("utf-8")) if raw else {}
             except ValueError:
                 body = {}
+            if not isinstance(body, dict):
+                body = {}
+            error = body.get("error")
+            error_fields = error if isinstance(error, Mapping) else body
             raise GatewayError(
-                str(body.get("error", f"http_{exc.code}")),
-                str(body.get("message", "")),
+                str(error_fields.get("code") or (error if isinstance(error, str) else f"http_{exc.code}")),
+                str(error_fields.get("message", "")),
                 exc.code,
                 billing=body.get("billing"),
             ) from exc
@@ -626,6 +633,9 @@ def _session_to_dict(session: Session) -> dict[str, Any]:
         "device_name": session.device_name,
         "subscription": session.subscription,
         "expires_at": session.expires_at,
+        "provider": session.provider,
+        "gateway_url": session.gateway_url,
+        "auth_origin": session.auth_origin,
     }
 
 
@@ -644,6 +654,9 @@ def restore_session(credentials: CredentialStore) -> Session | None:
         device_name=str(data.get("device_name", "")),
         subscription=dict(data.get("subscription") or {}),
         expires_at=float(data.get("expires_at", 0.0)),
+        provider=str(data.get("provider", "product")),
+        gateway_url=str(data.get("gateway_url", "")),
+        auth_origin=str(data.get("auth_origin", "")),
     )
 
 

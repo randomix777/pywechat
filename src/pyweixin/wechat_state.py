@@ -339,23 +339,24 @@ class RealWeChatProbe:
             # 就知道自己没关微信，然后不知道下一步该做什么。
             #
             # 实测：托盘里留着的是 Qt 的辅助窗口（类 Qt51514QWindowIcon，
-            # 标题 WeChat），主窗口 mmui::MainWindow 确实不在。读不到内容，
-            # 所以这里只负责**说清楚现状和该做什么**，不去假装能读。
+            # 标题 WeChat），主窗口 mmui::MainWindow 确实不在。确认不了登录
+            # 状态，所以这里只负责**说清楚现状和该做什么**。
+            # 注意：这只是"看不到状态"，不是"读不到消息" —— 读取走本机
+            # 数据库，不碰微信窗口。
             return WeChatStatus(
                 WeChatState.UNREADABLE,
-                "微信开着，但窗口收起来了，读不到群消息。"
+                "微信开着，但窗口收起来了，看不到登录状态。"
                 "请点一下任务栏右下角的微信图标，把窗口打开，再回来点「重新检测」。",
                 checked_at=checked_at,
             )
 
-        # 窗口在、但被收进托盘时读不到内容。**必须说清楚**，否则商户点
-        # 「开始读取」之后什么也读不到，只会以为软件坏了。
+        # 窗口在、但被收进托盘：登录态是好的，读取也不受影响（走数据库），
+        # 文案里写清楚"不影响读取"，否则商户会去把窗口翻出来再读。
         try:
             if not main.is_visible():
                 return WeChatStatus(
                     WeChatState.LOGGED_IN,
-                    "微信已登录，但窗口收在任务栏右下角。"
-                    "读消息前请先点一下托盘里的微信把窗口打开。",
+                    "微信已登录，窗口收在任务栏右下角——不影响读取消息。",
                     checked_at=checked_at,
                 )
         except Exception as exc:  # pragma: no cover - 取决于本机 UIA
@@ -445,7 +446,7 @@ class RealWeChatProbe:
                 # 窗口被最小化到托盘时，UIA 里仍然找得到，只是不可见。
                 # 只查 exists() 会把"我开着微信但收进了托盘"误报成
                 # "微信没打开" —— 而收进托盘是商户的常态：他要一边聊天
-                # 一边跑接单助手，没道理先把窗口摆出来才能用。
+                # 一边跑微信AI智能助理，没道理先把窗口摆出来才能用。
                 if window.exists(timeout=0.2, visible_only=False):
                     return window
             except Exception as exc:  # pragma: no cover - 取决于本机 UIA

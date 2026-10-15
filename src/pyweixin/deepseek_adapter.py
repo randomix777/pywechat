@@ -207,6 +207,7 @@ class DeepSeekAdapter:
         """摘要任务执行：提示词复用 :mod:`pyweixin.summary` 那一份（单源），
         输出是纯文本简报（不是订单 JSON），用摘要自己的校验。"""
         from .summary import SUMMARY_MAX_CHARS, SUMMARY_SYSTEM_PROMPT
+        from .roles import analysis_instruction
         from business_agent.contracts.protocols import PromptPackage
 
         del session_id
@@ -215,7 +216,8 @@ class DeepSeekAdapter:
         if str(provider_id) and str(provider_id) != self.provider_id:
             raise AdapterRejected(MERCHANT_MESSAGES["no_agent"])
         prompt = PromptPackage(
-            system=SUMMARY_SYSTEM_PROMPT,
+            system=(analysis_instruction(str(payload.get("role_id") or "order"))
+                    if payload.get("role_id") else SUMMARY_SYSTEM_PROMPT),
             payload={"messages": payload.get("messages", [])},
             run_label=job_id,
             max_output_tokens=2000,

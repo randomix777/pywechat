@@ -1,6 +1,6 @@
 """首次使用向导：可恢复、可测试、无需命令行。
 
-    ① 微信    →  ② 选会话  →  ③ 读历史  →  ④ 查额度  →  ⑤ 智能整理  →  ⑥ 完成
+    ① 微信    →  ② 选会话  →  ③ 读历史  →  ④ 查额度  →  ⑤ 智能整理  →  ⑥ AI分析详情
 
 每一步的结果都写进本地设置，正常情况下下次启动直接进首页，**不重走向导**。
 只有两种情况会回到向导：
@@ -42,11 +42,12 @@ class WizardStep:
     REVIEW = "review"
     QUOTA = "quota"
     ANALYZE = "analyze"
+    RESULTS = "results"
     DONE = "done"
 
     #: 商户看到的步骤。确认范围与真正执行分开，执行与核对也分开：
     #: 花额度整理之前，必须先亲眼看到读到了什么。
-    ORDER = (WECHAT, CONVERSATIONS, HISTORY, READ, REVIEW, ANALYZE, DONE)
+    ORDER = (WECHAT, CONVERSATIONS, HISTORY, READ, REVIEW, ANALYZE, RESULTS)
 
     TITLES = {
         WECHAT: "检查微信",
@@ -56,6 +57,7 @@ class WizardStep:
         REVIEW: "核对读取明细",
         QUOTA: "智能整理",
         ANALYZE: "智能整理",
+        RESULTS: "AI分析详情",
         DONE: "开始使用",
     }
 
@@ -76,6 +78,8 @@ class QuotaView:
     """
 
     logged_in: bool = False
+    balance_known: bool = True
+    unlimited_quota: bool | None = None
     active: bool = False
     remaining: int = 0
     plan: str = ""
@@ -95,6 +99,10 @@ class QuotaView:
 
     @property
     def unlimited(self) -> bool:
+        if not self.balance_known:
+            return False
+        if self.unlimited_quota is not None:
+            return self.unlimited_quota
         return self.total_micro_usd <= 0
 
     @property
@@ -105,16 +113,27 @@ class QuotaView:
         return max(0, min(100, round((self.used_micro_usd + self.reserved_micro_usd)
                                      * 100 / self.total_micro_usd)))
 
+    @property
+    def remaining_percent(self) -> int:
+        """剩余百分比 0-100。不限量套餐不展示百分比。"""
+        if self.unlimited or self.total_micro_usd <= 0:
+            return 0
+        return 100 - self.used_percent
+
     def headline(self) -> str:
+        if self.message and self.logged_in:
+            return self.message
         if not self.logged_in:
             return "未登录产品账号"
+        if not self.balance_known:
+            return "额度未知，联网后自动刷新"
         if not self.active:
             return "套餐已到期"
         if self.remaining <= 0:
             return "分析额度已用完，重新开通或续期后即可继续整理"
         if self.unlimited:
             return "分析额度：不限"
-        return f"分析额度已用 {self.used_percent}%"
+        return f"分析额度剩余 {self.remaining_percent}%"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -437,13 +456,44 @@ class Wizard:
         try:
             payload = self.client.account()
         except Exception as exc:
-            self.quota = QuotaView(logged_in=False, message=_network_or_login(exc))
+            if getattr(self.client, "session", None) is not None:
+                previous = self.quota
+                self.quota = QuotaView(
+                    logged_in=True,
+                    balance_known=previous.balance_known,
+                    unlimited_quota=previous.unlimited_quota,
+                    remaining=previous.remaining,
+                    plan=previous.plan,
+                    period_end=previous.period_end,
+                    total_micro_usd=previous.total_micro_usd,
+                    used_micro_usd=previous.used_micro_usd,
+                    reserved_micro_usd=previous.reserved_micro_usd,
+                    purchase_hint=previous.purchase_hint,
+                    message=(previous.message if previous.balance_known
+                             else "额度未知，联网后自动刷新"),
+                )
+            else:
+                self.quota = QuotaView(logged_in=False, message=_network_or_login(exc))
             return self.quota
         subscription = (payload or {}).get("subscription") or {}
+        balance_known = bool(subscription.get("balance_known", True))
+        total = int(subscription.get("quota_micro_usd", 0) or 0)
+        used = int(subscription.get("used_micro_usd", 0) or 0)
+        reserved = int(subscription.get("reserved_micro_usd", 0) or 0)
+        # remaining 缺了就自己算（JYI 只给总量/已用/预留，不给剩余额）。
+        # 有就信服务端的，不覆盖。
+        remaining = subscription.get("remaining_micro_usd", None)
+        try:
+            remaining = int(remaining) if remaining is not None else max(0, total - used - reserved)
+        except (TypeError, ValueError):
+            remaining = max(0, total - used - reserved)
         self.quota = QuotaView(
             logged_in=True,
+            balance_known=balance_known,
+            unlimited_quota=(bool(subscription["unlimited"])
+                             if "unlimited" in subscription else None),
             active=bool(subscription.get("active")),
-            remaining=int(subscription.get("remaining_micro_usd", 0) or 0),
+            remaining=remaining,
             plan=str(subscription.get("plan_code", "")),
             period_end=str(subscription.get("period_end", "")),
             # 进度条要的是这三个。缺任何一个都画不出百分比 ——
@@ -452,8 +502,8 @@ class Wizard:
             used_micro_usd=int(subscription.get("used_micro_usd", 0) or 0),
             reserved_micro_usd=int(subscription.get("reserved_micro_usd", 0) or 0),
             purchase_method="manual",
-            purchase_hint="请联系客服开通或续期。",
-            message="",
+            purchase_hint=str(payload.get("purchase_hint") or "请联系客服开通或续期。"),
+            message=str(payload.get("message") or ""),
         )
         if self.quota.sufficient:
             # 以前这里直接 `_go(ANALYZE)`，于是第 4 步一闪就没了 —— 而"实际读到
@@ -463,10 +513,25 @@ class Wizard:
         return self.quota
 
     def require_quota(self) -> None:
-        """额度不足时抛出，但**保留已读取的数据**。"""
+        """额度不足时抛出，但**保留已读取的数据**。
+
+        JYI 网关没有额度接口（按账号计量，不在客户端结算）——
+        门禁无从判断，不过门，有问题服务端会直接拒单。
+        """
+        if self._is_jyi():
+            return
         view = self.quota.sufficient and self.quota or self.check_quota()
         if not view.sufficient:
             raise QuotaBlocked(view)
+
+    def _is_jyi(self) -> bool:
+        """当前是不是 JYI 通道。鸭子类型，不硬依赖导入（防循环）。"""
+        try:
+            from .jyi_client import JYIClient
+
+            return isinstance(getattr(self, "client", None), JYIClient)
+        except Exception:
+            return False
 
     # ------------------------------------------------------------ ⑤ 整理
 
@@ -508,6 +573,7 @@ class Wizard:
         self._analyzed_ids = ids
         # 汇总口径来自服务端：网关说扣了多少就是多少。
         charged_micro_usd = sum(int(fact.get("charged_micro_usd", 0)) for fact in billing)
+        jyi = self._is_jyi()
         summary = {
             "processed": len(ids),
             "with_result": sum(1 for item in outcomes if item.get("order_id")),
@@ -519,8 +585,14 @@ class Wizard:
             "submitted_jobs": submitted,
             "charged_micro_usd": charged_micro_usd,
             "billing": billing,
-            "billing_note": "扣费金额由云端账号按服务端策略计算，此处只做汇总。",
+            "provider": "jyi" if jyi else "product",
+            # JYI 按账号计量，不在本地结算：charged 恒 0，别让界面
+            # 把它读成"这次没花钱"。
+            "billing_note": ("用量按 JYI 账号计量，明细去 JYI 网站看。"
+                             if jyi else
+                             "扣费金额由云端账号按服务端策略计算，此处只做汇总。"),
             "traces": [item["trace"] for item in outcomes],
+            "details": outcomes,
         }
         self._log(
             f"整理完成：处理 {summary['processed']} 条，生成订单 {summary['with_result']} 条，"
@@ -562,6 +634,11 @@ class Wizard:
                 except Exception:
                     continue
         report = organize(role_def.id, rows)
+        try:
+            self.orders().mark_role_organized(
+                self.tenant, [row["id"] for row in rows], role_def.id)
+        except Exception:
+            pass
         summary = {
             "processed": len(rows),
             "with_result": 0,
@@ -592,9 +669,17 @@ class Wizard:
         整理"，等于花钱买一个"已处理过"。换模型重新分析要走独立的差异流程，
         在它做好之前这里一律不再重复提交。
         """
-        rows = self.orders().db.execute(
-            "SELECT id FROM messages WHERE merchant_id=? ORDER BY COALESCE(sent_at_epoch, 0), id", (self.tenant,)
-        ).fetchall()
+        batch_ids = self._current_read_message_ids()
+        if batch_ids is not None:
+            if not batch_ids:
+                return []
+            rows = [{"id": message_id} for message_id in batch_ids]
+        else:
+            # 兼容没有读取结果的旧调用方；商户端正常流程始终限定在本次导入批次。
+            rows = self.orders().db.execute(
+                "SELECT id FROM messages WHERE merchant_id=? ORDER BY COALESCE(sent_at_epoch, 0), id",
+                (self.tenant,),
+            ).fetchall()
         already = self.orders().analyzed_message_ids(self.tenant)
         merger = self._merger()
         result: list[str] = []
@@ -606,10 +691,28 @@ class Wizard:
                 result.append(message_id)
         return result
 
+    def _current_read_message_ids(self) -> list[str] | None:
+        """读取结果存在时返回本次导入的消息；无读取结果时返回 None。"""
+        read_result = self.history_result
+        if read_result is None:
+            return None
+        import_ids = [str(value) for value in getattr(read_result, "import_ids", ()) if value]
+        if not import_ids:
+            return []
+        marks = ",".join("?" for _ in import_ids)
+        rows = self.orders().db.execute(
+            "SELECT id FROM messages WHERE merchant_id=? AND import_id IN (" + marks + ")"
+            " ORDER BY COALESCE(sent_at_epoch, 0), id",
+            [self.tenant, *import_ids],
+        ).fetchall()
+        return [str(row["id"]) for row in rows]
+
     def already_analyzed_count(self) -> int:
-        """已经整理过、本轮不会重复提交的消息数。界面要如实告诉商户。"""
+        """本次读取批次里已整理的消息数；没有读取批次时返回历史总数。"""
         try:
-            return len(self.orders().analyzed_message_ids(self.tenant))
+            already = self.orders().analyzed_message_ids(self.tenant)
+            current = self._current_read_message_ids()
+            return len(already) if current is None else sum(mid in already for mid in current)
         except Exception:
             return 0
 

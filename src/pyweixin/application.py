@@ -258,6 +258,8 @@ class MerchantApplication:
         self.session = session
         self.client = client
         self.parse_service = parse_service
+        if parse_service is not None and hasattr(parse_service, "model_alias"):
+            parse_service.model_alias = str(self.settings.model_alias or "")
         self.backend_is_model = bool(backend_is_model)
         self.wizard.client = client
         self.wizard.pipeline = self._pipeline()
@@ -291,8 +293,11 @@ class MerchantApplication:
         商户登录一次之后就再也换不了账号 —— 收银电脑上换个人就登不进去，
         本地已读到的数据和订单也不该跟着别人走。
 
-        这里做三件事：通知服务端作废、断开云端能力、刷新界面。
+        这里做四件事：通知服务端作废、删掉本机凭证、断开云端能力、刷新界面。
         本地数据**不删** —— 已读到的消息是商户自己经营出来的。
+
+        本机凭证必须删：只清内存不清文件，下次启动 ``restore_session`` 会
+        把这次登出又"恢复"回来 —— 商户明明点了退出，重开发现还登着。
         """
         client = self.client
         if client is not None:
@@ -301,6 +306,15 @@ class MerchantApplication:
             except Exception:
                 LOGGER.warning("server logout failed; continuing with local sign-out",
                                exc_info=True)
+        # 服务端成没成功，本地凭证都删：断网时退出也必须彻底，
+        # 否则下次启动照样自动登回去。
+        store = getattr(self, "credentials", None)
+        if store is not None:
+            try:
+                from .client_login import clear_session
+                clear_session(store)
+            except Exception:
+                LOGGER.warning("clearing local credentials failed", exc_info=True)
         self.session = None
         #: 最近一次短消息合并的事实（哪几条合成了哪一条）。
         self._last_merged: dict[str, Any] | None = None
@@ -746,7 +760,7 @@ class MerchantApplication:
             return False, f"提取没成功：{tail}"
         ok, _ = self.wcdb_status()
         if ok:
-            return True, "密钥已就绪，点「读取微信对话列表」刷新即带真名"
+            return True, "密钥已就绪，点「刷新列表」刷新即带真名"
         return False, "工具跑完了但钥匙对不上，微信可能刚升级，重提一次试试"
 
     def choose_history_conversations(self, selected: Sequence[Conversation]) -> None:
@@ -1111,7 +1125,8 @@ class MerchantApplication:
             self.model_catalog = _empty_model_view()
             return self.model_catalog
         try:
-            payload = (self.client.refresh_models() if force else self.client.list_models()) or {}
+            refresh = getattr(self.client, "refresh_models", None) if force else None
+            payload = (refresh() if callable(refresh) else self.client.list_models()) or {}
         except Exception as exc:
             # 不用「空列表」伪装成「没有模型」；保留旧数据并说明原因。
             self.model_catalog = dict(self.model_catalog or _empty_model_view())
@@ -1168,6 +1183,20 @@ class MerchantApplication:
         catalog = self.model_catalog or {}
         available = {str(item.get("alias")) for item in catalog.get("models") or []}
         default_alias = str(catalog.get("default_alias") or "")
+        # JYI 目录不是产品计费目录，没有 default_alias/free_available；
+        # 仍应允许使用者选择上游返回的模型。优先用客户端默认值，否则取首项。
+        if not default_alias and self.client is not None and callable(getattr(self.client, "text_model", None)):
+            try:
+                candidate = str(self.client.text_model() or "")
+                default_alias = candidate if candidate in available else ""
+            except Exception:
+                default_alias = ""
+        if not default_alias and available and self.client is not None and callable(getattr(self.client, "text_model", None)):
+            default_alias = next(
+                (str(item.get("alias")) for item in catalog.get("models") or []
+                 if str(item.get("alias") or "") in available),
+                "",
+            )
         chosen = self.settings.model_alias
         if chosen and chosen in available:
             return
@@ -1206,6 +1235,9 @@ class MerchantApplication:
             return False
         self.settings.model_alias = alias
         self.settings_store.save(self.settings)
+        service = self._parse_service()
+        if service is not None and hasattr(service, "model_alias"):
+            service.model_alias = alias
         self.refresh_home()
         return True
 
@@ -1225,6 +1257,8 @@ class MerchantApplication:
         catalog = self.model_catalog or {}
         if catalog.get("stale"):
             return str(catalog.get("notice") or "模型列表不是最新状态")
+        if catalog.get("models") and self.client is not None and callable(getattr(self.client, "text_model", None)):
+            return str(catalog.get("notice") or "")
         if not catalog.get("free_available"):
             # 注意：产品里**没有免费模型**。以前这里写「免费模型暂不可用」，
             # 商户看到会去反复刷新模型列表 —— 问题根本不在模型上。

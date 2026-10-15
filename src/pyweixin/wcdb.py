@@ -784,7 +784,8 @@ class WcdbReader:
     def list_conversations(self, kind: str = "") -> list[WcdbConversation]:
         """最近会话（解密库）。kind 为空要全部：冷群、通讯录好友都并进来。
 
-        最近会话在前？不保证 —— 上游 ``disambiguate`` 会重排，
+        最近会话在前（会话表按最后时间倒序），冷群和通讯录好友
+        （没时间）跟在后面 —— 上游按这个顺序排，和微信一致。
         这里只保证齐全不重复（同 username 去重，会话版优先）。
         """
         ready = self.prepare()

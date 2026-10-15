@@ -101,28 +101,30 @@ def has_messages_for(app: Any, result: Any) -> bool:
 
 
 def messages_for_summary(app: Any, result: Any) -> list[dict[str, Any]]:
-    """把这次读到的**会话**的消息取出来。
-
-    ## 为什么按会话取而不是按「最后一批导入」取
-
-    读取分两种：「读取全部」导入一大批，「更新历史」只导入新增的几条。
-    只按最后一次导入的 ``import_ids`` 取，于是「更新」之后摘要的范围就
-    塌缩成那几条新的 —— 商户刚明明读到了 12 条，一点摘要只剩 2 条，
-    界面和他刚做的事对不上。
-
-    商户口径是**「这个群我读过什么」**，所以按 ``result.coverage`` 里的
-    会话取（对应 ``messages.group_id``）。
-
-    ## 拿不到会话时
-
-    退回按导入批次取 —— 旧的结果对象可能没有 coverage。两条路径都在，
-    但主路径是会话。
-    """
+    """只取本次读取批次的消息，避免把同一会话旧批次的记录算进来。"""
     target = _app(app)
     store = getattr(target, "orders", None)
     tenant = getattr(target, "tenant", "")
     if store is None:
         return []
+    import_ids = [str(x) for x in (getattr(result, "import_ids", None) or []) if x]
+    if import_ids:
+        marks = ",".join("?" for _ in import_ids)
+        rows = store.db.execute(
+            "SELECT sender, content, kind, COALESCE(sent_at, observed_at) AS sent_at"
+            " FROM messages WHERE merchant_id=? AND import_id IN (" + marks + ")"
+            " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id"
+            " LIMIT ?",
+            [tenant, *import_ids, SUMMARY_MESSAGE_LIMIT],
+        ).fetchall()
+        return [_row_to_message(r) for r in rows]
+
+    # 新版 HistoryResult 即使本次 0 条也会带 import_ids=[]；这时不能回退
+    # 到会话全量，否则刚读了 30 条却把库里的几百条旧消息也送去整理。
+    if hasattr(result, "import_ids"):
+        return []
+
+    # 仅兼容没有 import_ids 字段的旧结果对象，按其本次读取条数限制范围。
     groups: list[str] = []
     for item in getattr(result, "coverage", None) or []:
         conversation = getattr(item, "conversation", None)
@@ -137,20 +139,59 @@ def messages_for_summary(app: Any, result: Any) -> list[dict[str, Any]]:
             " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
             " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)) DESC, id DESC"
             " LIMIT ?",
-            [tenant, *groups, SUMMARY_MESSAGE_LIMIT]).fetchall()
-        # 上面按时间**倒序**取最近的，交给模型时要正过来。
+            [tenant, *groups, min(SUMMARY_MESSAGE_LIMIT,
+                                  max(0, int(getattr(result, "total_messages", 0) or 0)))],
+        ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]
+    return []
 
-    import_ids = [str(x) for x in (getattr(result, "import_ids", None) or []) if x]
-    if not import_ids:
-        return []
-    marks = ",".join("?" for _ in import_ids)
+
+def history_message_counts(app: Any, result: Any) -> list[tuple[str, int]]:
+    """Return stored message counts for successfully read selected conversations."""
+    target = _app(app)
+    store = getattr(target, "orders", None)
+    tenant = getattr(target, "tenant", "")
+    counts: list[tuple[str, int]] = []
+    if store is None:
+        return counts
+    names = []
+    for item in getattr(result, "coverage", None) or ():
+        conversation = getattr(item, "conversation", None)
+        name = str(getattr(conversation, "name", "") or "")
+        if name and not getattr(item, "error", "") and name not in names:
+            names.append(name)
+    if not names:
+        return counts
+    marks = ",".join("?" for _ in names)
     rows = store.db.execute(
-        "SELECT sender, content, kind, COALESCE(sent_at, observed_at) AS sent_at"
-        " FROM messages WHERE merchant_id=? AND import_id IN (" + marks + ")"
-        " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id",
-        [tenant, *import_ids]).fetchall()
-    return [_row_to_message(r) for r in rows]
+        "SELECT group_id, COUNT(*) AS n FROM messages WHERE merchant_id=? AND group_id IN ("
+        + marks + ") GROUP BY group_id", [tenant, *names]).fetchall()
+    found = {str(row["group_id"]): int(row["n"]) for row in rows}
+    return [(name, found.get(name, 0)) for name in names]
+
+
+def messages_for_history(app: Any, result: Any) -> list[dict[str, Any]]:
+    """Fetch up to the analysis limit from successful selected conversations."""
+    target = _app(app)
+    store = getattr(target, "orders", None)
+    tenant = getattr(target, "tenant", "")
+    names = []
+    for item in getattr(result, "coverage", None) or ():
+        conversation = getattr(item, "conversation", None)
+        name = str(getattr(conversation, "name", "") or "")
+        if name and not getattr(item, "error", "") and name not in names:
+            names.append(name)
+    if store is None or not names:
+        return []
+    marks = ",".join("?" for _ in names)
+    rows = store.db.execute(
+        "SELECT group_id, sender, content, kind, COALESCE(sent_at, observed_at) AS sent_at"
+        " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
+        " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)) DESC, id DESC LIMIT ?",
+        [tenant, *names, SUMMARY_MESSAGE_LIMIT]).fetchall()
+    return [{"group": str(row["group_id"] or ""), "sender": row["sender"],
+             "content": row["content"], "kind": row["kind"], "sent_at": row["sent_at"]}
+            for row in reversed(rows)]
 
 
 def _row_to_message(row: Any) -> dict[str, Any]:
@@ -181,20 +222,72 @@ def _gateway_client(app: Any) -> Any | None:
     return client
 
 
-def run_summary(app: Any, result: Any) -> dict[str, Any]:
+def _is_jyi_client(client: Any) -> bool:
+    try:
+        from .jyi_client import JYIClient
+
+        return isinstance(client, JYIClient)
+    except Exception:
+        return False
+
+
+def _run_summary_jyi(client: Any, messages: list[dict[str, Any]], role_id: str = "",
+                     model_alias: str = "") -> dict[str, Any]:
+    """JYI 直调摘要：提示词同样复用 `summary` 那一份，不另写。
+
+    计费不在本地算（JYI 按账号计量），cost 恒为 None —— 别让界面
+    把它读成"这次没花钱"。
+    """
+    from .jyi_parse import (
+        SUMMARY_MAX_OUTPUT_TOKENS,
+        build_summary_messages, build_role_analysis_messages,
+        extract_text,
+    )
+    from .summary import validate_summary_result
+
+    count = len(messages)
+    try:
+        model = model_alias or client.text_model()
+        body = client.chat_completions(
+            model, (build_role_analysis_messages(messages, role_id) if role_id
+                    else build_summary_messages(messages)),
+            max_tokens=SUMMARY_MAX_OUTPUT_TOKENS)
+        text = validate_summary_result(extract_text(body))
+    except ValueError as exc:
+        # 校验挂的是我们自己的话（空/超长），直接说，不进网关错误改写。
+        return {"summary": "", "error": str(exc) or "摘要结果异常",
+                "cost": None, "message_count": count}
+    except Exception as exc:
+        # 状态行能换行显示，透传上限放宽：配额这类长说明截了看不懂。
+        return {"summary": "", "error": _gateway_error_text(exc, max_len=300),
+                "cost": None, "message_count": count}
+    if not text:
+        return {"summary": "", "error": "摘要结果异常，已转人工核对",
+                "cost": None, "message_count": count}
+    return {"summary": text, "error": "", "cost": None,
+            "message_count": count}
+
+
+def run_summary(app: Any, result: Any, role_id: str = "",
+                messages_override: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """经云网关跑摘要。**在后台线程里跑，调用方不许碰界面。**
 
     LLM 只走云：这里不再读任何本地密钥。没登录返回"需要登录产品账号"。
     返回 ``{"summary", "error", "cost", "message_count"}``，从不抛异常 ——
     网络不可预期，不该让调用方的线程死掉。
     """
-    messages = messages_for_summary(app, result)
+    messages = messages_override if messages_override is not None else messages_for_summary(app, result)
     if not messages:
         return {"summary": "", "error": "没读到消息", "cost": None, "message_count": 0}
     client = _gateway_client(app)
     if client is None:
         return {"summary": "", "error": "需要登录产品账号",
                 "cost": None, "message_count": len(messages)}
+    if _is_jyi_client(client):
+        target = _app(app)
+        settings = getattr(target, "settings", None)
+        model_alias = str(getattr(settings, "model_alias", "") or "")
+        return _run_summary_jyi(client, messages, role_id, model_alias)
     import hashlib as _hashlib
     import json as _json
     import time as _time
@@ -211,8 +304,9 @@ def run_summary(app: Any, result: Any) -> dict[str, Any]:
     idempotency_key = f"sum-{fingerprint}"
     try:
         submitted = client.submit_summary(
-            {"task": "summarize", "messages": payload_messages},
-            idempotency_key)
+            {"task": "summarize", "messages": payload_messages,
+             **({"role_id": role_id} if role_id else {})},
+            idempotency_key if not role_id else f"role-{idempotency_key}")
         job_id = str((submitted.get("job") or {}).get("job_id", ""))
         if not job_id:
             return {"summary": "", "error": "提交失败，请稍后重试",
@@ -268,17 +362,30 @@ def _billed_cost(billing: Mapping) -> Any:
         return None
 
 
-def _gateway_error_text(exc: Exception) -> str:
-    """网关异常 → 商户能看懂的一句话。原文透传技术细节的一律改写。"""
+def _gateway_error_text(exc: Exception, max_len: int = 60) -> str:
+    """网关异常 → 商户能看懂的一句话。原文透传技术细节的一律改写。
+
+    ``max_len`` 是透传商户话术的长度上限：状态行地方小用 60，
+    有换行显示的地方可以放宽（比如 JYI 的配额说明近 80 字，
+    截了反而看不懂）。
+    """
     code = str(getattr(exc, "code", "") or "")
-    message = str(getattr(exc, "message", "") or "")
+    # GatewayError 把商户话术放 merchant_message（不是 message）。
+    # 非网关异常没有商户话术，直接兜底，不透传技术原文。
+    message = str(getattr(exc, "merchant_message", "")
+                  or getattr(exc, "message", ""))
+    lowered = message.casefold()
+    if "no published price" in lowered and "bill" in lowered:
+        return "当前模型尚未发布计费价格，暂时无法分析。请稍后重试或联系 JYI 客服。"
     if code in ("network_unavailable", "backend_unavailable"):
         return "网络暂不可用"
     if code in ("unauthenticated",):
         return "需要登录产品账号"
+    if code == "business_api_unavailable":
+        return str(getattr(exc, "merchant_message", "智能整理接口尚未接入"))
     if code in ("quota_exhausted", "free_quota_exhausted", "subscription_inactive"):
         return message or "分析额度不足"
-    if message and len(message) <= 60:
+    if message and len(message) <= max_len:
         return message
     return "提交失败，请稍后重试"
 
@@ -309,5 +416,7 @@ __all__ = [
     "has_messages_for",
     "import_reference",
     "messages_for_summary",
+    "history_message_counts",
+    "messages_for_history",
     "run_summary",
 ]

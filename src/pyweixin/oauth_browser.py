@@ -20,15 +20,15 @@
 桌面客户端没有稳定的公网回调地址。把回调开到 `127.0.0.1` 上，
 **令牌永远不经过第三方**，也不用为每个商户在 JYI 那边登记回调地址。
 
-## JYI 端点还没做完
+## JYI 生产接入
 
-所以这里**只定义客户端这一侧的契约**，端点路径全部可配置：
+端点路径全部可配置；生产配置由 ``jyi_client`` 提供：
 
-    GET  {authorize_base}/authorize?client_id&redirect_uri&state&response_type=code
+    GET  {authorize_base}/connect/authorize?client_id&redirect_uri&state&response_type=code
     →  重定向到 {redirect_uri}?code=...&state=...
-    POST {token_base}/v1/auth/exchange   {client_id, code, redirect_uri, code_verifier}
+    POST {token_base}/oauth/token   {client_id, code, redirect_uri, code_verifier}
 
-JYI 那边实现完，**改配置即可**，客户端一行代码都不用动。
+JYI 返回连接设备凭据与网关 Key，由客户端使用 DPAPI 保存。
 
 ## 两件不能省的事
 
@@ -126,7 +126,9 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
         # 默认实现会把每个请求打到 stderr —— 客户端是 pythonw，没有 stderr，
         # 而且这里本来也没人看。
-        LOGGER.debug("oauth callback: " + fmt, *args)
+        # BaseHTTPRequestHandler's request line contains the authorization code.
+        # Never put the callback query into logs, including debug logs.
+        LOGGER.debug("oauth callback handled")
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
@@ -148,7 +150,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             self._reply(
                 200,
                 "登录成功",
-                "可以关闭这个浏览器标签页，回到接单助手继续。",
+                "可以关闭这个浏览器标签页，回到微信AI智能助理继续。",
             )
 
     def _reply(self, code: int, title: str, body: str) -> None:

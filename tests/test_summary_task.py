@@ -31,6 +31,7 @@ import sys
 import tempfile
 import types
 import unittest
+import unittest.mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
@@ -247,6 +248,34 @@ class CloudSummaryTests(unittest.TestCase):
         self.assertIn("登录", outcome["error"])
         self.assertEqual(outcome["message_count"], 1)
 
+    def test_jyi_runs_inline_without_billing(self):
+        """JYI 直调：提示词同样复用，不计本地账。"""
+        import types as _types
+
+        from pyweixin.jyi_client import JYIClient
+
+        client = JYIClient()
+        client.session = _types.SimpleNamespace(access_token="tok")
+        seen = {}
+
+        def _chat(model, messages, **kwargs):
+            seen["model"] = model
+            seen["n"] = len(messages)
+            return {"choices": [{"message": {"content": "张姐要两箱苹果"}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 5}}
+
+        client.chat_completions = _chat
+        with unittest.mock.patch(
+                "pyweixin.summary_task.messages_for_summary",
+                return_value=[{"sender": "张姐", "content": "苹果两箱",
+                               "sent_at": "2026-10-13 10:00", "kind": "text"}]):
+            outcome = summary_task.run_summary(self._app(client), object())
+        self.assertEqual(outcome["summary"], "张姐要两箱苹果")
+        self.assertEqual(outcome["error"], "")
+        self.assertIsNone(outcome["cost"])
+        self.assertTrue(seen["model"])
+        self.assertEqual(seen["n"], 2)
+
     def test_submit_poll_succeed(self):
         states = [
             {"job": {"job_id": "job1", "state": "running"}, "billing": {}},
@@ -299,6 +328,23 @@ class CloudSummaryTests(unittest.TestCase):
             outcome = summary_task.run_summary(self._app(FakeClient()), object())
         self.assertEqual(outcome["summary"], "")
         self.assertIn("服务暂时不可用", outcome["error"])
+
+
+class GatewayErrorTextTests(unittest.TestCase):
+    """网关原话不能掉地上：读错字段就是一句"提交失败"打发人。"""
+
+    def test_merchant_message_is_used(self):
+        from pyweixin.client_login import GatewayError
+
+        exc = GatewayError("upstream_quota_used",
+                           "This connection has used its quota. Raise its slice.")
+        text = summary_task._gateway_error_text(exc, max_len=300)
+        self.assertIn("used its quota", text)
+        self.assertNotIn("请稍后重试", text)
+
+    def test_unknown_technical_error_stays_generic(self):
+        text = summary_task._gateway_error_text(OSError("boom"))
+        self.assertEqual(text, "提交失败，请稍后重试")
 
 
 if __name__ == "__main__":

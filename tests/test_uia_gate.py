@@ -102,10 +102,17 @@ class UiGateTests(unittest.TestCase):
             encoding="utf-8")
 
     def test_listen_and_auto_go_through_the_gate(self):
-        for method in ("def _on_toggle_listen", "def _on_enable_auto"):
-            start = self.source.index(method)
-            block = self.source[start:start + 1500]
-            self.assertIn("_require_uia", block)
+        """持续监听与自动接单的入口已撤掉：4.1.15 起点不动，摆着只能弹窗。
+
+        后端（LiveListener、自动流程）还在，以后界面能点了再加回来。
+        这里钉死"界面上没有死入口"，不是"门后面有没有锁"。
+        注释和休眠中的渲染方法不算入口，不管。
+        """
+        for gone in ('text="开始持续监听"', 'text="后台整理',
+                     'text="开启自动接单与回复',
+                     "def _on_toggle_listen", "def _on_enable_auto",
+                     "def _build_listen_box"):
+            self.assertNotIn(gone, self.source)
 
     def test_dead_ui_disables_list_matching(self):
         # 认人选项已砍掉：第 3 步只有数据库直读，没有"发送人怎么认"可选。

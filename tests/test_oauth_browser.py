@@ -118,7 +118,7 @@ class LoopbackTests(unittest.TestCase):
             url = f"http://127.0.0.1:{receiver.port}{CALLBACK_PATH}?code=a&state=b"
             with urllib.request.urlopen(url, timeout=5) as resp:
                 body = resp.read().decode("utf-8")
-            self.assertIn("回到接单助手", body)
+            self.assertIn("回到微信AI智能助理", body)
 
     def test_a_denial_explains_itself(self):
         with LoopbackReceiver() as receiver:

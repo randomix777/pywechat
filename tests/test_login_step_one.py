@@ -38,24 +38,21 @@ class LoginIsStepOneTests(unittest.TestCase):
             encoding="utf-8")
 
     def test_step_one_carries_the_login_entry(self):
+        """登录入口只在顶栏：第 1 步不再摆产品账号卡（和顶栏重复）。"""
         start = self.source.index("def _page_wechat")
-        block = self.source[start:start + 2000]
-        self.assertIn("_build_login_block(frame)", block,
-                      "第 1 步没有登录入口 —— 商户要走到第 4 步才知道")
+        end = self.source.index("def _refresh_wechat_recheck")
+        block = self.source[start:end]
+        self.assertNotIn("_build_login_block(frame)", block)
+        self.assertIn("点此登录", self.source)
 
     def test_the_wechat_block_comes_before_the_login_block(self):
-        """微信是每一步的前提，主角在上；产品登录是门禁，在下。
-
-        反转记录：之前商户定的是"登录框压在最上面"（登录是整理的前提）。
-        后来改成"不登录产品不许进入下一步"——门禁本身成了流程的一部分，
-        主次就反过来了：先看到卡住流程的微信状态，再看到开门的登录。
-        """
+        """产品账号卡已整个拿掉：微信状态是第 1 步唯一的主角，
+        登录只剩顶栏一个入口。"""
         start = self.source.index("def _page_wechat")
-        block = self.source[start:start + 4000]
-        self.assertLess(
-            block.index("wechat_title"), block.index("_build_login_block(frame)"),
-            "微信状态要在产品登录之上",
-        )
+        end = self.source.index("def _refresh_wechat_recheck")
+        block = self.source[start:end]
+        self.assertNotIn("_build_login_block(frame)", block)
+        self.assertNotIn('text="产品账号"', block)
 
     def test_it_says_login_is_required_to_proceed(self):
         """最要紧的一句。门禁规则下，不登录不许进入下一步，必须明说。
@@ -84,7 +81,7 @@ class LoginIsStepOneTests(unittest.TestCase):
         self.assertIn("self._refresh_login_block()", self.source)
 
     def test_logout_also_refreshes_it(self):
-        start = self.source.index("def _on_account_click")
+        start = self.source.index("def _on_logout_from_center")
         block = self.source[start:start + 1600]
         self.assertIn("_refresh_login_block()", block,
                       "退出登录后第 1 步那块也要变回去")
@@ -200,9 +197,10 @@ class NoFreeModelPromiseTests(unittest.TestCase):
         self.assertNotIn("刷新模型列表", text)
 
     def test_the_login_block_explains_local_reading_without_the_额度_wording(self):
-        """读历史只写"存在这台电脑上"，不牵扯额度。"""
+        """登录框只说门禁（不登录不让进）并指向右上角唯一入口，不牵扯额度。"""
         text = self._merchant_text("merchant_ui.py")
-        self.assertIn("读到的消息只存在这台电脑上", text)
+        self.assertIn("需要先登录产品账号，才能进入下一步选会话", text)
+        self.assertNotIn("会使用分析额度", text)
 
     def test_the_backend_may_keep_the_mechanism(self):
         """网关侧的免费额度机制是**运营可配的能力**，不该因为界面不显示

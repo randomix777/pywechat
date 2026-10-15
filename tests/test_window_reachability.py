@@ -51,7 +51,7 @@ class WindowSizeSourceTests(unittest.TestCase):
     def test_the_reason_is_written_down(self):
         """这个数字看起来像可以随手调小。写清理由，才不会有人"优化"掉。"""
         self.assertIn("Tk 不会滚动", self.source)
-        self.assertIn("开始持续监听", self.source)
+        self.assertIn("查看订单", self.source)
 
     def test_the_stock_table_height_follows_its_content(self):
         """固定 6 行会白占高度，而高度是从下面按钮的预算里扣的。"""
@@ -124,21 +124,26 @@ class MinimumSizeReachableTests(unittest.TestCase):
         )
 
     def test_the_listen_button_survives_the_smallest_window(self):
-        _w, min_h = self.window.root.minsize()
-        self.window.root.geometry(f"760x{min_h}")
-        self._pump()
-        button = self.window._widgets.get("listen_btn")
-        self.assertIsNotNone(button, "找不到「开始持续监听」")
-        self.assertTrue(button.winfo_ismapped(),
-                        "缩到最小窗口时「开始持续监听」消失了 —— 商户永远开不了监听")
-        bottom = (button.winfo_rooty() + button.winfo_height()
-                  - self.window.root.winfo_rooty())
-        self.assertLessEqual(bottom, self.window.root.winfo_height(),
-                             f"「开始持续监听」超出窗口 {bottom - self.window.root.winfo_height()}px")
+        """持续监听入口已撤掉：首页再没有这个按钮，也不需要它活下来。"""
+        found = []
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                try:
+                    if child.winfo_class() == "TButton" and "持续监听" in str(child.cget("text")):
+                        found.append(child)
+                except Exception:
+                    pass
+                walk(child)
+
+        walk(self.window.root)
+        self.assertFalse(found, "死入口又出现了")
 
     def test_the_view_orders_button_survives_the_smallest_window(self):
         _w, min_h = self.window.root.minsize()
         self.window.root.geometry(f"760x{min_h}")
+        self._pump()
+        self.window._scroll_page_to_end()
         self._pump()
         found = []
 

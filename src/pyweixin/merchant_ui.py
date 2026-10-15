@@ -19,13 +19,15 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
-from .application import LISTEN_FAIR_NOTE, AppEvents, MerchantApplication
+from .application import AppEvents, MerchantApplication
 from .conversations import Conversation, ConversationKind, search
 from .dashboard import METRIC_DEFINITIONS, STATUS_LABELS, HomeView
 from .history_read import HistoryProgress, HistoryRange, ReadMode, TimeWindow, DEFAULT_MAX_MESSAGES
@@ -102,17 +104,9 @@ def display_content(kind: Any, content: Any) -> str:
     return EMPTY_CONTENT_LABELS.get(str(kind or "").strip().lower(), "［非文字消息］")
 
 
-#: 界面上不承诺的事，必须如实告诉商户。
-DISCOVERY_NOTE = (
-    "这里只列出微信当前能看到的最近会话，不等于您的全部联系人和全部历史。"
-    "想读更早的消息，请在微信里先往上翻一翻再读取。"
-    "提过密钥后列表带真名和人数（只读本机数据库，提一次一直用），"
-    "点「读取微信对话列表」时没钥匙会自动提一次。"
-)
-
-#: 会话列表的显示行数。跟着内容走，不给 2 行数据也占 12 行高度。
+#: 会话列表的显示行数。最多 6 行，给底部「下一步」留出空间；更多项目在表格内滚动。
 CONV_ROWS_MIN = 4
-CONV_ROWS_MAX = 12
+CONV_ROWS_MAX = 6
 
 
 def conv_rows_height(count: int) -> int:
@@ -291,6 +285,10 @@ class MerchantWindow:
         self.app = app
         self._events: queue.Queue = queue.Queue()
         self._closing = False
+        self._quota_refresh_lock = threading.Lock()
+        self._quota_refresh_in_flight = False
+        self._last_quota_refresh = 0.0
+        self._tick_index = 0
         self._conversations: list[Conversation] = []
         #: 会话页两栏各自"当前可见"的会话。Treeview 的 iid 就是它在所属那一份里的
         #: 下标，所以取回会话时必须查同一份，不能查全量列表。
@@ -303,6 +301,12 @@ class MerchantWindow:
         self._widgets: dict[str, Any] = {}
         #: 最近一次整理结果。页面被导航重建后还能补画，不会白跑一次分析。
         self._last_summary: dict[str, Any] = {}
+        self._last_analysis_details: list[dict[str, Any]] = []
+        self._last_paragraph_outcome: dict[str, Any] = {}
+        self._analysis_results_mode = False
+        self._analysis_call_active = False
+        self._analysis_running = False
+        self._last_analysis_error = ""
         #: 最近一次角色整理的分类报告。同上，跨页面重建存活。
         self._last_role_report: dict[str, Any] = {}
         #: 最近一次首页数据。同上，重建后补画。
@@ -347,59 +351,65 @@ class MerchantWindow:
         )
 
         self.root = tk.Tk()
-        self.root.title("微信群接单助手")
-        self.root.geometry("900x680")
-        # 最小高度必须容得下首页**最下面那排控件**。Tk 不会滚动：窗口给不够
-        # 高度时，最后排的「开始持续监听」「查看订单」根本不会被布局出来 ——
-        # 不是被切掉半截，是**在屏幕上任何位置都找不到**。实测：
-        #
-        #   760x560 → 开始持续监听、监听区块、查看订单 全部消失
-        #   800x620 → 开始持续监听 消失
-        #
-        # 商户把窗口拖小一点就永久失去这两个功能。所以最小高度不低于
-        # 默认高度：要缩小可以，要缩到功能消失就不行。
-        self.root.minsize(760, 680)
+        try:
+            from .version import __version__ as _app_version
+        except Exception:
+            _app_version = ""
+        self.root.title(f"微信AI智能助理 v{_app_version}" if _app_version else "微信AI智能助理")
+        # 900x760 在常见的 768 高笔记本屏幕上会把窗口底部和「下一步」
+        # 挤到任务栏后面。Tk 的底部操作栏固定显示，所以按屏幕高度给默认
+        # 窗口留出标题栏/任务栏空间；页面内容本身可滚动。
+        screen_height = self.root.winfo_screenheight()
+        default_height = min(760, max(600, screen_height - 120))
+        self.root.geometry(f"900x{default_height}")
+        self.root.minsize(760, default_height)
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._drain)
+        # 回焦点自动刷：去微信聊完回来，第 2 步的列表自己新。
+        # 只在第 2 步、超 60 秒没刷过、且当前没在刷时才动 ——
+        # 弹窗关掉、切出去看一眼这种高频焦点事件不能每次都扫一遍库。
+        try:
+            self.root.bind("<FocusIn>", self._on_focus_back, add="+")
+        except Exception:
+            pass
         self.app.start_background()
         self._show_step(self.app.wizard.step)
+        # 每次启动静默更新可用模型，网络请求不阻塞窗口首屏。
+        if self.app.session is not None:
+            self._spawn("models", lambda: self._post("models_loaded", catalog=self.app.load_models(force=True)))
         self.root.after(400, self._tick)
 
     # ------------------------------------------------------------------ ui
 
     def _build(self) -> None:
-        style = ttk.Style()
-        try:
-            style.theme_use("vista")
-        except tk.TclError:  # pragma: no cover - platform dependent
-            pass
-        style.configure("Title.TLabel", font=("Microsoft YaHei", 17, "bold"))
-        style.configure("Section.TLabel", font=("Microsoft YaHei", 11, "bold"))
-        # 主按钮必须一眼能认出来。``vista`` 主题不吃 background/foreground，
-        # 所以靠**加粗 + 更宽的留白 + 一圈描边**做层级，而不是靠颜色。
-        style.configure(
-            "Big.TButton",
-            padding=(14, 10),
-            font=("Microsoft YaHei", 10, "bold"),
-            borderwidth=2,
-            relief="solid",
-        )
-        style.configure("Pause.TButton", font=("Microsoft YaHei", 11, "bold"), padding=(14, 10))
-        # 次要操作（刷新、设置）。第 4 屏有六个按钮，主操作只有一个 ——
-        # 维护按钮和主按钮长得一样，商户分析不出来时会挨个乱点。用细边框、
-        # 窄留白把它们压下去，主按钮才是这一屏唯一显眼的东西。
-        style.configure(
-            "Subtle.TButton",
-            padding=(8, 5),
-            borderwidth=1,
-            relief="solid",
-            font=("Microsoft YaHei", 9),
-        )
+        from . import ui_theme
 
-        top = ttk.Frame(self.root, padding=(18, 14))
+        ui_theme.apply_theme(self.root)
+
+        top = ttk.Frame(self.root, style="TopBar.TFrame", padding=(18, 12))
         top.pack(fill="x")
-        ttk.Label(top, text="微信群接单助手", style="Title.TLabel").pack(side="left")
+        # 品牌 + 版本：标题栏也有版本，这里给人看（标题栏经常被截掉）。
+        brand_row = ttk.Frame(top, style="TopBar.TFrame")
+        brand_row.pack(side="left")
+        try:
+            from .version import __version__ as _app_version
+        except Exception:
+            _app_version = ""
+        ttk.Label(brand_row, text="微信AI智能助理", style="Brand.TLabel").pack(side="left")
+        if _app_version:
+            try:
+                from .version import SUPPORTED_WECHAT as _supported
+            except Exception:
+                _supported = ""
+            suffix = f"　支持{_supported}" if _supported else ""
+            ttk.Label(brand_row, text=f"  v{_app_version}{suffix}",
+                      style="Muted.TLabel").pack(side="left")
+        # 更新提示位：平时空着，新版下载好才出现一句话。
+        # 静默更新不能等于"一声不吭" —— 商户下次打开发现变了版本，
+        # 得有个地方能对上发生了什么。
+        self._widgets["update_note"] = ttk.Label(brand_row, text="", style="Muted.TLabel")
+        self._widgets["update_note"].pack(side="left")
         # 账号条做成**按钮**：登录是所有事情的前提，而入口以前只在第 4 步，
         # 顶栏写着「账号：未登录」却点不动 —— 商户看得到状态，动不了。
         # 登录后这里也要能退出：以前能登录但**永远登不出去**，收银电脑换人
@@ -409,11 +419,25 @@ class MerchantWindow:
             command=self._on_account_click,
         )
         self._widgets["account"].pack(side="right")
+        # 步骤条：商户随时知道自己在哪、后面还有几步。
+        stepper_bar = ttk.Frame(self.root, style="TopBar.TFrame", padding=(18, 0, 18, 10))
+        stepper_bar.pack(fill="x")
+        self._stepper = ui_theme.Stepper(stepper_bar)
 
-        self.container = ttk.Frame(self.root, padding=(0, 0, 0, 6))
+        self.container = ttk.Frame(self.root, style="Page.TFrame", padding=(18, 4, 18, 0))
         self.container.pack(fill="both", expand=True)
 
-        self._widgets["log"] = ttk.Label(self.root, text="", foreground="#7b8794", padding=(18, 2))
+        # 吸底操作栏：各页的"上一步/下一步/主按钮"搬到这里，滚成什么样都点得到。
+        # 大厂桌面向导导航本来就在底部；页面带滚动时再让按钮跟着内容走，
+        # 等于逼商户滚到底才交卷。顶栏步骤条管"在哪"，这栏管"往哪走"。
+        self.footer = ttk.Frame(self.root, style="TopBar.TFrame", padding=(18, 8))
+        self.footer.pack(fill="x")
+        ttk.Separator(self.footer, orient="horizontal").pack(fill="x", pady=(0, 8))
+        self.footer_body = ttk.Frame(self.footer, style="TopBar.TFrame")
+        self.footer_body.pack(fill="x")
+
+        self._widgets["log"] = ttk.Label(self.root, text="", style="MutedPage.TLabel",
+                                         padding=(18, 2))
         self._widgets["log"].pack(fill="x")
 
     # ------------------------------------------------------------- 事件泵
@@ -467,12 +491,25 @@ class MerchantWindow:
                 busy.start(15)
             except Exception:
                 pass
-        self._spawn("refresh", self.app.refresh_conversations)
+        self._conv_refreshing = True
+        self._spawn("refresh", self._guarded_refresh_conversations)
+
+    def _guarded_refresh_conversations(self) -> None:
+        """读列表的实际执行：记时间、清忙态标记，抛异常也不把标记卡死。
+
+        标记卡死的话，回焦点自动刷就永远被"正在刷"挡住 ——
+        静默失败一次，列表就再也不自动新了。
+        """
+        self._last_conv_refresh_at = time.time()
+        try:
+            self.app.refresh_conversations()
+        finally:
+            self._conv_refreshing = False
 
     def _set_conv_refresh_idle(self) -> None:
         button = self._widgets.get("conv_refresh_btn")
         if button is not None and self._alive(button):
-            button.configure(state="normal", text="读取微信对话列表")
+            button.configure(state="normal", text="刷新列表")
         busy = self._widgets.get("conv_refresh_busy")
         if busy is not None and self._alive(busy):
             try:
@@ -489,7 +526,7 @@ class MerchantWindow:
         self._refresh_wcdb_hint()
         hint = self._widgets.get("conv_cache_hint")
         if hint is not None and self._alive(hint):
-            hint.configure(text=f"显示上次记录。{self.app.conversation_cache_info()}，点「读取微信对话列表」更新。")
+            hint.configure(text=f"显示上次记录。{self.app.conversation_cache_info()}，点「刷新列表」更新。")
 
     def _on_wechat(self, status: Any) -> None:
         """把新的微信状态画到界面上。
@@ -521,6 +558,8 @@ class MerchantWindow:
             elif start.winfo_ismapped():
                 start.pack_forget()
         self._refresh_wechat_gate(status)
+        self._refresh_wechat_recheck(status)
+        self._refresh_wechat_restart(status)
 
     def _on_history_done(self, result: Any) -> None:
         self._on_read_finished(result)
@@ -543,8 +582,10 @@ class MerchantWindow:
         """
         self._set_reading(False)
         self._set_conv_refresh_idle()
+        if self._analysis_results_mode:
+            self._last_analysis_error = str(text)
         shown = False
-        for key in ("read_state", "analyze_notice", "analyze"):
+        for key in ("read_state", "analysis_result_summary", "analyze_notice", "analyze"):
             widget = self._widgets.get(key)
             if widget is not None and self._alive(widget):
                 widget.configure(text=str(text), foreground="#a8590b")
@@ -564,6 +605,18 @@ class MerchantWindow:
         widget = self._widgets.get("log")
         if widget is not None and self._alive(widget):
             widget.configure(text=text)
+
+    def _on_update_staged(self, info: Any) -> None:
+        """新版已下载暂存：在顶栏版本号后面留一句话，下次打开自动更新。"""
+        try:
+            version = str((info or {}).get("version") or "")
+        except Exception:
+            version = ""
+        if not version:
+            return
+        widget = self._widgets.get("update_note")
+        if widget is not None and self._alive(widget):
+            widget.configure(text=f"　新版 v{version} 已就绪，下次打开自动更新")
 
     @staticmethod
     def _data_origin_note(view: Any) -> str:
@@ -608,8 +661,24 @@ class MerchantWindow:
     # ------------------------------------------------------------- 页面切换
 
     def _show_step(self, step: str) -> None:
+        if step == WizardStep.ANALYZE and self._analysis_call_active:
+            if getattr(self, "_visible_step", None) == WizardStep.RESULTS:
+                return
+            step = WizardStep.RESULTS
+        # 向导标记 DONE 后，刚完成整理的这次运行落在第七步详情页；
+        # 普通启动/回到首页仍走首页。
+        if step == WizardStep.DONE and self._analysis_results_mode:
+            if getattr(self, "_visible_step", None) == WizardStep.RESULTS:
+                return
+            step = WizardStep.RESULTS
+        self._visible_step = step
         for child in self.container.winfo_children():
             child.destroy()
+        # 吸底栏的按钮是各页的，各页重建时一起清掉重画。
+        footer_body = getattr(self, "footer_body", None)
+        if footer_body is not None:
+            for child in footer_body.winfo_children():
+                child.destroy()
         # 滚动条是全局绑定的，翻页时先解掉，新页需要再绑 —— 否则滚轮事件
         # 会发到已销毁的画布上。
         try:
@@ -633,7 +702,7 @@ class MerchantWindow:
             self._widgets.pop(key, None)
         for key in ("wechat_title", "wechat_detail", "wechat_start", "wechat_recheck",
                     "wechat_restart",
-                    "wechat_next", "wechat_gate", "login_start", "login_switch"):
+                    "wechat_next", "wechat_gate", "login_switch"):
             self._widgets.pop(key, None)
         for key in ("clar_box", "fail_box", "home_after_tables", "clar_list", "fail_list",
                     "st_origin", "listen_merged"):
@@ -644,8 +713,10 @@ class MerchantWindow:
                     "read_summary", "read_summary_tree",
                     "review_count", "review_tree",
                     "analyze_button",
-                    "analyze_notice", "role_picker",
-                     "role_report_frame", "role_report_tree"):
+                    "analyze_notice", "role_picker", "model_picker",
+                    "model_picker_widget",
+                     "role_report_frame", "role_report_tree",
+                      "scroll_canvas"):
             self._widgets.pop(key, None)
         builder = {
             WizardStep.WECHAT: self._page_wechat,
@@ -655,9 +726,31 @@ class MerchantWindow:
             WizardStep.REVIEW: self._page_review,
             WizardStep.QUOTA: self._page_analyze,
             WizardStep.ANALYZE: self._page_analyze,
+            WizardStep.RESULTS: self._page_analysis_results,
             WizardStep.DONE: self._page_home,
         }.get(step, self._page_wechat)
         builder()
+        # 步骤条跟着走。页面可能是测试直接搭的（没有步骤条），缺了就跳过。
+        try:
+            stepper = getattr(self, "_stepper", None)
+            if stepper is not None:
+                stepper.set_step(step)
+        except Exception:
+            pass
+        # 吸底栏没按钮就不占地方（首页工具按钮留在页里，不进吸底栏）。
+        try:
+            footer = getattr(self, "footer", None)
+            body = getattr(self, "footer_body", None)
+            if footer is not None and body is not None:
+                if body.winfo_children():
+                    # footer 之前 pack_forget 后重新 pack 会落到 log 后面；
+                    # expand=True 的页面容器把空间占完，底栏就被挤出窗口。
+                    # 明确放回 log 前，保证底部操作始终在可视区域内。
+                    footer.pack(fill="x", before=self._widgets.get("log"))
+                else:
+                    footer.pack_forget()
+        except Exception:
+            pass
         # 顶栏账号条每次切页都刷一次。以前只靠登录事件那一下，事件和翻页
         # 时序错开一次，顶栏就永远停在"未登录"，而页里明明已经登上了。
         try:
@@ -678,7 +771,13 @@ class MerchantWindow:
         canvas.configure(yscrollcommand=bar.set)
         bar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-        body = ttk.Frame(canvas, padding=padding)
+        try:
+            from .ui_theme import CARD_BG
+            canvas.configure(background=CARD_BG)
+        except Exception:
+            pass
+        body = ttk.Frame(canvas, style="Page.TFrame", padding=(0, 0, 12, 0))
+        self._widgets["scroll_canvas"] = canvas
         inner = canvas.create_window((0, 0), window=body, anchor="nw")
 
         def _fit(_event=None):
@@ -702,9 +801,36 @@ class MerchantWindow:
         self.root.bind_all("<MouseWheel>", _wheel)
         return body
 
+    def _scroll_page_to_end(self) -> None:
+        """把滚动页滚到底。商户点最下面的按钮前不用自己找滚动条；
+        单测也用它把底部的按钮滚进窗口再断言可见性。"""
+        canvas = self._widgets.get("scroll_canvas")
+        try:
+            if canvas is not None and canvas.winfo_exists():
+                canvas.update_idletasks()
+                canvas.yview_moveto(1.0)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _tree_with_scroll(parent: Any, *, columns: Any, show: str = "headings",
+                          height: int = 8, **kwargs: Any):
+        """带自己滚条的表格：长名单在框里滚，不把整页撑长。
+
+        页面级滚动只留作小窗口兜底。返回 (外框, 表格)，外框按原来
+        表格的 pack 方式摆。
+        """
+        box = ttk.Frame(parent)
+        tree = ttk.Treeview(box, columns=columns, show=show, height=height,
+                            **kwargs)
+        bar = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=bar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        return box, tree
+
     def _page_wechat(self) -> None:
-        frame = ttk.Frame(self.container, padding=(18, 6))
-        frame.pack(fill="both", expand=True)
+        frame = self._scrollable_page()
         status = self.app.monitor.latest
         title, detail, button = status.copy()
         if status.state == WeChatState.UNREADABLE and status.detail == "尚未检测":
@@ -715,7 +841,7 @@ class MerchantWindow:
                 "第一次打开会慢几秒，结果出来这一页会自动刷新，什么都不用点。",
                 "",
             )
-        ttk.Label(frame, text="第 1 步　登录并检查微信", style="Section.TLabel").pack(
+        ttk.Label(frame, text="第 1 步　登录并检查微信", style="SectionPage.TLabel").pack(
             anchor="w", pady=(4, 12))
 
         # ---- 先微信、后产品登录 ----
@@ -724,52 +850,73 @@ class MerchantWindow:
         # 状态，商户先看到的却是一个跟当前步骤无关的登录框。
         # 现在主角是微信：状态 + 动作在上，产品登录在下；且未登录产品账号时
         # 不许进入下一步（门禁判据见 Wizard.product_gate_open）。
-        self._widgets["wechat_title"] = ttk.Label(frame, text=title, font=("Microsoft YaHei", 13, "bold"))
+        status_box = ttk.LabelFrame(frame, text="微信状态", padding=12)
+        status_box.pack(fill="x")
+        self._widgets["wechat_title"] = ttk.Label(status_box, text=title, font=("Microsoft YaHei", 13, "bold"))
         self._widgets["wechat_title"].pack(anchor="w")
-        self._widgets["wechat_detail"] = ttk.Label(frame, text=detail, wraplength=620, foreground="#5a6572")
+        self._widgets["wechat_detail"] = ttk.Label(status_box, text=detail, wraplength=620, foreground="#5a6572")
         self._widgets["wechat_detail"].pack(anchor="w", pady=(6, 14))
         # 两个按钮都挂在页面上、保持稳定：状态变化时只改文案和「打开微信」的
         # 显隐，不销毁重建。销毁重建会闪烁，而且别处按子控件找按钮时会找不到。
         self._widgets["wechat_start"] = ttk.Button(
-            frame, text=button or "", style="Big.TButton", command=self._on_start_wechat
+            status_box, text=button or "", style="Big.TButton", command=self._on_start_wechat
         )
         if button:
             self._widgets["wechat_start"].pack(anchor="w")
         self._widgets["wechat_recheck"] = ttk.Button(
-            frame, text="重新检测", command=lambda: self._spawn("wechat-check", lambda: self.app.check_wechat())
+            status_box, text="重新检测", style="Subtle.TButton",
+            command=lambda: self._spawn("wechat-check", lambda: self.app.check_wechat())
         )
         self._widgets["wechat_recheck"].pack(anchor="w", pady=(10, 0))
         # 更新后卡死专用：进程在、界面出不来时才出现。平时藏着，
         # 正常情况多个按钮只会让人不知道点哪个。
         self._widgets["wechat_restart"] = ttk.Button(
-            frame, text="重启微信", command=self._on_restart_wechat
+            status_box, text="重启微信", style="Subtle.TButton", command=self._on_restart_wechat
         )
         self._refresh_wechat_restart(status)
         # 显式的下一步：自动推进是兜底，真正在界面上说了算的是这个按钮。
         # 条件不满足时点它会说清楚还差什么，而不是没反应。
+        # 放吸底栏：滚成什么样都点得到。
         self._widgets["wechat_next"] = ttk.Button(
-            frame, text="下一步：选择会话", style="Big.TButton", command=self._on_wechat_next
+            self.footer_body, text="下一步：选择会话", style="Big.TButton", command=self._on_wechat_next
         )
-        self._widgets["wechat_next"].pack(anchor="w", pady=(10, 0))
+        self._widgets["wechat_next"].pack(side="left")
         # 门禁提示位：微信就绪但产品未登录时，告诉商户还差什么。
         self._widgets["wechat_gate"] = ttk.Label(
-            frame, text="", foreground="#a8590b", wraplength=620,
+            status_box, text="", foreground="#a8590b", wraplength=620,
         )
         self._widgets["wechat_gate"].pack(anchor="w", pady=(10, 0))
         self._refresh_wechat_gate(status)
+        self._refresh_wechat_recheck(status)
         self._refresh_wechat_restart(status)
 
-        ttk.Label(frame, text="", font=("Microsoft YaHei", 10, "bold")).pack(
-            anchor="w", pady=(18, 8))
-        self._build_login_block(frame)
-
-        note = ttk.Label(
+        ttk.Label(
             frame,
-            text="提示：软件只是被动查看微信状态，不会自己把微信窗口弹到最前面，也不会动您正在输入的内容。\n"
-                 "微信如果收在任务栏右下角的托盘里，点一下微信图标把窗口打开就行，不用退出重登。",
+            text="如无必要，请不要升级微信客户端，新版可能导致暂时无法读取。\n"
+                 "杀毒软件如有报警均为误报：本工具只读本机数据，不上传您的聊天内容与个人信息。",
             foreground="#7b8794", wraplength=620,
-        )
-        note.pack(anchor="w", pady=(24, 0))
+        ).pack(anchor="w", pady=(24, 0))
+
+    def _refresh_wechat_recheck(self, status: Any = None) -> None:
+        """「重新检测」显隐：微信已登录就不摆了，摆着也是多余的一行。
+
+        登录掉线/没登录时才需要它。和「重启微信」一样只改显隐不重建。
+        """
+        button = self._widgets.get("wechat_recheck")
+        if button is None or not self._alive(button):
+            return
+        show = (self.app.wizard.step == WizardStep.WECHAT
+                and getattr(status, "state", "") != WeChatState.LOGGED_IN)
+        # 看 pack 状态而不是 ismapped：窗口 withdraw 时 ismapped 恒 0，
+        # 按它判断会把已经摆好的按钮反复 pack（闪一下）。
+        try:
+            managed = "in" in button.pack_info()
+        except Exception:
+            managed = bool(button.winfo_ismapped())
+        if show and not managed:
+            button.pack(anchor="w", pady=(10, 0))
+        elif not show and managed:
+            button.pack_forget()
 
     def _refresh_wechat_gate(self, status: Any = None) -> None:
         """第 1 步的门禁提示。微信就绪、但产品账号没登录时才出现。"""
@@ -782,7 +929,7 @@ class MerchantWindow:
         state = getattr(status, "state", "")
         gate_open = self.app.wizard.product_gate_open()
         if state == WeChatState.LOGGED_IN and not gate_open:
-            label.configure(text="微信已就绪，还差一步：登录下面的产品账号，登录后自动进入下一步。")
+            label.configure(text="微信已就绪，还差一步：点右上角「账号」登录产品账号，登录后自动进入下一步。")
             if not label.winfo_ismapped():
                 label.pack(anchor="w", pady=(10, 0))
         else:
@@ -809,9 +956,13 @@ class MerchantWindow:
             return
         show = (self.app.wizard.step == WizardStep.WECHAT
                 and getattr(status, "state", "") == WeChatState.UNREADABLE)
-        if show and not button.winfo_ismapped():
+        try:
+            managed = "in" in button.pack_info()
+        except Exception:
+            managed = bool(button.winfo_ismapped())
+        if show and not managed:
             button.pack(anchor="w", pady=(10, 0))
-        elif not show and button.winfo_ismapped():
+        elif not show and managed:
             button.pack_forget()
 
     def _on_restart_wechat(self) -> None:
@@ -864,15 +1015,24 @@ class MerchantWindow:
     )
 
     def _page_conversations(self) -> None:
-        frame = ttk.Frame(self.container, padding=(18, 6))
+        # This step fits the fixed-height window: the conversation tables have
+        # their own scrollbars, so the whole page should not scroll vertically.
+        frame = ttk.Frame(self.container, style="Page.TFrame", padding=(18, 6))
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="第 2 步　选择会话", style="Section.TLabel").pack(anchor="w", pady=(4, 6))
-        ttk.Label(frame, text=DISCOVERY_NOTE, foreground="#7b8794", wraplength=700).pack(anchor="w", pady=(0, 8))
+        ttk.Label(frame, text="第 2 步　选择会话", style="SectionPage.TLabel").pack(anchor="w", pady=(4, 6))
+
+        # Treeview 的勾选框是用字符绘制的，单独提高这一页的字号和行高，
+        # 让方框更清楚，也让每行更容易点中；其他表格仍保留原来的密度。
+        ttk.Style().configure(
+            "Conversation.Treeview",
+            font=("Microsoft YaHei", 12),
+            rowheight=34,
+        )
 
         search_row = ttk.Frame(frame)
         search_row.pack(fill="x", pady=(0, 8))
         self._widgets["conv_refresh_btn"] = ttk.Button(
-            search_row, text="读取微信对话列表",
+            search_row, text="刷新列表",
             command=self._on_refresh_conversations,
         )
         self._widgets["conv_refresh_btn"].pack(side="left")
@@ -893,14 +1053,14 @@ class MerchantWindow:
         self._widgets["conv_wcdb_hint"].pack(side="left", padx=8)
         self._refresh_wcdb_hint()
         # 重启后列表还在：启动时从落盘缓存恢复，这里只负责画出来，
-        # 不自动去微信拉（点「读取微信对话列表」才更新）。
+        # 真正的新数据由进页自动刷 + 回焦点刷进来（见 _maybe_auto_refresh）。
         self._conversations = list(self.app.wizard.conversations.available)
         # 勾选只认还在名单里的：切号后旧勾选要是留着，下一步会带走别人的群。
         valid = {item.identity for item in self._conversations}
         self._conv_checked = {identity for identity in self._conv_checked if identity in valid}
         self._widgets["conv_cache_hint"] = ttk.Label(
             frame,
-            text=f"显示上次记录。{self.app.conversation_cache_info()}，点「读取微信对话列表」更新。",
+            text=f"显示上次记录。{self.app.conversation_cache_info()}，点「刷新列表」更新。",
             foreground="#7b8794", wraplength=700,
         )
         self._widgets["conv_cache_hint"].pack(anchor="w", pady=(0, 4))
@@ -924,11 +1084,14 @@ class MerchantWindow:
             ).pack(side="left", padx=6)
             # Treeview 没有原生 checkbox：第一列画 ☐/☑，点中该格切换。
             columns = ("check", "pick", "name", "members")
-            tree = ttk.Treeview(page, columns=columns, show="headings", height=8, selectmode="extended")
+            tree_box, tree = self._tree_with_scroll(
+                page, columns=columns, show="headings", height=8,
+                selectmode="extended", style="Conversation.Treeview")
+            tree_box.pack(fill="both", expand=True)
             # 列名要说实话：这一列放的是人数，不是别的。以前叫「说明」，
             # 里面却写着「64 人」，商户得自己想那是什么。
             for column, heading, width, anchor in (
-                ("check", "选", 40, "center"),
+                ("check", "选", 48, "center"),
                 ("pick", "已读", 56, "center"),
                 ("name", "会话", 400, "w"),
                 ("members", "人数", 90, "e"),
@@ -940,22 +1103,45 @@ class MerchantWindow:
                     tree.column(column, width=width, anchor=anchor)
             tree.tag_configure("dup", foreground="#a8590b")
             tree.bind("<Button-1>", lambda event, tab=key: self._on_conv_toggle(event, tab))
-            tree.pack(fill="both", expand=True)
             self._conv_visible[key] = []
             self._widgets[f"conv_tree_{key}"] = tree
 
-        actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=(10, 0))
+        actions = ttk.Frame(self.footer_body)
+        actions.pack(fill="x")
         ttk.Button(actions, text="下一步：读取历史", style="Big.TButton", command=self._on_history_next).pack(side="left")
         ttk.Button(actions, text="上一步", command=lambda: self._show_step(WizardStep.WECHAT)).pack(side="left", padx=8)
-        ttk.Label(
-            actions, text="列表不会自己刷新：点「读取微信对话列表」才会去微信取会话。",
-            foreground="#7b8794",
-        ).pack(side="left", padx=12)
 
-        # 进页不自动拉列表。以前一进第二步就 refresh：微信刚登录就被操作窗口，
-        # 未登录跳过来还白跑一次。现在只认手动点「读取微信对话列表」。
         self._on_redraw_conversations()
+        self._maybe_auto_refresh_conversations()
+
+    def _maybe_auto_refresh_conversations(self) -> None:
+        """进第 2 步就自动读一次，和微信一致：每次看列表都是新的。
+
+        唯一的 guard 是微信没登录 —— 那时扫内存提钥匙是无用功（几十秒），
+        等用户手动点（点了会自动提）。钥匙提取本身有 5 分钟节流，
+        进出翻页不会反复扫。
+        """
+        try:
+            logged_in = (self.app.monitor.latest.state == WeChatState.LOGGED_IN)
+        except Exception:
+            logged_in = False
+        if not logged_in:
+            return
+        self._on_refresh_conversations()
+
+    def _on_focus_back(self, _event: Any = None) -> None:
+        """窗口拿回焦点：停在第 2 步且 60 秒没刷过，就刷一次。"""
+        try:
+            if self.app.wizard.step != WizardStep.CONVERSATIONS:
+                return
+            if bool(getattr(self, "_conv_refreshing", False)):
+                return
+            last = float(getattr(self, "_last_conv_refresh_at", 0) or 0)
+            if time.time() - last < 60:
+                return
+        except Exception:
+            return
+        self._maybe_auto_refresh_conversations()
 
     def _split_visible(self) -> dict[str, list[Conversation]]:
         """按栏拆分会话。搜索框已下掉（商户反馈多余），这里保留按词过滤的
@@ -976,10 +1162,11 @@ class MerchantWindow:
         return buckets
 
     def _refresh_wcdb_hint(self) -> None:
-        """解密库状态行：有钥匙显示真名通道已开，没有就说明会自动提。
+        """解密库状态行：只在没钥匙时出现（钥匙+重试按钮）。
 
-        点「读取微信对话列表」时没钥匙会自动提一次（提完直接读），
-        这个按钮只留作重试 —— 商户正常流程里不需要点它。
+        有钥匙是常态，不占一行字。点「刷新列表」时没钥匙会
+        自动提一次（提完直接读），这个按钮只留作重试 —— 商户正常
+        流程里不需要点它。
         """
         hint = self._widgets.get("conv_wcdb_hint")
         button = self._widgets.get("conv_wcdb_btn")
@@ -989,9 +1176,11 @@ class MerchantWindow:
             return
         if hint is not None and self._alive(hint):
             if ok:
-                hint.configure(text=f"本机数据库：{message}")
+                hint.pack_forget()
             else:
                 hint.configure(text=f"本机数据库：{message}。点读取时会自动提一次。")
+                if not hint.winfo_ismapped():
+                    hint.pack(side="left", padx=8)
         if button is not None and self._alive(button):
             if ok:
                 button.pack_forget()
@@ -1164,10 +1353,9 @@ class MerchantWindow:
         （库里有什么读什么），认人只有数据库一种。没钥匙时按钮变灰，
         指回第 2 步先提密钥。
         """
-        frame = ttk.Frame(self.container, padding=(18, 6))
-        frame.pack(fill="both", expand=True)
+        frame = self._scrollable_page()
         selected = self.app.wizard.conversations.history_selected
-        ttk.Label(frame, text="第 3 步　读取历史消息", style="Section.TLabel").pack(anchor="w", pady=(4, 6))
+        ttk.Label(frame, text="第 3 步　读取历史消息", style="SectionPage.TLabel").pack(anchor="w", pady=(4, 6))
         ttk.Label(
             frame,
             text="将读取：" + ("、".join(item.disambiguation for item in selected) or "未选择"),
@@ -1178,22 +1366,16 @@ class MerchantWindow:
             wcdb_ok, _wcdb_message = self.app.wcdb_status()
         except Exception:
             wcdb_ok = False
-        if wcdb_ok:
+        if not wcdb_ok:
             ttk.Label(
                 frame,
-                text="数据库直读，不碰微信窗口，读的时候电脑可以正常用。",
-                foreground="#1a7f37", wraplength=700,
-            ).pack(anchor="w", pady=(0, 10))
-        else:
-            ttk.Label(
-                frame,
-                text="本机数据库还读不了：回第 2 步点「读取微信对话列表」，"
+                text="本机数据库还读不了：回第 2 步点「刷新列表」，"
                 "会自动提取密钥，提完再来读。",
                 foreground="#a8590b", wraplength=700,
             ).pack(anchor="w", pady=(0, 10))
 
-        actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=(4, 0))
+        actions = ttk.Frame(self.footer_body)
+        actions.pack(fill="x")
         self._widgets["history_actions"] = actions
         update_btn = ttk.Button(
             actions, text="更新消息", style="Big.TButton",
@@ -1213,19 +1395,6 @@ class MerchantWindow:
         if not wcdb_ok or not selected:
             update_btn.configure(state="disabled")
             all_btn.configure(state="disabled")
-        ttk.Label(
-            frame,
-            text="更新消息：只读上次之后的新消息。读取全部：把库里能读的全读进来 "
-            "（单个会话最多 2 万条），随时可以取消，已读到的部分会保留。",
-            foreground="#7b8794", wraplength=700,
-        ).pack(anchor="w", pady=(10, 0))
-
-        note = ttk.Label(
-            frame,
-            text="点上面任一按钮后会进入下一步并真正动手读。现在这一屏不碰微信。",
-            foreground="#7b8794", wraplength=700,
-        )
-        note.pack(anchor="w", pady=(18, 0))
 
     def _page_read(self) -> None:
         """第 4 步　执行与结果：进度、缺口、逐会话明细都在这里。
@@ -1233,10 +1402,9 @@ class MerchantWindow:
         进这一页即表示读取已经开始（或刚结束）。返回上一步改范围，
         配置会保留，不用重选。
         """
-        frame = ttk.Frame(self.container, padding=(18, 6))
-        frame.pack(fill="both", expand=True)
+        frame = self._scrollable_page()
         selected = self.app.wizard.conversations.history_selected
-        ttk.Label(frame, text="第 4 步　读取历史消息", style="Section.TLabel").pack(anchor="w", pady=(4, 6))
+        ttk.Label(frame, text="第 4 步　读取历史消息", style="SectionPage.TLabel").pack(anchor="w", pady=(4, 6))
         ttk.Label(
             frame,
             text="正在读：" + ("、".join(item.disambiguation for item in selected) or "未选择"),
@@ -1252,8 +1420,8 @@ class MerchantWindow:
         self._widgets["read_state"] = ttk.Label(frame, text="", foreground="#7b8794", wraplength=700)
         self._widgets["read_state"].pack(anchor="w", pady=(2, 0))
 
-        actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=(12, 0))
+        actions = ttk.Frame(self.footer_body)
+        actions.pack(fill="x")
         self._widgets["read_cancel"] = ttk.Button(
             actions, text="取消", command=self.app.cancel_history
         )
@@ -1265,33 +1433,15 @@ class MerchantWindow:
             actions, text="下一步：智能整理", style="Big.TButton", command=self._go_next_from_history
         )
 
-        picked = ""
-        try:
-            picked = self._last_read_config.get("sender", "")
-        except Exception:
-            picked = ""
-        active = picked or self.app.history.sender_source
-        if active == "avatar":
-            note_text = ("群聊会逐条点头像确认发送人，每条约 2~3 秒，期间请不要碰鼠标键盘，"
-                         "也不要最小化微信窗口。")
-        elif active == "wcdb":
-            note_text = "数据库直读，不碰微信窗口，读的时候电脑可以正常用。"
-        else:
-            note_text = "读取历史时软件会短暂操作微信窗口，请先不要在电脑上做别的事。"
-        note = ttk.Label(
-            frame,
-            text=note_text,
-            foreground="#7b8794", wraplength=700,
-        )
-        note.pack(anchor="w", pady=(18, 0))
-
         # 读到了什么，**逐个会话**摊开。商户在决定要不要花额度去分析之前，
         # 要确认的是"该读的都读到了" —— 一句总数回答不了这个问题。
         # 这一块有内容才出现：没读之前摆一张空表只是占地方。
         summary = ttk.LabelFrame(frame, text="每个会话读到了什么", padding=8)
         self._widgets["read_summary"] = summary
         columns = ("name", "count", "range")
-        tree = ttk.Treeview(summary, columns=columns, show="headings", height=5)
+        summary_box, tree = self._tree_with_scroll(
+            summary, columns=columns, show="headings", height=5)
+        summary_box.pack(fill="both", expand=True)
         for key, heading, width, anchor in (
             ("name", "会话", 300, "w"),
             ("count", "读到", 70, "e"),
@@ -1299,7 +1449,6 @@ class MerchantWindow:
         ):
             tree.heading(key, text=heading)
             tree.column(key, width=width, anchor=anchor)
-        tree.pack(fill="both", expand=True)
         self._widgets["read_summary_tree"] = tree
 
         # 放在最后：它要控制 read_next 与 read_summary 的显隐，控件必须先建好。
@@ -1580,10 +1729,9 @@ class MerchantWindow:
 
         只读本地库，不碰微信。导出同理 —— 落盘的是 CSV/XLSX/DOCX/JSON 文件。
         """
-        frame = ttk.Frame(self.container, padding=(18, 6))
-        frame.pack(fill="both", expand=True)
+        frame = self._scrollable_page()
         selected = self.app.wizard.conversations.history_selected
-        ttk.Label(frame, text="第 5 步　核对读取明细", style="Section.TLabel").pack(anchor="w", pady=(4, 6))
+        ttk.Label(frame, text="第 5 步　核对读取明细", style="SectionPage.TLabel").pack(anchor="w", pady=(4, 6))
         names = [item.disambiguation for item in selected]
         ttk.Label(
             frame,
@@ -1600,7 +1748,9 @@ class MerchantWindow:
         self._widgets["review_count"].pack(anchor="w", pady=(0, 6))
 
         columns = ("group", "sent_at", "sender", "content")
-        tree = ttk.Treeview(frame, columns=columns, show="headings", height=12)
+        review_box, tree = self._tree_with_scroll(
+            frame, columns=columns, show="headings", height=12)
+        review_box.pack(fill="both", expand=True)
         for key, heading, width, anchor in (
             ("group", "会话", 150, "w"),
             ("sent_at", "时间", 130, "w"),
@@ -1617,11 +1767,10 @@ class MerchantWindow:
                 self.app.display_name_for(row.get("sender", "")),
                 content,
             ))
-        tree.pack(fill="both", expand=True)
         self._widgets["review_tree"] = tree
 
-        actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=(10, 0))
+        actions = ttk.Frame(self.footer_body)
+        actions.pack(fill="x")
         ttk.Button(actions, text="导出CSV", command=self._export_review_csv).pack(side="left")
         ttk.Button(actions, text="导出XLSX", command=self._export_review_xlsx).pack(side="left", padx=8)
         ttk.Button(actions, text="导出DOCX", command=self._export_review_docx).pack(side="left")
@@ -1642,18 +1791,130 @@ class MerchantWindow:
             return []
 
     def _export_review_rows(self) -> list:
-        return list(getattr(self, "_last_review_rows", []) or [])
+        """导出用的行：内容按核对页的显示口径（图片/语音等给占位），
+        且只放过了一遍 AI 的（订单解析完成，或任一角色整理过）。
+
+        没过 AI 的导出去等于绕开整理 —— 与其悄悄放行，不如直接卡住，
+        让商户去跑一遍整理。跳过条数记在 ``_last_export_skipped``，
+        调用方拿去说话。
+        """
+        store = getattr(self.app, "orders", None)
+        tenant = getattr(self.app, "tenant", "")
+        try:
+            processed = store.processed_message_ids(tenant) \
+                if store is not None else set()
+        except Exception:
+            processed = set()
+        rows = []
+        skipped = 0
+        for row in (getattr(self, "_last_review_rows", []) or []):
+            item = dict(row or {})
+            if str(item.get("id", "") or "") not in processed:
+                skipped += 1
+                continue
+            item["content"] = display_content(item.get("kind", ""), item.get("content", ""))
+            rows.append(item)
+        self._last_export_skipped = skipped
+        return rows
+
+    def _ask_saveas(self, title: str, initialfile: str,
+                    filetypes: list, defaultextension: str) -> str:
+        """Win11 原生保存框，失败回落 tkinter。取消返回空串。"""
+        try:
+            from .win_dialog import ask_saveas_path
+            hwnd = 0
+            try:
+                hwnd = int(self.root.winfo_id())
+            except Exception:
+                hwnd = 0
+            path = ask_saveas_path(
+                parent_hwnd=hwnd, title=title,
+                initial_dir=self._export_initial_dir(),
+                filename=initialfile, filetypes=filetypes,
+                default_ext=defaultextension)
+            if path is not None:
+                return path
+        except Exception:
+            pass
+        return filedialog.asksaveasfilename(
+            parent=self.root, title=title, initialdir=self._export_initial_dir(),
+            initialfile=initialfile, defaultextension=defaultextension,
+            filetypes=filetypes) or ""
+
+    @staticmethod
+    def _safe_filename_part(text: str, limit: int = 30) -> str:
+        """文件名片段：去非法字符、限长，空了回空串（调用方再兜底）。"""
+        cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]', "", str(text or "")).strip()
+        return cleaned[:limit]
+
+    def _suggest_export_name(self, ext: str, rows: list | None = None) -> str:
+        """预生成导出文件名：产品名-内容-群-条数-时间。
+
+        商户以前每次都要手敲文件名 —— 四个格式各敲一次。名字里带上
+        群、条数和时间，存完在文件夹里一眼认得出来，不用来回改。
+        """
+        rows = rows if rows is not None else self._export_review_rows()
+        groups = []
+        for row in rows:
+            group = str((row or {}).get("group", "") or "").strip()
+            if group and group not in groups:
+                groups.append(group)
+        if len(groups) == 1:
+            scope = self._safe_filename_part(groups[0], 24) or "会话"
+        elif groups:
+            scope = f"{self._safe_filename_part(groups[0], 16) or '会话'}等{len(groups)}个会话"
+        else:
+            scope = "会话"
+        stamp = time.strftime("%Y%m%d_%H%M")
+        return f"微信AI智能助理-核对明细-{scope}-{len(rows)}条-{stamp}.{ext}"
+
+    @staticmethod
+    def _export_initial_dir() -> str:
+        """导出对话框的初始目录：文档库，没有就退回家目录。"""
+        for candidate in (Path.home() / "Documents", Path.home()):
+            try:
+                if candidate.is_dir():
+                    return str(candidate)
+            except Exception:
+                continue
+        return ""
+
+    def _check_exportable(self) -> list | None:
+        """导出门禁：只放过了一遍 AI 的。返回行，或 None（调用方收摊）。
+
+        * 全都没过：指路去智能整理，不放行；
+        * 部分没过：问一句，只导已整理的；
+        * 全都过：直接放行，一句废话没有。
+        """
+        rows = self._export_review_rows()
+        skipped = int(getattr(self, "_last_export_skipped", 0) or 0)
+        if rows and not skipped:
+            return rows
+        if not rows and not skipped:
+            messagebox.showinfo("没有可导出的内容", "先读到消息再导出。")
+            return None
+        if not rows:
+            messagebox.showinfo(
+                "先去智能整理",
+                "这些消息还没整理过，导出去等于绕开整理。\n"
+                "点下面「下一步：智能整理」跑一遍再导出。")
+            return None
+        if messagebox.askyesno(
+                "只导出已整理的部分",
+                f"{skipped} 条还没整理过，不在导出里。\n"
+                f"只导出已整理的 {len(rows)} 条？"):
+            return rows
+        return None
 
     def _export_review_csv(self) -> None:
-        rows = self._export_review_rows()
-        if not rows:
-            messagebox.showinfo("没有可导出的内容", "先读到消息再导出。")
+        rows = self._check_exportable()
+        if rows is None:
             return
-        path = filedialog.asksaveasfilename(
+        path = self._ask_saveas(
             title="导出读取明细",
-            defaultextension=".csv",
+            initialfile=self._suggest_export_name("csv", rows),
             filetypes=[("CSV 表格", "*.csv"), ("所有文件", "*.*")],
-        )
+            defaultextension=".csv")
         if not path:
             return
         try:
@@ -1670,15 +1931,14 @@ class MerchantWindow:
         messagebox.showinfo("已导出", f"共导出 {len(rows)} 条：\n{path}")
 
     def _export_review_json(self) -> None:
-        rows = self._export_review_rows()
-        if not rows:
-            messagebox.showinfo("没有可导出的内容", "先读到消息再导出。")
+        rows = self._check_exportable()
+        if rows is None:
             return
-        path = filedialog.asksaveasfilename(
+        path = self._ask_saveas(
             title="导出读取明细",
-            defaultextension=".json",
+            initialfile=self._suggest_export_name("json", rows),
             filetypes=[("JSON", "*.json"), ("所有文件", "*.*")],
-        )
+            defaultextension=".json")
         if not path:
             return
         try:
@@ -1690,15 +1950,14 @@ class MerchantWindow:
         messagebox.showinfo("已导出", f"共导出 {len(rows)} 条：\n{path}")
 
     def _export_review_xlsx(self) -> None:
-        rows = self._export_review_rows()
-        if not rows:
-            messagebox.showinfo("没有可导出的内容", "先读到消息再导出。")
+        rows = self._check_exportable()
+        if rows is None:
             return
-        path = filedialog.asksaveasfilename(
+        path = self._ask_saveas(
             title="导出读取明细",
-            defaultextension=".xlsx",
+            initialfile=self._suggest_export_name("xlsx", rows),
             filetypes=[("Excel 表格", "*.xlsx"), ("所有文件", "*.*")],
-        )
+            defaultextension=".xlsx")
         if not path:
             return
         try:
@@ -1710,15 +1969,14 @@ class MerchantWindow:
         messagebox.showinfo("已导出", f"共导出 {len(rows)} 条：\n{path}")
 
     def _export_review_docx(self) -> None:
-        rows = self._export_review_rows()
-        if not rows:
-            messagebox.showinfo("没有可导出的内容", "先读到消息再导出。")
+        rows = self._check_exportable()
+        if rows is None:
             return
-        path = filedialog.asksaveasfilename(
+        path = self._ask_saveas(
             title="导出读取明细",
-            defaultextension=".docx",
+            initialfile=self._suggest_export_name("docx", rows),
             filetypes=[("Word 文档", "*.docx"), ("所有文件", "*.*")],
-        )
+            defaultextension=".docx")
         if not path:
             return
         try:
@@ -1732,24 +1990,17 @@ class MerchantWindow:
     # ------------------------------------------------- ⑥ 智能整理（额度同屏）
 
     def _page_analyze(self) -> None:
-        """第 6 步　智能整理：选角色 → 开始整理 → 看报告。
-
-        "刚才读到的消息"和"分析额度"两块已拿掉（商户反馈多余）：
-        读到多少第 4 步写了，额度不足时点整理会直接说明，不用常驻一块。
-        再加角色单选、模型选择与角色报告后一屏放不下，用滚动容器装。
-        """
+        """第 6 步：查看逐会话读取范围，选择角色并发起 LLM 分析。"""
         frame = self._scrollable_page(padding=(18, 6))
-        ttk.Label(frame, text="第 6 步　智能整理", style="Section.TLabel").pack(anchor="w", pady=(4, 8))
+        ttk.Label(frame, text="第 6 步　智能整理", style="SectionPage.TLabel").pack(anchor="w", pady=(4, 8))
 
-        self._build_summary_card(frame)
-
-        ttk.Label(frame, text="这次用什么角色整理：", font=("Microsoft YaHei", 10, "bold")).pack(anchor="w", pady=(10, 2))
+        ttk.Label(frame, text="整理角色：", font=("Microsoft YaHei", 10, "bold")).pack(anchor="w", pady=(10, 2))
         self._build_role_picker(frame)
-        ttk.Label(
-            frame,
-            text="订单助手走订单链路（可建单）；活动助手、通用整理只做归类、不建单、不扣费，结果在下面按类列出。",
-            wraplength=700, foreground="#7b8794",
-        ).pack(anchor="w", pady=(6, 0))
+        self._widgets["analyze_scope"] = ttk.Label(
+            frame, text="", foreground="#5a6572", wraplength=720, justify="left",
+        )
+        self._widgets["analyze_scope"].pack(anchor="w", pady=(4, 0))
+        self._render_analyze_scope(self._last_read_result or self.app.wizard.history_result)
 
         self._widgets["analyze"] = ttk.Label(frame, text="", font=("Microsoft YaHei", 11, "bold"), wraplength=700)
         self._widgets["analyze"].pack(anchor="w", pady=(14, 0))
@@ -1763,10 +2014,11 @@ class MerchantWindow:
         # 角色整理报告区：订单角色没有报告，平时收起，读到报告才展开。
         report_frame = ttk.LabelFrame(frame, text="角色整理结果", padding=8)
         self._widgets["role_report_frame"] = report_frame
-        report_tree = ttk.Treeview(
+        report_box, report_tree = self._tree_with_scroll(
             report_frame,
             columns=("bucket", "group", "sender", "sent_at", "content", "facts"),
             show="headings", height=8)
+        report_box.pack(fill="both", expand=True)
         for key, heading, width, anchor in (
             ("bucket", "类别", 90, "w"),
             ("group", "会话", 140, "w"),
@@ -1777,11 +2029,10 @@ class MerchantWindow:
         ):
             report_tree.heading(key, text=heading)
             report_tree.column(key, width=width, anchor=anchor)
-        report_tree.pack(fill="both", expand=True)
         self._widgets["role_report_tree"] = report_tree
 
-        actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=(10, 0))
+        actions = ttk.Frame(self.footer_body)
+        actions.pack(fill="x")
         self._widgets["analyze_button"] = ttk.Button(
             actions, text="开始智能整理", style="Big.TButton", command=self._on_analyze
         )
@@ -1791,6 +2042,205 @@ class MerchantWindow:
         self._render_analyzed()
         self._render_role_report()
         self._refresh_analyze_button()
+
+    def _page_analysis_results(self) -> None:
+        """第 7 步：展示 AI 对本次读取消息逐条给出的处理结果。"""
+        frame = self._scrollable_page(padding=(18, 6))
+        ttk.Label(
+            frame, text="第 7 步　AI分析详情", style="SectionPage.TLabel",
+        ).pack(anchor="w", pady=(4, 8))
+        self._widgets["analysis_result_summary"] = ttk.Label(
+            frame, text="正在载入分析结果……", font=("Microsoft YaHei", 10, "bold"),
+            wraplength=760,
+        )
+        self._widgets["analysis_result_summary"].pack(anchor="w", pady=(0, 8))
+
+        summary_box = ttk.LabelFrame(frame, text="AI角色分析报告", padding=8)
+        summary_box.pack(fill="x", pady=(0, 8))
+        self._widgets["summary_box"] = summary_box
+        self._summary_text = tk.Text(summary_box, height=5, wrap="word", relief="flat")
+        self._summary_text.pack(fill="x", expand=True)
+        self._summary_text.configure(state="disabled")
+        summary_bar = ttk.Frame(summary_box)
+        summary_bar.pack(fill="x", pady=(6, 0))
+        self._summary_bar = ttk.Progressbar(summary_bar, length=150, mode="indeterminate")
+        self._summary_bar.pack(side="left")
+        self._summary_elapsed = tk.StringVar(value="")
+        self._summary_elapsed_label = ttk.Label(
+            summary_bar, textvariable=self._summary_elapsed, foreground="#7b8794",
+        )
+        self._summary_elapsed_label.pack(side="left", padx=(8, 0))
+        self._summary_status = ttk.Label(
+            summary_bar, text="", foreground="#7b8794", wraplength=600,
+        )
+        self._summary_status.pack(side="left", padx=(8, 0))
+
+        detail_box = ttk.LabelFrame(frame, text="本次纳入分析的消息", padding=8)
+        detail_box.pack(fill="both", expand=True)
+        tree_box, tree = self._tree_with_scroll(
+            detail_box, columns=("group", "content", "analysis", "result"),
+            show="headings", height=9,
+        )
+        tree_box.pack(fill="both", expand=True)
+        for key, heading, width, anchor in (
+            ("group", "会话", 140, "w"),
+            ("content", "原消息", 260, "w"),
+            ("analysis", "AI分析详情", 360, "w"),
+            ("result", "处理结果", 110, "w"),
+        ):
+            tree.heading(key, text=heading)
+            tree.column(key, width=width, anchor=anchor)
+        tree.bind("<Double-1>", lambda _event: self._show_analysis_detail(tree))
+        self._widgets["analysis_detail_tree"] = tree
+
+        actions = ttk.Frame(self.footer_body)
+        actions.pack(fill="x")
+        ttk.Button(
+            actions, text="返回第六步", command=lambda: self._show_step(WizardStep.ANALYZE),
+        ).pack(side="left")
+        back_button = actions.winfo_children()[-1]
+        ttk.Button(
+            actions, text="回到首页", command=self._return_home_from_results,
+        ).pack(side="left", padx=8)
+        home_button = actions.winfo_children()[-1]
+        self._widgets["analysis_back_button"] = back_button
+        self._widgets["analysis_home_button"] = home_button
+        self._render_analysis_results()
+
+    def _return_home_from_results(self) -> None:
+        self._analysis_results_mode = False
+        self._show_step(WizardStep.DONE)
+
+    def _render_analysis_results(self) -> None:
+        summary = self._last_summary
+        label = self._widgets.get("analysis_result_summary")
+        if label is not None and self._alive(label):
+            if summary:
+                text = (f"{summary.get('role_name', 'AI')} 已分析 "
+                        f"{summary.get('processed', 0)} 条消息。详细分析报告见下方。")
+                if summary.get("scope_note"):
+                    text += "\n" + str(summary["scope_note"])
+                label.configure(text=text)
+            elif self._analysis_running:
+                label.configure(text="正在分析本次读取的消息……")
+            elif self._last_analysis_error:
+                label.configure(text=self._last_analysis_error)
+            else:
+                label.configure(text="分析尚未完成。可以返回第六步重新开始。")
+        button_state = "disabled" if self._analysis_running else "normal"
+        for key in ("analysis_back_button", "analysis_home_button"):
+            button = self._widgets.get(key)
+            if button is not None and self._alive(button):
+                button.configure(state=button_state)
+
+        tree = self._widgets.get("analysis_detail_tree")
+        if tree is not None and self._alive(tree):
+            tree.delete(*tree.get_children())
+            self._analysis_detail_rows: dict[str, dict[str, Any]] = {}
+            outcomes = self._last_analysis_details
+            for index, outcome in enumerate(outcomes):
+                if not isinstance(outcome, dict):
+                    continue
+                trace = dict(outcome.get("trace") or {})
+                message_id = str(trace.get("message_id") or "")
+                message = dict(outcome.get("message") or {})
+                if message_id:
+                    try:
+                        row = self.app.orders.db.execute(
+                            "SELECT group_id,sender,content,sent_at FROM messages "
+                            "WHERE merchant_id=? AND id=?",
+                            (self.app.tenant, message_id),
+                        ).fetchone()
+                        message = dict(row) if row else {}
+                    except Exception:
+                        message = {}
+                order_id = str(outcome.get("order_id") or trace.get("order_id") or "")
+                order_summary = ""
+                if order_id:
+                    try:
+                        detail = self.app.orders.order_detail(self.app.tenant, order_id) or {}
+                        items = detail.get("items") or []
+                        item_text = "、".join(
+                            f"{item.get('product_name', '商品')} {item.get('quantity', '')}"
+                            f"{item.get('unit', '')}" for item in items
+                        )
+                        order_summary = str(detail.get("customer_name") or "")
+                        if item_text:
+                            order_summary += ("：" if order_summary else "") + item_text
+                        if not order_summary:
+                            order_summary = "已生成订单"
+                    except Exception:
+                        order_summary = "已生成订单"
+                status = str(outcome.get("status") or outcome.get("outcome") or trace.get("status") or "")
+                status_label = {
+                    "done": "已完成", "needs_review": "待核对",
+                    "blocked": "未能分析", "failed": "分析失败",
+                    "ignored": "未生成订单", "own_receipt": "已跳过",
+                    "merged_away": "已合并",
+                }.get(status, status or "已分析")
+                analysis = str(
+                    outcome.get("message") or outcome.get("question")
+                    or outcome.get("outcome") or "已完成分析"
+                )
+                if order_summary:
+                    analysis = f"{analysis}；{order_summary}" if analysis else order_summary
+                iid = tree.insert("", "end", iid=str(index), values=(
+                    message.get("group_id", ""), _cell(message.get("content", ""), 42),
+                    _cell(analysis, 58), status_label,
+                ))
+                self._analysis_detail_rows[iid] = {
+                    "group": str(message.get("group_id", "")),
+                    "sender": str(message.get("sender", "")),
+                    "sent_at": str(message.get("sent_at", "")),
+                    "content": str(message.get("content", "")),
+                    "analysis": analysis,
+                    "status": status_label,
+                    "trace": trace,
+                }
+
+        self._render_analysis_paragraph()
+
+    def _render_analysis_paragraph(self) -> None:
+        outcome = self._last_paragraph_outcome
+        if not self._summary_running and not outcome:
+            return
+        status = self._summary_status
+        if self._summary_running and self._alive(self._summary_bar):
+            self._summary_bar.start(12)
+            if self._alive(status):
+                status.configure(text="正在整理……")
+        if not outcome:
+            return
+        text = str(outcome.get("summary") or "")
+        if text:
+            self._set_summary(text)
+            message_count = outcome.get("message_count", 0)
+            if self._alive(status):
+                status.configure(text=f"已整理 {message_count} 条")
+        elif outcome.get("error") and self._alive(status):
+            status.configure(text="整理失败：" + str(outcome["error"]))
+
+    def _show_analysis_detail(self, tree: Any) -> None:
+        selection = tree.selection()
+        if not selection:
+            return
+        detail = getattr(self, "_analysis_detail_rows", {}).get(str(selection[0]))
+        if not detail:
+            return
+        window = tk.Toplevel(self.root)
+        window.title("AI分析详情")
+        window.geometry("700x520")
+        box = ttk.Frame(window, padding=12)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text=f"会话：{detail['group']}　发送人：{detail['sender']}"
+                           f"　时间：{detail['sent_at']}").pack(anchor="w", pady=(0, 8))
+        body = tk.Text(box, wrap="word")
+        body.pack(fill="both", expand=True)
+        body.insert("1.0", f"原消息：\n{detail['content']}\n\n"
+                            f"AI分析：\n{detail['analysis']}\n\n"
+                            f"处理结果：{detail['status']}\n\n"
+                            f"任务追踪：{json.dumps(detail['trace'], ensure_ascii=False, indent=2)}")
+        body.configure(state="disabled")
 
     def _render_role_report(self) -> None:
         """角色整理报告：按桶列出消息（群｜发送人｜时间｜内容｜抽到的事实）。
@@ -1825,44 +2275,6 @@ class MerchantWindow:
                     item.get("sent_at", ""), content, fact_text,
                 ))
 
-    def _build_summary_card(self, parent: Any) -> None:
-        """「把这些消息整理成一段话」—— 只转述，不判断。
-
-        ## 为什么后面还要「智能整理」
-
-        两者是不同的东西，不互相覆盖：
-
-        * **智能整理**（上面那个）建订单、算价钱、匹配商品 —— 需要目录里有商品。
-          客户不报商品时它会猜，猜错便羞会发错货。
-        * **这里**只把原话整理成一段人话。客户说「那个黄的」就写
-          「那个黄的」，不试成目录里的编码。店主本人就在群里，他知道那是什么。
-        """
-        box = ttk.LabelFrame(parent, text="汇总一段话（不建单、不报价、不猜商品）",
-                             padding=10)
-        box.pack(fill="x", pady=(0, 10))
-        self._widgets["summary_box"] = box
-        self._summary_text = tk.Text(box, height=14, wrap="word", relief="flat")
-        self._summary_text.pack(fill="both", expand=True)
-        self._summary_text.configure(state="disabled")
-        self._summary_text.insert("1.0", "读完历史后点「整理成一段话」。")
-        bar = ttk.Frame(box)
-        bar.pack(fill="x", pady=(8, 0))
-        ttk.Button(bar, text="整理成一段话", style="Big.TButton",
-                   command=self._on_summarize).pack(side="left")
-        # 不确定进度（indeterminate），**不是百分比**。
-        #
-        # 汇总是**一次 HTTP 请求**，不流式、也没有分步回报—— 服务端在让模型写完之前
-        # 不会送出任何东西。若画一条会自己往前走的百分比，那就是在擅自€。
-        # 常见的错误做法是加一条不动的进度条，日志里却写着模型在思考—— 无法比对。
-        #
-        # 所以这里用不确定模式 + **已等待几秒**。时间是真的，能让商户知道这个程序没卡死。
-        self._summary_bar = ttk.Progressbar(bar, length=180, mode="indeterminate")
-        self._summary_bar.pack(side="left", padx=(12, 0))
-        self._summary_elapsed = tk.StringVar(value="")
-        self._summary_elapsed_label = ttk.Label(bar, textvariable=self._summary_elapsed, foreground="#7b8794")
-        self._summary_elapsed_label.pack(side="left", padx=(8, 0))
-        self._summary_status = ttk.Label(bar, text="", foreground="#7b8794")
-
     def _messages_for_summary(self, result: Any) -> list[dict[str, Any]]:
         """取哪些消息给模型（共用逻辑）。详见 ``summary_task``。"""
         return summary_task.messages_for_summary(self, result)
@@ -1888,7 +2300,7 @@ class MerchantWindow:
         self._summary_text.configure(state="disabled")
 
     def _on_summarize(self) -> None:
-        """汇总已读到的消息。
+        """由「开始智能整理」触发，汇总已读到的消息。
 
         模型调用不能在主线程做：请求可能卡几十秒，主线程被占住
         就是界面整个冻住，商户会认为程序卡死。
@@ -1900,21 +2312,22 @@ class MerchantWindow:
             messagebox.showinfo("还没读到消息",
                                 "请先回上一步读取历史消息。")
             return
+        box = self._widgets.get("summary_box")
+        if box is not None and self._alive(box) and not box.winfo_ismapped():
+            box.pack(fill="x", pady=(10, 0))
         self._summary_running = True
         self._summary_status.configure(text="正在整理……")
         self._summary_started = time.monotonic()
         self._summary_bar.start(12)
         self._summary_tick()
         def work():
-            outcome = self._run_summary(result)
-            # **必须走 _post，不能在后台线程里碰 Tk。**
-            #
-            # 原来写的是 self.root.after(0, ...)，结果：
-            #   RuntimeError: main thread is not in main loop
-            # 它抛在**工作线程**里，不是 Tk 回调里，所以
-            # report_callback_exception 抓不到、stderr 一片安静。
-            # 于是 _summary_finished 永远不执行、_summary_running 永远是 True，
-            # 之后每次点击都被 if self._summary_running 挡掉 —— 点了没反应。
+            try:
+                outcome = self._run_summary(result)
+            except Exception as exc:
+                # _post 必须执行：注释里记过这个坑 —— 线程里抛出来，
+                # _summary_running 永远是 True，之后每次点击都静默返回。
+                outcome = {"summary": "", "error": f"整理失败：{exc}",
+                           "cost": None, "message_count": 0}
             self._post("summary", outcome=outcome)
         threading.Thread(target=work, daemon=True).start()
 
@@ -1923,6 +2336,7 @@ class MerchantWindow:
         self._summary_finished(outcome)
 
     def _summary_finished(self, outcome: dict) -> None:
+        self._last_paragraph_outcome = dict(outcome)
         self._summary_running = False
         if self._alive(self._summary_bar):
             self._summary_bar.stop()
@@ -1959,19 +2373,28 @@ class MerchantWindow:
                 bar.pack(side="left", fill="x", expand=True)
                 bar.configure(mode="determinate",
                               maximum=100,
-                              value=int(getattr(view, "used_percent", 0)))
+                              value=int(getattr(view, "remaining_percent", 0)))
             elif not unlimited:
                 # 还没查出来 / 没登录 —— 收起来，不占地方也不误导。
                 bar.pack_forget()
             else:
                 bar.pack_forget()
         if label is not None and self._alive(label):
-            label.configure(text="" if not usable else f"已用 {getattr(view, 'used_percent', 0)}%")
+            label.configure(text="" if not usable else f"剩余 {getattr(view, 'remaining_percent', 0)}%")
         del holder
 
     def _refresh_quota(self) -> None:
-        view = self.app.check_quota()
-        self._post("quota", view=view)
+        with self._quota_refresh_lock:
+            if self._quota_refresh_in_flight:
+                return
+            self._quota_refresh_in_flight = True
+        self._last_quota_refresh = time.monotonic()
+        try:
+            view = self.app.check_quota()
+            self._post("quota", view=view)
+        finally:
+            with self._quota_refresh_lock:
+                self._quota_refresh_in_flight = False
 
     def _on_logged_in(self) -> None:
         """产品账号刚登录成功。刷新所有跟登录有关的显示，并重过第 1 步门禁。
@@ -1982,8 +2405,25 @@ class MerchantWindow:
         self._render_account()
         self._refresh_login_block()
         self._refresh_analyze_button()
+        # OAuth succeeds before the async balance request. Fetch right away;
+        # the periodic check below retries automatically after network recovery.
+        self._last_quota_refresh = 0.0
+        self._schedule_quota_refresh(force=True)
         if self.app.wizard.step == WizardStep.WECHAT:
             self._spawn("wechat-check", lambda: self.app.check_wechat())
+        self._spawn("models", lambda: self._post("models_loaded", catalog=self.app.load_models(force=True)))
+
+    def _on_models_loaded(self, catalog: dict[str, Any]) -> None:
+        self._refresh_model_picker()
+
+    def _schedule_quota_refresh(self, force: bool = False) -> None:
+        if self._closing or self.app.session is None:
+            return
+        quota = self.app.wizard.quota
+        interval = 20.0 if not getattr(quota, "balance_known", False) else 90.0
+        now = time.monotonic()
+        if force or now - self._last_quota_refresh >= interval:
+            self._spawn("quota-refresh", self._refresh_quota)
 
     def _on_quota(self, view: Any) -> None:
         # 登录一成功就会查额度，所以这里也是账号条刷新的时机 ——
@@ -2040,7 +2480,6 @@ class MerchantWindow:
         """
         for child in box.winfo_children():
             child.destroy()
-        self._widgets.pop("login_start", None)
         self._widgets.pop("login_switch", None)
         session = self.app.session
         if session is not None:
@@ -2064,14 +2503,10 @@ class MerchantWindow:
                   foreground="#a8590b").pack(anchor="w")
         ttk.Label(
             box,
-            text="需要先登录产品账号，才能进入下一步选会话。\n"
-                 "读到的消息只存在这台电脑上。只有「智能整理」（把消息变成订单）会使用分析额度。",
+            text="需要先登录产品账号，才能进入下一步选会话。"
+                 "点右上角「账号：未登录　点此登录」即可，登录后自动进入下一步。",
             foreground="#5a6572", wraplength=620,
         ).pack(anchor="w", pady=(4, 0))
-        self._widgets["login_start"] = ttk.Button(
-            box, text="登录产品账号", style="Big.TButton", command=self._on_login
-        )
-        self._widgets["login_start"].pack(anchor="w", pady=(8, 0))
 
     def _on_login(self) -> None:
         self.app.login_requested()
@@ -2079,27 +2514,251 @@ class MerchantWindow:
     def _on_account_click(self) -> None:
         """点顶栏的账号条。
 
-        未登录 → 发起登录；已登录 → 确认后退出。退出是不可逆的（要重新走一遍
-        网页登录），所以必须先问一句，别让误点把人踢出去。
+        未登录 → 发起登录；已登录 → 打开账号中心（余额、套餐、充值、退出）。
+        退出是不可逆的（要重新走一遍网页登录），放在账号中心里二次确认，
+        别让误点把人踢出去。
         """
         session = self.app.session
         if session is None:
             self.app.login_requested()
             return
-        name = str(getattr(session, "merchant_name", "") or "当前账号")
+        self._show_account_center()
+
+    def _account_center_data(self) -> dict[str, Any]:
+        """账号中心要显示的数据。纯逻辑，方便单测；显示层只管摆。
+
+        只读缓存（登录时的 subscription + 后台刷过的 wizard.quota），
+        **绝不现场查网** —— 下拉是点开即看的东西，在 UI 线程里等网络
+        就是卡死。余额以缓存为准，首页额度行自有后台任务在刷。
+        用量只给百分比不给具体数（和 Codex 一样）：具体数会让人去换算
+        "还能整理几次"，而一条消息不等于一笔订单，那种换算是错的。
+        """
+        session = self.app.session
+        subscription = {}
+        try:
+            subscription = dict(getattr(session, "subscription", None) or {})
+        except Exception:
+            subscription = {}
+        name = ""
+        try:
+            name = str(getattr(session, "merchant_name", "") or "").strip()
+        except Exception:
+            name = ""
+        quota = None
+        try:
+            quota = getattr(getattr(self.app, "wizard", None), "quota", None)
+        except Exception:
+            quota = None
+        plan = str(subscription.get("plan_code", "") or "").strip()
+        # JYI is the provider/account name in the pay-as-you-go flow, not a
+        # subscription tier. Older saved sessions may still carry this default.
+        if (str(getattr(session, "provider", "") or "").lower() == "jyi"
+                and plan.casefold() == "jyi"):
+            plan = ""
+        return {
+            "name": name or "当前账号",
+            "plan": plan,
+            "period_end": str(subscription.get("period_end", "") or "")[:10],
+            "quota": self._quota_bar_data(quota, subscription),
+            "purchase_hint": "请联系客服开通或续期。",
+            "topup_url": str(subscription.get("topup_url", "") or ""),
+        }
+
+    @staticmethod
+    def _quota_bar_data(quota: Any, subscription: Mapping[str, Any]) -> dict[str, Any]:
+        """用量条数据：{"kind": percent/unlimited/unknown, "percent": int}。
+
+        优先用后台刷过的 quota（最新），没有再拿登录缓存的 subscription
+        现算。两边都没数就认"未知"，不编一个百分比。
+        """
+        try:
+            logged_in = bool(getattr(quota, "logged_in", False))
+            total = int(getattr(quota, "total_micro_usd", 0) or 0)
+        except (TypeError, ValueError):
+            logged_in, total = False, 0
+        if logged_in and total > 0:
+            try:
+                return {"kind": "percent",
+                        "percent": int(getattr(quota, "remaining_percent", 0) or 0)}
+            except (TypeError, ValueError):
+                pass
+        if logged_in and bool(getattr(quota, "unlimited", False)):
+            return {"kind": "unlimited", "percent": 0}
+        try:
+            total = int((subscription or {}).get("quota_micro_usd", 0) or 0)
+            used = int((subscription or {}).get("used_micro_usd", 0) or 0)
+            reserved = int((subscription or {}).get("reserved_micro_usd", 0) or 0)
+        except (TypeError, ValueError):
+            total, used, reserved = 0, 0, 0
+        if total > 0:
+            percent = 100 - max(0, min(100, round((used + reserved) * 100 / total)))
+            return {"kind": "percent", "percent": percent}
+        return {"kind": "unknown", "percent": 0}
+
+    def _show_account_center(self) -> None:
+        """账号下拉：挂在账号按钮下面，点外面自动收起（大厂右上角标准件）。
+
+        余额、套餐、充值、退出都在这一层，不再另开窗口。
+        """
+        data = self._account_center_data()
+        anchor = self._widgets.get("account")
+        menu = tk.Toplevel(self.root)
+        menu.overrideredirect(True)
+        menu.attributes("-topmost", True)
+        body = ttk.Frame(menu, style="Card.TFrame", padding=14)
+        body.pack(fill="both", expand=True)
+        # 细边框：无边框窗口自己不带框，不画一条会跟底下内容糊在一起。
+        try:
+            menu.configure(background="#e3e7ec")
+            body.pack(fill="both", expand=True, padx=1, pady=1)
+        except Exception:
+            pass
+        ttk.Label(body, text=data["name"],
+                  font=("Microsoft YaHei", 11, "bold")).pack(anchor="w")
+        if data["plan"]:
+            ttk.Label(body, text=f"套餐：{data['plan']}",
+                      foreground="#5a6572").pack(anchor="w", pady=(2, 0))
+        quota = data["quota"] if isinstance(data.get("quota"), dict) else {}
+        kind = quota.get("kind", "unknown")
+        if kind == "unlimited":
+            ttk.Label(body, text="分析额度：不限",
+                      font=("Microsoft YaHei", 13, "bold")).pack(anchor="w", pady=(8, 0))
+        elif kind == "percent":
+            percent = max(0, min(100, int(quota.get("percent", 0) or 0)))
+            bar_row = ttk.Frame(body)
+            bar_row.pack(fill="x", pady=(8, 0))
+            bar = ttk.Progressbar(bar_row, length=220, mode="determinate",
+                                  maximum=100, value=percent)
+            bar.pack(side="left")
+            ttk.Label(bar_row, text=f"剩余 {percent}%",
+                      foreground="#5a6572").pack(side="left", padx=(8, 0))
+        else:
+            ttk.Label(body, text="额度未知，联网后自动刷新",
+                      foreground="#a8590b").pack(anchor="w", pady=(8, 0))
+        if data["period_end"]:
+            ttk.Label(body, text=f"有效期至 {data['period_end']}",
+                      foreground="#5a6572").pack(anchor="w", pady=(2, 0))
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", pady=(12, 0))
+        ttk.Button(actions, text="充值", style="Big.TButton",
+                   command=lambda: (menu.destroy(), self._on_recharge(self.root))).pack(side="left")
+        ttk.Button(actions, text="退出登录",
+                   command=lambda: self._on_logout_from_center(menu)).pack(side="left", padx=8)
+        # 点外面收起 + Esc 收起。不能直接绑 FocusOut 就销毁：
+        # 点菜单里的按钮时焦点先离开菜单（FocusOut），直接销毁会把按钮
+        # 连同点击一起吃掉 —— 点充值没反应就是这么来的。
+        # 所以 idle 时再看焦点真走了才收。
+        def _maybe_dismiss() -> None:
+            try:
+                if not menu.winfo_exists():
+                    return
+                focused = menu.focus_get()
+                if focused is not None and str(focused).startswith(str(menu)):
+                    return
+            except Exception:
+                pass
+            try:
+                menu.destroy()
+            except Exception:
+                pass
+
+        try:
+            menu.bind("<FocusOut>", lambda _event: menu.after_idle(_maybe_dismiss))
+            menu.bind("<Escape>", lambda _event: menu.destroy())
+        except Exception:
+            pass
+        try:
+            menu.update_idletasks()
+            width = menu.winfo_reqwidth()
+            if anchor is not None and self._alive(anchor):
+                x = anchor.winfo_rootx() + anchor.winfo_width() - width
+                y = anchor.winfo_rooty() + anchor.winfo_height() + 4
+            else:
+                x = self.root.winfo_rootx() + 100
+                y = self.root.winfo_rooty() + 100
+            menu.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+        try:
+            menu.focus_force()
+        except Exception:
+            pass
+
+    def _on_recharge(self, window: Any) -> None:
+        """充值：跳 JYI 网站收银页，不在客户端里弹 Stripe。
+
+        大厂桌面端标准做法：收银放网页（PCI 不碰卡、3D 验证要浏览器、
+        改价不用发版），Stripe 由 JYI 页内接。客户端只负责开浏览器。
+        地址可配（PYWEIXIN_BILLING_URL），默认 JYI 控制台账单页。
+        打不开浏览器就把地址给出来让人手开，不算失败。
+        """
+        import os
+        import webbrowser
+
+        from .jyi_client import JYI_AUTH_ORIGIN
+
+        data = self._account_center_data()
+        url = (os.environ.get("PYWEIXIN_BILLING_URL", "") or "").strip()
+        if not url:
+            from urllib.parse import urlencode, urlsplit, urlunsplit
+
+            billing_url = data.get("topup_url") or JYI_AUTH_ORIGIN.rstrip("/") + "/console/billing"
+            parsed = urlsplit(billing_url)
+            trusted = urlsplit(JYI_AUTH_ORIGIN)
+            if (parsed.scheme == "https" and parsed.netloc == trusted.netloc
+                    and parsed.path == "/console/billing"):
+                # Start at sign-in with an explicit same-site return target.
+                url = urlunsplit((parsed.scheme, parsed.netloc, "/signin",
+                                  urlencode({"next": "/console/billing"}), ""))
+            else:
+                url = billing_url
+        try:
+            if webbrowser.open(url):
+                return
+        except Exception:
+            pass
+        messagebox.showinfo(
+            "充值",
+            f"没能自动打开浏览器，请手动打开这个地址充值：\n{url}\n\n{data['purchase_hint']}",
+            parent=window,
+        )
+
+    def _on_logout_from_center(self, window: Any) -> None:
+        # 先关下拉再问：确认框挂在无边框顶层菜单下会被压住看不见，
+        # 商户点完毫无反应，还以为按钮坏了。
+        try:
+            window.destroy()
+        except Exception:
+            pass
+        session = self.app.session
+        name = ""
+        try:
+            name = str(getattr(session, "merchant_name", "") or "当前账号")
+        except Exception:
+            name = "当前账号"
         if not messagebox.askyesno(
             "退出登录",
             f"确定退出「{name}」吗？\n\n"
             "已经读到的消息和订单会留在这台电脑上，退出后可以重新登录查看。",
+            parent=self.root,
         ):
             return
-        self.app.detach()
-        self._render_account()
-        self._refresh_login_block()
-        self._refresh_analyze_button()
+        try:
+            self.app.detach()
+        except Exception:
+            pass
+        for refresh in (self._render_account, self._refresh_login_block,
+                        self._refresh_analyze_button):
+            try:
+                refresh()
+            except Exception:
+                pass
         # 留在**他有数据的那一屏**。退出登录只断开了云端能力，本地读到的
         # 消息和订单一个都没少 —— 把他扔回第 1 步，等于逼他从头再走一遍。
-        self._show_step(WizardStep.ANALYZE if self.app.wizard.history_result else WizardStep.WECHAT)
+        try:
+            self._show_step(WizardStep.ANALYZE if self.app.wizard.history_result else WizardStep.WECHAT)
+        except Exception:
+            pass
         if self.app.wizard.history_result:
             messagebox.showinfo(
                 "已退出登录",
@@ -2118,21 +2777,60 @@ class MerchantWindow:
             widget.configure(text="账号：未登录　点此登录")
             return
         name = str(getattr(session, "merchant_name", "") or "").strip()
-        widget.configure(text=f"账号：{name}　点此退出" if name else "账号：已登录　点此退出")
+        widget.configure(text=f"账号：{name}　▾" if name else "账号：已登录　▾")
 
     def _build_role_picker(self, parent: Any) -> None:
-        """整理角色单选（每次整理时选，不记默认）。"""
-        from .roles import ROLE_ORDER, list_roles
+        """目前只提供订单助手，保留单选控件以兼容原有页面状态。"""
+        from .roles import ROLE_ORDER, get_role
 
         var = tk.StringVar(value=ROLE_ORDER)
         self._widgets["role_picker"] = var
         row = ttk.Frame(parent)
-        row.pack(anchor="w", pady=(4, 10))
-        for role in list_roles():
-            ttk.Radiobutton(
-                row, text=f"{role.name}：{role.description}",
-                value=role.id, variable=var,
-            ).pack(side="left", padx=(0, 14))
+        row.pack(anchor="w", pady=(4, 6))
+        role = get_role(ROLE_ORDER)
+        ttk.Radiobutton(
+            row, text=role.name, value=role.id, variable=var,
+        ).pack(side="left")
+        ttk.Label(row, text="分析模型：").pack(side="left", padx=(18, 4))
+        labels = self._model_options()
+        model_var = tk.StringVar(value=self._selected_model_label(labels))
+        self._widgets["model_picker"] = model_var
+        picker = ttk.Combobox(row, textvariable=model_var, values=list(labels),
+                              state="readonly", width=28)
+        picker.pack(side="left")
+        picker.bind("<<ComboboxSelected>>", self._on_model_selected)
+        ttk.Button(row, text="刷新", command=self._refresh_models).pack(side="left", padx=(6, 0))
+        self._widgets["model_picker_widget"] = picker
+
+    def _model_options(self) -> dict[str, str]:
+        return {str(item.get("display_name") or item.get("alias")): str(item.get("alias"))
+                for item in (self.app.model_catalog or {}).get("models") or []
+                if item.get("alias")}
+
+    def _selected_model_label(self, labels: Mapping[str, str]) -> str:
+        alias = str(getattr(self.app.settings, "model_alias", "") or "")
+        return next((label for label, value in labels.items() if value == alias), "")
+
+    def _on_model_selected(self, _event: Any = None) -> None:
+        variable = self._widgets.get("model_picker")
+        labels = self._model_options()
+        label = str(variable.get() or "") if variable is not None else ""
+        alias = labels.get(label, "")
+        if alias and self.app.set_model(alias):
+            self._refresh_analyze_button()
+
+    def _refresh_models(self) -> None:
+        self._spawn("models", lambda: self._post("models_loaded", catalog=self.app.load_models(force=True)))
+
+    def _refresh_model_picker(self) -> None:
+        picker = self._widgets.get("model_picker_widget")
+        variable = self._widgets.get("model_picker")
+        if picker is None or not self._alive(picker):
+            return
+        labels = self._model_options()
+        picker.configure(values=list(labels))
+        if variable is not None:
+            variable.set(self._selected_model_label(labels))
 
     def _picked_role(self) -> str:
         """当前选中的整理角色 id。控件不在（测试/旧页面）就回订单助手。"""
@@ -2145,29 +2843,163 @@ class MerchantWindow:
             value = ""
         return value or ROLE_ORDER
 
+    def _render_analyze_scope(self, result: Any) -> None:
+        label = self._widgets.get("analyze_scope")
+        if label is None or not self._alive(label):
+            return
+        if result is None:
+            label.configure(text="尚无读取结果。请先在第三步读取所选会话。")
+            return
+        history_counts = dict(summary_task.history_message_counts(self.app, result))
+        lines = ["本次读取范围："]
+        for item in getattr(result, "coverage", ()) or ():
+            conversation = getattr(item, "conversation", None)
+            name = str(getattr(conversation, "disambiguation", "") or "未知会话")
+            if getattr(item, "error", ""):
+                detail = f"读取失败（{item.error}）"
+            elif int(getattr(item, "message_count", 0) or 0):
+                amount_label = "本次新增" if str(getattr(result, "mode", "")) == ReadMode.UPDATE else "本次读取"
+                detail = f"{amount_label} {int(item.message_count)} 条"
+            else:
+                group_id = str(getattr(conversation, "name", "") or "")
+                detail = f"本次无新增，历史 {history_counts.get(group_id, 0)} 条"
+            lines.append(f"• {name}：{detail}")
+        label.configure(text="\n".join(lines))
+
     def _on_analyze(self) -> None:
-        self._show_step(WizardStep.ANALYZE)
-        summary = self.app.analyze(role=self._picked_role())
-        if summary is not None:
-            self._post("analyzed", summary=summary)
+        result = self._last_read_result or self.app.wizard.history_result
+        if result is None:
+            messagebox.showinfo("还没有读取结果", "请先到第三步读取所选会话的消息。", parent=self.root)
+            return
+        fresh_count = sum(int(getattr(item, "message_count", 0) or 0)
+                          for item in getattr(result, "coverage", ()) or ())
+        is_update = str(getattr(result, "mode", "")) == ReadMode.UPDATE
+        read_errors = [item for item in (getattr(result, "coverage", ()) or ())
+                       if getattr(item, "error", "")]
+        scope_note = ""
+        if fresh_count <= 0:
+            if read_errors:
+                failures = "\n".join(
+                    f"• {item.conversation.disambiguation}：{item.error}"
+                    for item in read_errors
+                )
+                messagebox.showinfo(
+                    "有会话读取失败",
+                    "这些会话的读取结果不确定，不能当作‘没有新消息’：\n\n"
+                    f"{failures}\n\n请先返回第三步重新读取。",
+                    parent=self.root,
+                )
+                return
+            counts = dict(summary_task.history_message_counts(self.app, result))
+            total_history = sum(counts.values())
+            if total_history <= 0:
+                messagebox.showinfo(
+                    "没有可分析的消息",
+                    "本次没有新增消息，所选会话也没有已保存的历史消息，因此无需分析。",
+                    parent=self.root,
+                )
+                return
+            lines = []
+            for item in getattr(result, "coverage", ()) or ():
+                name = str(getattr(item.conversation, "name", "") or "")
+                if not getattr(item, "error", "") and name in counts:
+                    lines.append(f"• {item.conversation.disambiguation}：{counts[name]} 条")
+            prompt = (
+                ("本次更新没有发现新消息。要分析所选会话中已保存的历史消息吗？\n\n"
+                 if is_update else
+                 "本次读取没有读到消息。要分析所选会话中已保存的历史消息吗？\n\n")
+                + "\n".join(lines)
+                + f"\n\n共 {total_history} 条；单次最多向 AI 发送最近 {summary_task.SUMMARY_MESSAGE_LIMIT} 条。"
+            )
+            if not messagebox.askyesno("分析历史消息？", prompt, parent=self.root):
+                return
+            analysis_messages = summary_task.messages_for_history(self.app, result)
+            scope_note = ("本次无新增，已按确认分析所选会话的历史消息。"
+                          if is_update else "已按确认分析所选会话的历史消息。")
+        else:
+            analysis_messages = summary_task.messages_for_summary(self.app, result)
+            if read_errors:
+                names = "、".join(item.conversation.disambiguation for item in read_errors)
+                scope_note = f"本次只分析有新增的消息；以下会话读取失败，未纳入分析：{names}。"
+            else:
+                scope_note = "本次只分析读取到的新消息。"
+        if not analysis_messages:
+            messagebox.showinfo(
+                "没有可分析的消息",
+                "没有可提交给 AI 的消息。请返回第三步检查读取结果。",
+                parent=self.root,
+            )
+            return
+        role = self._picked_role()
+        self._analysis_results_mode = True
+        self._analysis_call_active = True
+        self._analysis_running = True
+        self._last_analysis_error = ""
+        self._last_summary = {}
+        self._last_analysis_details = []
+        self._last_paragraph_outcome = {}
+        self._show_step(WizardStep.RESULTS)
+        def work() -> None:
+            try:
+                from .roles import get_role
+
+                outcome = summary_task.run_summary(
+                    self.app, result, role_id=role, messages_override=analysis_messages)
+                if outcome.get("error"):
+                    raise RuntimeError(str(outcome["error"]))
+                summary = {
+                    "processed": len(analysis_messages),
+                    "role_id": outcome.get("role_id", role),
+                    "role_name": get_role(role).name,
+                    "analysis_text": outcome.get("summary", ""),
+                    "scope_note": scope_note,
+                    "details": [
+                        {"message": item, "analysis": "已纳入上方角色分析报告",
+                         "status": "已纳入分析", "trace": {}}
+                        for item in analysis_messages
+                    ],
+                }
+            except Exception as exc:
+                LOGGER.exception("AI analysis failed")
+                self._post("error", text=f"AI分析失败：{exc}")
+                summary = None
+            if summary is not None:
+                self._post("analyzed", summary=summary)
+            self._post("analysis_finished", success=summary is not None)
+
+        threading.Thread(target=work, name="merchant-analysis", daemon=True).start()
+
+    def _on_analysis_finished(self, success: bool) -> None:
+        self._analysis_running = False
+        self._analysis_call_active = False
+        if not success and not self._last_analysis_error:
+            self._last_analysis_error = "AI分析未完成，请返回第六步重试。"
+        self._render_analysis_results()
 
     def _on_analyzed(self, summary: dict) -> None:
         # 结果先存下来：页面随时可能被一次导航重建，事后再渲染也拿得到。
         self._last_summary = dict(summary)
+        self._last_analysis_details = list(summary.get("details") or [])
         self._last_role_report = dict(summary.get("role_report") or {})
+        analysis_text = str(summary.get("analysis_text") or "")
+        if analysis_text:
+            self._last_paragraph_outcome = {
+                "summary": analysis_text,
+                "message_count": summary.get("processed", 0),
+            }
+            self._set_summary(analysis_text)
+            if self._alive(self._summary_status):
+                self._summary_status.configure(text=f"AI 已分析 {summary.get('processed', 0)} 条消息")
         self._render_analyzed()
         self._render_role_report()
+        self._render_analysis_results()
 
     def _render_analyzed(self) -> None:
         summary = self._last_summary
         label = self._widgets.get("analyze")
         if not summary or label is None or not label.winfo_exists():
             return
-        text = (
-            f"整理完成：处理 {summary['processed']} 条消息\n"
-            f"生成订单 {summary['with_result']} 单\n"
-            f"需要您核对 {summary['needs_review']} 单"
-        )
+        text = f"AI 分析完成：处理 {summary['processed']} 条消息"
         # 扣费口径来自云端账号，本地不推算。
         if summary.get("billing"):
             # 不再拆出「其中不消耗额度」那一栏：免费档位已被焊死，
@@ -2176,6 +3008,10 @@ class MerchantWindow:
                 f"\n提交任务 {summary.get('submitted_jobs', 0)} 个，"
                 f"实际扣费 {summary.get('charged_micro_usd', 0)} 次"
             )
+        elif summary.get("provider") == "jyi" and summary.get("processed"):
+            # JYI 按账号计量、不下发任务账单：没有 billing 不等于没花钱，
+            # 别让"实际扣费 0 次"误导。用量去 JYI 网站看。
+            text += (f"\n已分析 {summary['processed']} 条，用量按 JYI 账号计量")
         skipped = summary.get("already_analyzed") or 0
         if skipped:
             text += f"\n已整理过的 {skipped} 条本次没有重复提交"
@@ -2210,13 +3046,14 @@ class MerchantWindow:
     # --------------------------------------------------------------- ⑥ 首页
 
     def _page_home(self) -> None:
-        frame = ttk.Frame(self.container, padding=(18, 6))
-        frame.pack(fill="both", expand=True)
+        # 首页内容多（状态、计数、备货、两张表、按钮排），小窗口装不下。
+        # 跟整理页一样走滚动容器：窗口再小，滚到底也点得到下面的按钮。
+        frame = self._scrollable_page()
         self._home_frame = frame
 
         banner = ttk.Frame(frame)
         banner.pack(fill="x", pady=(0, 10))
-        ttk.Label(banner, text="接单助手", style="Section.TLabel").pack(side="left")
+        ttk.Label(banner, text="微信AI智能助理", style="Section.TLabel").pack(side="left")
         self._widgets["mode"] = ttk.Label(banner, text="", font=("Microsoft YaHei", 10, "bold"))
         self._widgets["mode"].pack(side="right", padx=(0, 14))
         self._widgets["pause"] = ttk.Button(
@@ -2259,7 +3096,7 @@ class MerchantWindow:
         columns = ("name", "quantity", "orders", "customers")
         # 行数跟着实际内容走。固定 6 行在只有 1-2 个品时会白占一大块，
         # 而这块高度是从下面那些按钮的预算里扣的 —— 占多了，
-        # 「开始持续监听」就会被挤出窗口，商户再也点不到。
+        # 「查看订单」就会被挤出窗口，商户再也点不到。
         tree = ttk.Treeview(stock, columns=columns, show="headings", height=3)
         for key, title, width in (
             ("name", "商品", 200), ("quantity", "数量", 110),
@@ -2304,20 +3141,20 @@ class MerchantWindow:
         actions.pack(fill="x", pady=(10, 0))
         # 空表格收起后要能插回这个位置之前。
         self._widgets["home_after_tables"] = actions
-        ttk.Button(actions, text="后台整理（不发送）", command=lambda: self._on_mode(RunMode.BACKGROUND)).pack(side="left")
-        ttk.Button(actions, text="开启自动接单与回复", command=self._on_enable_auto).pack(side="left", padx=8)
+        # 持续监听与自动接单已撤掉入口：4.1.15 起微信界面点不动（UIA 黑盒），
+        # 摆着两个点上去就弹窗"点了也没用"的死按钮不如不摆。以后界面能点了
+        # 再加回来（后端 LiveListener 与自动流程都在，只是没人调）。
         ttk.Button(actions, text="查看订单", command=self._on_show_orders).pack(side="left")
+        ttk.Button(actions, text="上一步", command=lambda: self._show_step(WizardStep.ANALYZE)).pack(side="left", padx=8)
         ttk.Button(actions, text="云端会发送哪些信息", command=self._on_privacy).pack(side="right")
         # 出问题时商户需要一个能发给客服的东西。没有入口，日志就等于不存在 ——
         # 他不会想到去数据目录里翻文件。
         ttk.Button(actions, text="出问题了？这里有日志", style="Subtle.TButton",
                    command=self._on_support).pack(side="right", padx=(0, 10))
-        # 参考信息放在维护那一排（不是主操作那一排）：它是**偶尔做一次**的事，
-        # 不是每单都要点的。放进主操作会让「后台整理」这些日常按钮失去层级。
+        # 参考信息放在维护那一排：它是**偶尔做一次**的事，
+        # 不是每单都要点的。
         ttk.Button(actions, text="商品与客户名单", style="Subtle.TButton",
                    command=self._on_reference_data).pack(side="right", padx=(0, 10))
-
-        self._build_listen_box(frame)
 
         view = self.app.refresh_home()
         self._last_home = view
@@ -2328,37 +3165,6 @@ class MerchantWindow:
         self._render_listen()
 
     # --------------------------------------------------------- 持续监听开关
-
-    def _build_listen_box(self, parent: Any) -> None:
-        box = ttk.LabelFrame(parent, text="持续监听（实时接收新消息）", padding=10)
-        box.pack(fill="x", pady=(12, 0))
-        self._widgets["listen_box"] = box
-
-        row = ttk.Frame(box)
-        row.pack(fill="x")
-        self._widgets["listen_state"] = ttk.Label(row, text="")
-        self._widgets["listen_state"].pack(side="left")
-        self._widgets["listen_btn"] = ttk.Button(
-            row, text="开始持续监听", command=self._on_toggle_listen
-        )
-        self._widgets["listen_btn"].pack(side="right")
-
-        self._widgets["listen_stats"] = ttk.Label(box, text="", foreground="#7b8794")
-        self._widgets["listen_stats"].pack(anchor="w", pady=(4, 0))
-        self._widgets["listen_gaps"] = ttk.Label(box, text="", foreground="#a8590b", wraplength=860)
-        self._widgets["listen_gaps"].pack(anchor="w", pady=(2, 0))
-        # 做不到的事常驻写在界面上，不靠一次弹窗说完。
-        self._widgets["listen_note"] = ttk.Label(
-            box, text=LISTEN_FAIR_NOTE, foreground="#a8590b", wraplength=860
-        )
-        self._widgets["listen_note"].pack(anchor="w", pady=(2, 0))
-        # 最近一次合并成了一条的内容。以前合并只在控制台打印，界面上完全
-        # 看不见 —— 商户发了三条、看见一条订单，不会知道那三条被合到一起了。
-        self._widgets["listen_merged"] = ttk.Label(
-            box, text="", foreground="#5a6572", wraplength=860
-        )
-        self._widgets["listen_merged"].pack(anchor="w", pady=(4, 0))
-        self._last_merged_text: str = ""
 
     def _require_uia(self, what: str) -> bool:
         """要动手（点/发/监听）的功能先过这道门。
@@ -2378,30 +3184,6 @@ class MerchantWindow:
             )
             return False
         return True
-
-    def _on_toggle_listen(self) -> None:
-        view = self.app.listen_view()
-        if view["running"]:
-            self.app.stop_listening()
-            return
-        target = self._listen_target()
-        if target is None:
-            messagebox.showinfo(
-                "还没选会话", "请先回到第 2 步选择要监听的会话，再回来开启持续监听。"
-            )
-            return
-        if not self._require_uia("持续监听"):
-            return
-        if not messagebox.askyesno("开启持续监听", f"{target.disambiguation}\n\n{LISTEN_FAIR_NOTE}\n\n确定要开始吗？"):
-            return
-        self.app.start_listening(target)
-
-    def _listen_target(self) -> Conversation | None:
-        live = getattr(self.app, "_live_choice", None)
-        if live is not None:
-            return live
-        selected = self.app.wizard.conversations.history_selected
-        return selected[0] if selected else None
 
     def _on_listen(self, view: dict[str, Any]) -> None:
         self._last_listen = view
@@ -2618,28 +3400,6 @@ class MerchantWindow:
         else:
             self.app.pause()
 
-    def _on_mode(self, mode: str) -> None:
-        self.app.set_mode(mode)
-
-    def _on_enable_auto(self) -> None:
-        """开启自动接单的两道确认。
-
-        自动回复要操作微信窗口，可能影响正在用电脑的商户，所以这一步
-        必须让商户自己再点一次确认，不能静默打开。
-        """
-        if not self._require_uia("自动接单"):
-            return
-        if not self.app.auto.allow_local_automation:
-            if not messagebox.askyesno(
-                "允许本机自动接单",
-                "自动回复需要操作微信窗口，可能会打断您正在输入的内容。\n\n"
-                "确定允许这台电脑被自动接单占用吗？\n\n"
-                "随时可以点右上角「暂停发送」停下来。",
-            ):
-                return
-            self.app.set_allow_local_automation(True)
-        self.app.set_mode(RunMode.AUTO_TAKE)
-
     def _on_show_orders(self) -> None:
         """订单列表。
 
@@ -2660,8 +3420,10 @@ class MerchantWindow:
 
         head = ttk.Label(box, text="")
         head.pack(anchor="w", pady=(0, 8))
-        tree = ttk.Treeview(box, columns=("status", "customer", "items", "amount", "delivery"),
-                            show="headings")
+        order_box, tree = self._tree_with_scroll(
+            box, columns=("status", "customer", "items", "amount", "delivery"),
+            show="headings")
+        order_box.pack(fill="both", expand=True)
         for key, title, width, anchor in (
             ("status", "状态", 110, "w"),
             ("customer", "客户", 130, "w"),
@@ -2682,7 +3444,6 @@ class MerchantWindow:
                 row.delivery_date or "",
             ))
             raw_by_iid[str(iid)] = row
-        tree.pack(fill="both", expand=True)
         ttk.Label(
             box, text="双击任意一行可以看完整内容。", foreground="#7b8794"
         ).pack(anchor="w", pady=(6, 0))
@@ -2773,10 +3534,29 @@ class MerchantWindow:
 
     def _pick_reference_file(self, kind: str) -> None:
         """选一个 CSV 文件并导入。导入在后台线程里跑。"""
-        path = filedialog.askopenfilename(
-            title="选择商品数据" if kind == "products" else "选择客户数据",
-            filetypes=[("CSV 表格", "*.csv"), ("所有文件", "*.*")],
-        )
+        title = "选择商品数据" if kind == "products" else "选择客户数据"
+        filetypes = [("CSV 表格", "*.csv"), ("所有文件", "*.*")]
+        path: str | None = ""
+        try:
+            from .win_dialog import ask_open_path
+            hwnd = 0
+            try:
+                hwnd = int(self.root.winfo_id())
+            except Exception:
+                hwnd = 0
+            path = ask_open_path(
+                parent_hwnd=hwnd, title=title,
+                initial_dir=self._export_initial_dir(), filetypes=filetypes)
+        except Exception:
+            path = None
+        if path is None:
+            # Win11 框起不来才走 tkinter；用户点取消（""）直接收摊。
+            try:
+                path = filedialog.askopenfilename(
+                    parent=self.root, title=title,
+                    initialdir=self._export_initial_dir(), filetypes=filetypes) or ""
+            except Exception:
+                path = ""
         if not path:
             return
         self._set_reference_result(f"正在读取 {os.path.basename(path)} ……")
@@ -2880,6 +3660,7 @@ class MerchantWindow:
         if self._closing:
             return
         self._tick_index = getattr(self, "_tick_index", 0) + 1
+        self._schedule_quota_refresh()
         if self._tick_index % 3 == 0 and self.app.wizard.step == WizardStep.DONE:
             self._spawn("home", self.app.refresh_home)
         self.root.after(POLL_INTERVAL_MS, self._tick)
@@ -2941,7 +3722,6 @@ def merchant_labels(job_state: str, error_code: str = "") -> str:
 
 
 __all__ = [
-    "DISCOVERY_NOTE",
     "FORBIDDEN_TERMS",
     "MerchantWindow",
     "PRIVACY_TEXT",

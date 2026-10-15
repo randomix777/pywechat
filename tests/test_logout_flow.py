@@ -94,6 +94,28 @@ class DetachTests(unittest.TestCase):
         self.assertFalse(self.app.backend_is_model,
                          "退出后不得继续把结果标成真实模型")
 
+    def test_detach_deletes_the_local_credentials(self):
+        """退出必须删本机凭证：不清文件，下次启动 restore 又登回去 ——
+        商户明明点了退出，重开发现还登着（真实报障）。"""
+        from pyweixin.client_login import CredentialStore, restore_session
+
+        credentials = CredentialStore(str(Path(self._tmp.name) / "cred.bin"))
+        credentials.save({"session": {"access_token": "a", "refresh_token": "r"}})
+        self.app.credentials = credentials
+        self.app.detach()
+        self.assertIsNone(restore_session(credentials), "凭证文件没删干净")
+
+    def test_detach_deletes_credentials_even_when_offline(self):
+        """断网退出也要彻底：服务端没通知到，本地必须照删。"""
+        from pyweixin.client_login import CredentialStore, restore_session
+
+        credentials = CredentialStore(str(Path(self._tmp.name) / "cred2.bin"))
+        credentials.save({"session": {"access_token": "a", "refresh_token": "r"}})
+        self.app.credentials = credentials
+        self.app.client = FakeClient(fail_on_logout=True)
+        self.app.detach()
+        self.assertIsNone(restore_session(credentials))
+
     def test_detach_keeps_local_messages(self):
         """已读到的消息是商户自己经营出来的，退出登录不该删。"""
         # 走真实的入库路径，不要手写 INSERT —— messages 有一串非空外键列，
@@ -146,7 +168,7 @@ class LogoutWordingTests(unittest.TestCase):
 
     def test_it_keeps_him_on_the_page_where_his_data_is(self):
         """不该被扔回第 1 步 —— 那等于逼他从头再走一遍。"""
-        start = self.source.index("def _on_account_click")
+        start = self.source.index("def _on_logout_from_center")
         block = self.source[start:start + 1400]
         self.assertIn("WizardStep.ANALYZE if self.app.wizard.history_result",
                       block)
@@ -166,6 +188,207 @@ class WindowSessionTests(unittest.TestCase):
                          "窗口不该自己存一份会话，容易和应用层不同步")
         self.assertNotIn("if self.session is not None",
                          "会话判断必须走 app.session，这个分支永远为假")
+
+
+class AccountCenterDataTests(unittest.TestCase):
+    """账号中心显示的数据：名字、套餐、用量条、有效期，一个不能少。
+
+    用量只给百分比不给具体数；数据只许来自缓存，方法里不许查网。
+    """
+
+    def _window(self, session, quota=None):
+        import types
+
+        from pyweixin.merchant_ui import MerchantWindow
+
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._widgets = {}
+        window.app = types.SimpleNamespace(
+            session=session,
+            wizard=types.SimpleNamespace(quota=quota))
+        return window
+
+    def test_percent_from_cached_quota(self):
+        import types
+
+        from pyweixin.wizard import QuotaView
+
+        session = types.SimpleNamespace(
+            merchant_name="一号店",
+            subscription={"plan_code": "trial",
+                          "period_end": "2026-11-12T00:00:00"})
+        quota = QuotaView(logged_in=True, active=True, remaining=80,
+                          total_micro_usd=100, used_micro_usd=15,
+                          reserved_micro_usd=5)
+        data = self._window(session, quota)._account_center_data()
+        self.assertEqual(data["name"], "一号店")
+        self.assertEqual(data["plan"], "trial")
+        self.assertEqual(data["period_end"], "2026-11-12")
+        self.assertEqual(data["quota"], {"kind": "percent", "percent": 20})
+
+    def test_unlimited_has_no_bar(self):
+        import types
+
+        from pyweixin.wizard import QuotaView
+
+        quota = QuotaView(logged_in=True, active=True, remaining=1,
+                          total_micro_usd=0)
+        data = self._window(types.SimpleNamespace(), quota)._account_center_data()
+        self.assertEqual(data["quota"]["kind"], "unlimited")
+
+    def test_subscription_fallback_when_no_quota(self):
+        session = {"merchant_name": "一号店",
+                   "subscription": {"quota_micro_usd": 200,
+                                    "used_micro_usd": 50,
+                                    "reserved_micro_usd": 0}}
+        import types
+        data = self._window(types.SimpleNamespace(**session))._account_center_data()
+        self.assertEqual(data["quota"], {"kind": "percent", "percent": 25})
+
+    def test_nothing_usable_is_unknown_not_zero(self):
+        import types
+
+        data = self._window(types.SimpleNamespace())._account_center_data()
+        self.assertEqual(data["name"], "当前账号")
+        self.assertEqual(data["quota"]["kind"], "unknown")
+
+    def test_jyi_quota_fields_drive_the_bar(self):
+        """JYI 给了配额字段就画条：总量/已用/预留都在 credential 里。"""
+        import types
+
+        session = types.SimpleNamespace(
+            merchant_name="JYI测试店", provider="jyi",
+            subscription={"quota_micro_usd": 200, "used_micro_usd": 50,
+                          "reserved_micro_usd": 0, "plan_code": "pro"})
+        data = self._window(session)._account_center_data()
+        self.assertEqual(data["quota"], {"kind": "percent", "percent": 25})
+        self.assertEqual(data["plan"], "pro")
+
+    def test_never_touches_the_network(self):
+        """下拉点开即看：在 UI 线程里等网络就是卡死（真实报障）。"""
+        import inspect
+
+        from pyweixin import merchant_ui
+
+        source = inspect.getsource(merchant_ui.MerchantWindow._account_center_data)
+        self.assertNotIn("check_quota", source)
+
+
+class AccountDropdownTests(unittest.TestCase):
+    """下拉菜单：点的按钮必须真触发（FocusOut 不能先把菜单吃了）。
+
+    回归：充值点了没反应 —— 焦点离开菜单即销毁，按钮的点击还没送达。
+    """
+
+    def _window(self):
+        import tkinter as tk
+        import types
+        from tkinter import ttk
+
+        from pyweixin.merchant_ui import MerchantWindow
+
+        root = tk.Tk()
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        window = MerchantWindow.__new__(MerchantWindow)
+        window.root = root
+        window._widgets = {}
+        anchor = ttk.Button(root, text="x")
+        anchor.pack()
+        window._widgets["account"] = anchor
+        session = types.SimpleNamespace(
+            merchant_name="店", provider="jyi", subscription={})
+        window.app = types.SimpleNamespace(session=session)
+        root.update()
+        return window, root
+
+    def _buttons(self, root):
+        found = {}
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                try:
+                    if child.winfo_class() == "TButton":
+                        found[str(child.cget("text"))] = child
+                except Exception:
+                    pass
+                walk(child)
+
+        walk(root)
+        return found
+
+    def test_recharge_click_opens_billing(self):
+        import unittest.mock
+
+        window, root = self._window()
+        window._show_account_center()
+        root.update()
+        buttons = self._buttons(root)
+        self.assertIn("充值", buttons)
+        with unittest.mock.patch("webbrowser.open", return_value=True) as opened:
+            buttons["充值"].invoke()
+            root.update()
+        opened.assert_called_once()
+        self.assertIn("/console/billing", opened.call_args.args[0])
+
+    def test_recharge_fallback_when_browser_fails(self):
+        import unittest.mock
+
+        from pyweixin import merchant_ui
+
+        window, root = self._window()
+        window._show_account_center()
+        root.update()
+        buttons = self._buttons(root)
+        with unittest.mock.patch("webbrowser.open", return_value=False), \
+            unittest.mock.patch.object(
+                merchant_ui.messagebox, "showinfo") as info:
+            buttons["充值"].invoke()
+            root.update()
+        info.assert_called_once()
+
+    def test_logout_click_asks_first(self):
+        import unittest.mock
+
+        window, root = self._window()
+        window._show_account_center()
+        root.update()
+        buttons = self._buttons(root)
+        self.assertIn("退出登录", buttons)
+        with unittest.mock.patch.object(
+                window.app, "detach", create=True,
+                side_effect=AssertionError("没确认就退出了")):
+            with unittest.mock.patch(
+                    "pyweixin.merchant_ui.messagebox.askyesno",
+                    return_value=False):
+                buttons["退出登录"].invoke()
+                root.update()
+
+    def test_logout_confirm_completes(self):
+        """点了确认就退干净：先关下拉（确认框不能挂在它下面），
+        再问再退再刷，中间哪步炸了也不把退出本身丢掉。"""
+        import unittest.mock
+
+        window, root = self._window()
+        window._show_account_center()
+        root.update()
+        buttons = self._buttons(root)
+        calls = []
+        window.app.wizard = unittest.mock.Mock(history_result=None)
+        window.app.detach = lambda: calls.append("detach")
+        window._render_account = lambda: calls.append("render_account")
+        window._refresh_login_block = lambda: calls.append("refresh_login_block")
+        window._refresh_analyze_button = lambda: calls.append("refresh_analyze_button")
+        window._show_step = lambda step: calls.append(("show_step", step))
+        with unittest.mock.patch(
+                "pyweixin.merchant_ui.messagebox.askyesno",
+                return_value=True), \
+            unittest.mock.patch(
+                "pyweixin.merchant_ui.messagebox.showinfo"):
+            buttons["退出登录"].invoke()
+            root.update()
+        self.assertIn("detach", calls)
+        self.assertIn("render_account", calls)
 
 
 if __name__ == "__main__":

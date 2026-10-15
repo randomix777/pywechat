@@ -157,6 +157,22 @@ class WizardRoleDispatchTests(unittest.TestCase):
             store.close()
             tmp.cleanup()
 
+    def test_activity_marks_processed_without_touching_order_state(self):
+        """角色整理记"处理过"（导出放行），但不占订单的"已整理"状态。"""
+        wizard, store, tmp = self._wizard()
+        try:
+            message_id = store.db.execute("SELECT id FROM messages").fetchone()["id"]
+            summary = wizard.analyze(role=ROLE_ACTIVITY)
+            self.assertEqual(summary["role_id"], ROLE_ACTIVITY)
+            processed = store.processed_message_ids(wizard.tenant)
+            self.assertIn(message_id, processed)
+            # 订单链路不受影响：换订单助手还能正常提交，不会判 duplicate。
+            self.assertEqual(wizard.already_analyzed_count(), 0)
+            self.assertEqual(store.analyzed_message_ids(wizard.tenant), set())
+        finally:
+            store.close()
+            tmp.cleanup()
+
     def test_order_still_requires_quota(self):
         from pyweixin.wizard import QuotaBlocked
 

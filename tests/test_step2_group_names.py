@@ -222,5 +222,188 @@ class CleanNameTests(unittest.TestCase):
             localdb._vote_name(["abc\x14def", "水果群", "水果群"]), "水果群")
 
 
+class RecencyOrderTests(unittest.TestCase):
+    """会话列表和微信一样：有新消息的在上，不知道时间的沉底。"""
+
+    def test_newest_first(self):
+        from pyweixin.conversations import disambiguate
+
+        old = Conversation(name="老群", kind=ConversationKind.GROUP,
+                           last_active=100)
+        new = Conversation(name="新群", kind=ConversationKind.GROUP,
+                           last_active=300)
+        middle = Conversation(name="中群", kind=ConversationKind.GROUP,
+                              last_active=200)
+        got = disambiguate([old, new, middle])
+        self.assertEqual([c.name for c in got], ["新群", "中群", "老群"])
+
+    def test_no_timestamp_falls_back_to_name_order(self):
+        """都没时间 = 老行为（名字排序），内存路、通讯录路不受影响。"""
+        from pyweixin.conversations import disambiguate
+
+        got = disambiguate([
+            Conversation(name="香蕉群", kind=ConversationKind.GROUP),
+            Conversation(name="苹果群", kind=ConversationKind.GROUP),
+        ])
+        self.assertEqual([c.name for c in got], ["苹果群", "香蕉群"])
+
+    def test_unknown_time_sinks_below_known(self):
+        from pyweixin.conversations import disambiguate
+
+        known = Conversation(name="有消息群", kind=ConversationKind.GROUP,
+                             last_active=100)
+        unknown = Conversation(name="冷群", kind=ConversationKind.GROUP)
+        got = disambiguate([unknown, known])
+        self.assertEqual([c.name for c in got], ["有消息群", "冷群"])
+
+    def test_timestamp_does_not_change_identity(self):
+        """时间不进 identity：同一会话新来消息不能变成"另一个会话"。"""
+        before = Conversation(name="群", kind=ConversationKind.GROUP,
+                              wxid="g@chatroom", last_active=100)
+        after = Conversation(name="群", kind=ConversationKind.GROUP,
+                             wxid="g@chatroom", last_active=999)
+        self.assertEqual(before.identity, after.identity)
+
+    def test_source_carries_recency(self):
+        """解密库行的时间一路带到 Conversation。"""
+        from pyweixin.conversations import RealConversationSource
+        from pyweixin.wcdb import WcdbConversation
+
+        rows = [
+            WcdbConversation(username="old@chatroom", display="老群",
+                             kind="group", last_timestamp=100),
+            WcdbConversation(username="new@chatroom", display="新群",
+                             kind="group", last_timestamp=300),
+        ]
+        source = RealConversationSource(
+            ui_lock=None, wcdb_fn=lambda kind: rows)
+        got = source.list_conversations(ConversationKind.GROUP)
+        self.assertEqual([c.name for c in got], ["新群", "老群"])
+
+
+class AutoRefreshTests(unittest.TestCase):
+    """进第 2 步自动读一次 —— 只在还没列表且微信已登录时。"""
+
+    def _window(self, conversations, logged_in):
+        import types
+
+        from pyweixin.merchant_ui import MerchantWindow
+        from pyweixin.wechat_state import WeChatState
+
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._widgets = {}
+        window._conversations = list(conversations)
+        state = WeChatState.LOGGED_IN if logged_in else WeChatState.NOT_STARTED
+        window.app = types.SimpleNamespace(
+            monitor=types.SimpleNamespace(
+                latest=types.SimpleNamespace(state=state)),
+            refresh_conversations=lambda: [])
+        spawned = []
+        window._spawn = lambda name, fn: spawned.append(name)
+        return window, spawned
+
+    def test_empty_and_logged_in_refreshes(self):
+        window, spawned = self._window([], True)
+        window._maybe_auto_refresh_conversations()
+        self.assertIn("refresh", spawned)
+
+    def test_existing_list_still_refreshes(self):
+        """有列表也刷：和微信一致，每次看列表都是新的。"""
+        from pyweixin.conversations import Conversation
+
+        window, spawned = self._window(
+            [Conversation(name="群", kind=ConversationKind.GROUP)], True)
+        window._maybe_auto_refresh_conversations()
+        self.assertIn("refresh", spawned)
+
+    def test_not_logged_in_does_not_refresh(self):
+        window, spawned = self._window([], False)
+        window._maybe_auto_refresh_conversations()
+        self.assertEqual(spawned, [])
+
+    def test_guarded_refresh_clears_flag_on_error(self):
+        """读崩了也不能把"正在刷"卡死，不然以后再也不自动刷。"""
+        import types
+
+        from pyweixin.merchant_ui import MerchantWindow
+
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._widgets = {}
+
+        def _boom():
+            raise RuntimeError("db locked")
+
+        window.app = types.SimpleNamespace(refresh_conversations=_boom)
+        window._conv_refreshing = True
+        with self.assertRaises(RuntimeError):
+            window._guarded_refresh_conversations()
+        self.assertFalse(window._conv_refreshing)
+
+
+class FocusBackTests(unittest.TestCase):
+    """窗口拿回焦点：停在第 2 步且 60 秒没刷过才刷。"""
+
+    def _window(self, step, last_at, refreshing=False, logged_in=True):
+        import time
+        import types
+
+        from pyweixin.merchant_ui import MerchantWindow
+        from pyweixin.wechat_state import WeChatState
+
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._widgets = {}
+        state = WeChatState.LOGGED_IN if logged_in else WeChatState.NOT_STARTED
+        window.app = types.SimpleNamespace(
+            monitor=types.SimpleNamespace(
+                latest=types.SimpleNamespace(state=state)),
+            wizard=types.SimpleNamespace(step=step),
+            refresh_conversations=lambda: [])
+        window._conv_refreshing = refreshing
+        window._last_conv_refresh_at = last_at
+        spawned = []
+        window._spawn = lambda name, fn: spawned.append(name)
+        return window, spawned
+
+    def test_stale_focus_refreshes(self):
+        import time
+
+        from pyweixin.wizard import WizardStep
+
+        window, spawned = self._window(
+            WizardStep.CONVERSATIONS, time.time() - 61)
+        window._on_focus_back()
+        self.assertIn("refresh", spawned)
+
+    def test_fresh_focus_does_nothing(self):
+        import time
+
+        from pyweixin.wizard import WizardStep
+
+        window, spawned = self._window(
+            WizardStep.CONVERSATIONS, time.time() - 10)
+        window._on_focus_back()
+        self.assertEqual(spawned, [])
+
+    def test_other_step_does_nothing(self):
+        import time
+
+        from pyweixin.wizard import WizardStep
+
+        window, spawned = self._window(
+            WizardStep.READ, time.time() - 3600)
+        window._on_focus_back()
+        self.assertEqual(spawned, [])
+
+    def test_in_flight_does_not_double_refresh(self):
+        import time
+
+        from pyweixin.wizard import WizardStep
+
+        window, spawned = self._window(
+            WizardStep.CONVERSATIONS, time.time() - 3600, refreshing=True)
+        window._on_focus_back()
+        self.assertEqual(spawned, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1294,7 +1294,7 @@ class OrderStore:
             count = 200
         placeholders = ",".join("?" for _ in names)
         rows = self.db.execute(
-            "SELECT group_id,sender,content,kind,sent_at,sent_at_epoch,observed_at FROM messages"
+            "SELECT id,group_id,sender,content,kind,sent_at,sent_at_epoch,observed_at FROM messages"
             f" WHERE merchant_id=? AND group_id IN ({placeholders})"
             " ORDER BY COALESCE(sent_at_epoch,strftime('%s',observed_at)) DESC, id DESC"
             f" LIMIT {count}",
@@ -1306,6 +1306,7 @@ class OrderStore:
             if not sent and row["observed_at"]:
                 sent = str(row["observed_at"])[:16]
             out.append({
+                "id": row["id"] or "",
                 "group": row["group_id"] or "",
                 "sender": row["sender"] or "",
                 "content": row["content"] or "",
@@ -1656,6 +1657,52 @@ class OrderStore:
         """
         rows = self.db.execute(
             "SELECT message_id FROM parse_runs WHERE merchant_id=? AND adapter=? AND status='complete'",
+            (tenant, CLOUD_ADAPTER),
+        ).fetchall()
+        return {str(row["message_id"]) for row in rows}
+
+    #: 角色整理的运行标记前缀。角色整理**不占**"已整理"状态（换角色可重跑，
+    #: 见 ``analyzed_message_ids`` 只认 CLOUD_ADAPTER），但它算"过了一遍 AI"，
+    #: 导出认它 —— 不然角色用户永远导不出东西。
+    ROLE_ADAPTER_PREFIX = "role-"
+
+    def mark_role_organized(self, tenant: str, message_ids: list[str], role_id: str) -> int:
+        """记下这批消息被某个角色整理过。返回记下条数，失败整批跳过。
+
+        只记"整理过"这个事实，不记结论 —— 结论在报告里，换角色重跑会覆盖。
+        同一角色同一批重复记是幂等的（UNIQUE 约束顶掉）。
+        """
+        ids = [str(mid) for mid in (message_ids or []) if str(mid or "").strip()]
+        if not ids or not str(role_id or "").strip():
+            return 0
+        adapter = f"{self.ROLE_ADAPTER_PREFIX}{role_id}"
+        now = self.now()
+        done = 0
+        with self.db:
+            for mid in dict.fromkeys(ids):
+                try:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO parse_runs(id,merchant_id,message_id,adapter,"
+                        "status,usage_units,error,created_at,run_key,requested_by)"
+                        " VALUES(?,?,?,?,'complete',0,NULL,?,?,?)",
+                        (uuid.uuid4().hex, tenant, mid, adapter, now,
+                         f"role-{role_id}", "role"),
+                    )
+                    done += 1
+                except Exception:
+                    continue
+        return done
+
+    def processed_message_ids(self, tenant: str) -> set[str]:
+        """过了一遍 AI 的消息：订单解析完成，或任一角色整理过。
+
+        导出只放这些 —— 没过 AI 的导出去等于绕开整理，与其计费不如直接卡住。
+        注意和 ``analyzed_message_ids`` 的区别：那个只认订单链路（防重复扣费），
+        这个认所有"处理过"（导出放行），两者不能混用。
+        """
+        rows = self.db.execute(
+            "SELECT message_id FROM parse_runs WHERE merchant_id=? AND status='complete'"
+            f" AND (adapter=? OR adapter LIKE '{self.ROLE_ADAPTER_PREFIX}%')",
             (tenant, CLOUD_ADAPTER),
         ).fetchall()
         return {str(row["message_id"]) for row in rows}

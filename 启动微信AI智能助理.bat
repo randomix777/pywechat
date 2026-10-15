@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-rem 双击运行「微信群接单助手」。
+rem 双击运行「微信AI智能助理」。
 rem 商户不需要打开命令行、不需要设置 PYTHONPATH、不需要装任何环境变量。
 rem 这个脚本只做一件事：找到可用的 Python 并启动软件。
 

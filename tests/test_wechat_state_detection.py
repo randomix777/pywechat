@@ -400,5 +400,132 @@ class LanguageIsNotFrozenTests(unittest.TestCase):
             Uielements.Main_window = original
 
 
+class RecheckVisibilityTests(unittest.TestCase):
+    """「重新检测」只在没登录时出现：已登录还摆着就是多余的一行。
+
+    用 pack 状态断言（窗口 withdraw 时 ismapped 恒 0，看 pack 才准）。
+    """
+
+    def _window(self, step):
+        import tkinter as tk
+        import types
+        from tkinter import ttk
+
+        from pyweixin.merchant_ui import MerchantWindow
+        from pyweixin.wizard import WizardStep
+
+        root = tk.Tk()
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        frame = ttk.Frame(root)
+        frame.pack()
+        button = ttk.Button(frame, text="重新检测")
+        button.pack()
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._widgets = {"wechat_recheck": button}
+        window.app = types.SimpleNamespace(
+            wizard=types.SimpleNamespace(step=step))
+        root.update()
+        return window, button
+
+    @staticmethod
+    def _is_packed(button) -> bool:
+        try:
+            return "in" in button.pack_info()
+        except Exception:
+            return False
+
+    def test_logged_in_hides_recheck(self):
+        from pyweixin.wizard import WizardStep
+
+        window, button = self._window(WizardStep.WECHAT)
+        window._refresh_wechat_recheck(
+            WeChatStatus(WeChatState.LOGGED_IN, "已登录", checked_at=1.0))
+        button.update()
+        self.assertFalse(self._is_packed(button))
+
+    def test_not_logged_in_shows_recheck(self):
+        from pyweixin.wizard import WizardStep
+
+        window, button = self._window(WizardStep.WECHAT)
+        window._refresh_wechat_recheck(
+            WeChatStatus(WeChatState.NOT_STARTED, "没开", checked_at=1.0))
+        button.update()
+        self.assertTrue(self._is_packed(button))
+
+    def test_other_step_hides_recheck(self):
+        from pyweixin.wizard import WizardStep
+
+        window, button = self._window(WizardStep.CONVERSATIONS)
+        window._refresh_wechat_recheck(
+            WeChatStatus(WeChatState.NOT_STARTED, "没开", checked_at=1.0))
+        button.update()
+        self.assertFalse(self._is_packed(button))
+
+
+class RestartVisibilityTests(unittest.TestCase):
+    """「重启微信」只在界面读不出来时出现：登录了还摆着就是过期状态。
+
+    回归：状态事件（_on_wechat）刷新了标题、打开按钮、门禁，唯独漏了它 ——
+    建页时读不出来，登录成功后按钮还赖在那。
+    """
+
+    def _window(self, step):
+        import tkinter as tk
+        import types
+        from tkinter import ttk
+
+        from pyweixin.merchant_ui import MerchantWindow
+
+        root = tk.Tk()
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        frame = ttk.Frame(root)
+        frame.pack()
+        button = ttk.Button(frame, text="重启微信")
+        button.pack()
+        window = MerchantWindow.__new__(MerchantWindow)
+        window._widgets = {"wechat_restart": button}
+        window.app = types.SimpleNamespace(
+            wizard=types.SimpleNamespace(step=step))
+        root.update()
+        return window, button
+
+    @staticmethod
+    def _is_packed(button) -> bool:
+        try:
+            return "in" in button.pack_info()
+        except Exception:
+            return False
+
+    def test_logged_in_hides_restart(self):
+        from pyweixin.wizard import WizardStep
+
+        window, button = self._window(WizardStep.WECHAT)
+        window._refresh_wechat_restart(
+            WeChatStatus(WeChatState.LOGGED_IN, "已登录", checked_at=1.0))
+        button.update()
+        self.assertFalse(self._is_packed(button))
+
+    def test_unreadable_shows_restart(self):
+        from pyweixin.wizard import WizardStep
+
+        window, button = self._window(WizardStep.WECHAT)
+        button.pack_forget()
+        window._refresh_wechat_restart(
+            WeChatStatus(WeChatState.UNREADABLE, "读不出", checked_at=1.0))
+        button.update()
+        self.assertTrue(self._is_packed(button))
+
+    def test_status_event_refreshes_restart(self):
+        """_on_wechat 必须顺手刷它，不然登录成功也藏不掉旧按钮。"""
+        import inspect
+
+        from pyweixin import merchant_ui
+
+        source = inspect.getsource(merchant_ui.MerchantWindow._on_wechat)
+        self.assertIn("_refresh_wechat_restart", source)
+
+
 if __name__ == "__main__":
     unittest.main()

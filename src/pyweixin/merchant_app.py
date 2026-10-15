@@ -33,11 +33,12 @@ from .client_login import (  # noqa: E402
 )
 from .conversations import RealConversationSource  # noqa: E402
 from .local_parse import LocalParseService  # noqa: E402
+from .jyi_client import JYI_GATEWAY, JYIClient, create_merchant_client  # noqa: E402
 from .orders import OrderStore  # noqa: E402
 from .wechat_state import RealWeChatLauncher, RealWeChatProbe  # noqa: E402
 
-#: 没有配置时使用的占位地址。商户在界面上点「登录」时会被提示替换。
-DEFAULT_GATEWAY = "https://gateway.example.com"
+#: 默认连接 JYI 生产网关；开发环境仍可通过 --gateway 覆盖。
+DEFAULT_GATEWAY = JYI_GATEWAY
 
 
 def default_data_dir() -> Path:
@@ -70,6 +71,8 @@ def ensure_local_store(path: Path) -> tuple[OrderStore, str]:
 
 def build_login_runner(client: MerchantClient, credentials: CredentialStore, device_name: str) -> Callable[[Callable[[str, str], None]], Session]:
     def run(progress: Callable[[str, str], None]) -> Session:
+        if isinstance(client, JYIClient):
+            return client.login(credentials, device_name, progress)
         flow = DeviceLoginFlow(
             client=client,
             credentials=credentials,
@@ -91,9 +94,21 @@ def build_service_factory(
     """
 
     def factory(session: Session) -> LocalParseService:
+        from .jyi_client import JYIClient
+        from .jyi_parse import JYIParseService
+
+        client = create_merchant_client(gateway_url, session=session)
+        if isinstance(client, JYIClient):
+            # JYI 网关没有任务队列：直调 chat 接口，提示词与校验在本地。
+            return JYIParseService(
+                orders=orders,
+                client=client,
+                queue=queue,
+                tenant=tenant,
+            )
         return LocalParseService(
             orders=orders,
-            client=MerchantClient(gateway_url, session=session),
+            client=client,
             queue=queue,
             tenant=tenant,
         )
@@ -128,12 +143,14 @@ def build_application(
     app.conversation_source = RealConversationSource(ui_lock=app.ui_lock)
     app.history._ui_lock = app.ui_lock
 
-    client = MerchantClient(gateway_url, session=restore_session(credentials))
+    client = create_merchant_client(gateway_url, session=restore_session(credentials))
     service_factory = build_service_factory(orders, tenant, gateway_url, queue)
     app.login_runner = build_login_runner(client, credentials, device_name)  # type: ignore[attr-defined]
     app.pending_queue = queue  # type: ignore[attr-defined]
+    app.credentials = credentials  # type: ignore[attr-defined]
 
     def attach_session(session: Session) -> None:
+        client.session = session
         app.attach(session, client, service_factory(session))
 
     app.attach_session = attach_session  # type: ignore[attr-defined]
@@ -176,7 +193,7 @@ def _self_check(app: MerchantApplication, data_dir: Path, device_name: str) -> i
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_stdout()
-    parser = argparse.ArgumentParser(prog="pyweixin-merchant", description="微信群接单助手")
+    parser = argparse.ArgumentParser(prog="pyweixin-merchant", description="微信AI智能助理")
     parser.add_argument("--gateway", default=os.environ.get("PYWEIXIN_GATEWAY_URL", DEFAULT_GATEWAY), help=argparse.SUPPRESS)
     parser.add_argument("--data-dir", default="", help=argparse.SUPPRESS)
     parser.add_argument("--device-name", default=os.environ.get("PYWEIXIN_DEVICE_NAME", ""), help=argparse.SUPPRESS)

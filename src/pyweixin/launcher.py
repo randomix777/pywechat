@@ -9,8 +9,11 @@
 from __future__ import annotations
 
 import os
+import queue
 import sys
+import threading
 from pathlib import Path
+from typing import Any
 
 
 def repo_root() -> Path:
@@ -62,6 +65,144 @@ def check_dependencies() -> list[tuple[str, str]]:
     return missing
 
 
+def _show_update_splash(version: str) -> None:
+    """更新闪屏：告诉商户正在换版、完成后自动打开，不要重复双击。
+
+    打包后没有控制台，print 等于没说。Tk 顶 3 秒，更新脚本接管后
+    本进程退出，闪屏跟着消失。任何异常都静默跳过 —— 闪屏不能挡更新。
+    """
+    try:
+        import tkinter as tk
+    except Exception:
+        return
+    root = None
+    try:
+        root = tk.Tk()
+        root.title("微信AI智能助理 - 正在更新")
+        root.resizable(False, False)
+        label = f"正在更新到 v{version or '新版本'}，完成后自动打开，请稍候…\n请不要重复双击。"
+        tk.Label(root, text=label, font=("Microsoft YaHei", 10),
+                 padx=28, pady=22).pack()
+        root.update_idletasks()
+        root.update()
+        import time as _time
+        deadline = _time.time() + 3.0
+        while _time.time() < deadline:
+            try:
+                root.update()
+            except Exception:
+                break
+            _time.sleep(0.05)
+    except Exception:
+        pass
+    finally:
+        try:
+            if root is not None:
+                root.destroy()
+        except Exception:
+            pass
+
+
+def _check_and_apply_update() -> bool:
+    """启动前检查新版；发现新版时下载、校验并交给替换脚本重启。
+
+    返回 True 表示更新脚本已接管当前进程，调用方应结束旧进程；
+    False 表示无更新或更新不可用，继续启动当前客户端。
+    """
+    try:
+        from pyweixin.updater import (
+            apply_pending_update,
+            check_for_update,
+            download_and_stage,
+            is_frozen_app,
+            pending_update,
+        )
+        if not is_frozen_app():
+            return False
+        # 之前下载完但尚未来得及替换：先应用它，避免重复下载。
+        pending = pending_update()
+        if pending is not None:
+            _show_update_splash(str(pending.get("version") or ""))
+            return apply_pending_update()
+    except Exception:
+        return False
+
+    # 下载在工作线程执行，启动提示窗口保持响应。检查/下载失败不影响旧版启动。
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+    def work() -> None:
+        try:
+            info = check_for_update()
+            if info is None:
+                result_queue.put(("current", None))
+                return
+            staged = download_and_stage(info)
+            result_queue.put(("staged" if staged is not None else "failed", info))
+        except Exception:
+            result_queue.put(("failed", None))
+
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+
+        root = tk.Tk()
+        root.title("微信AI智能助理")
+        root.resizable(False, False)
+        root.attributes("-topmost", True)
+        body = ttk.Frame(root, padding=(28, 22))
+        body.pack(fill="both", expand=True)
+        status = ttk.Label(body, text="正在检查客户端更新…", font=("Microsoft YaHei", 10))
+        status.pack(anchor="w")
+        progress = ttk.Progressbar(body, mode="indeterminate", length=310)
+        progress.pack(fill="x", pady=(14, 0))
+        progress.start(12)
+        root.update_idletasks()
+        root.geometry(f"{root.winfo_reqwidth()}x{root.winfo_reqheight()}")
+        cancelled = {"value": False}
+
+        def close_window() -> None:
+            cancelled["value"] = True
+            root.destroy()
+
+        root.protocol("WM_DELETE_WINDOW", close_window)
+        threading.Thread(target=work, name="startup-update-check", daemon=True).start()
+        outcome: tuple[str, Any] | None = None
+
+        def poll() -> None:
+            nonlocal outcome
+            if cancelled["value"]:
+                return
+            try:
+                outcome = result_queue.get_nowait()
+            except queue.Empty:
+                root.after(100, poll)
+                return
+            kind, info = outcome
+            if kind == "staged":
+                status.configure(text=f"正在更新到 v{info.get('version', '新版本')}，完成后自动打开…")
+                progress.configure(mode="determinate", value=100)
+                root.after(500, root.destroy)
+            else:
+                root.destroy()
+
+        root.after(100, poll)
+        root.mainloop()
+        if cancelled["value"]:
+            return False
+        if outcome is not None and outcome[0] == "staged":
+            return apply_pending_update()
+        return False
+    except Exception:
+        # Tk 初始化失败时仍可自动更新；这一条路径只在真实发现新版时才下载。
+        try:
+            info = check_for_update()
+            if info is None or download_and_stage(info) is None:
+                return False
+            return apply_pending_update()
+        except Exception:
+            return False
+
+
 def _fail(title: str, detail: str) -> int:
     print("=" * 56)
     print(f"  {title}")
@@ -86,6 +227,14 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     bootstrap_paths()
+    # 打包客户端每次启动前检查上游。新版会先下载并校验，再由独立脚本
+    # 替换目录并自动重启；无新版/网络失败时继续用当前版本启动。
+    try:
+        args = list(argv if argv is not None else sys.argv[1:])
+        if "--check" not in args and _check_and_apply_update():
+            return 0
+    except Exception:
+        pass
     try:
         import pyweixin  # noqa: F401
     except Exception as exc:  # pragma: no cover - defensive
@@ -113,7 +262,6 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # pragma: no cover - defensive
         return _fail("软件启动失败", f"{exc}\n\n请把这段信息发给客服。")
 
-    args = list(argv if argv is not None else sys.argv[1:])
     if "--data-dir" not in args:
         args = ["--data-dir", str(data_dir())] + args
     return app_main(args)

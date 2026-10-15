@@ -196,7 +196,7 @@ def _order_role() -> RoleDef:
     return RoleDef(
         id=ROLE_ORDER,
         name="订单助手",
-        description="接单群：意图识别、商品数量、客户归属，走订单链路（可建单）",
+        description="接单群：分析订货意图、商品数量、客户说法和待确认信息",
         version="order-v1",
     )
 
@@ -212,6 +212,17 @@ def list_roles() -> tuple[RoleDef, ...]:
 def get_role(role_id: str) -> RoleDef:
     """取角色定义。未知 id 回通用整理，不抛错（界面传错不该崩）。"""
     return _ROLES.get(str(role_id or ""), _ROLES[ROLE_GENERIC])
+
+
+def analysis_instruction(role_id: str) -> str:
+    """Build the analysis instruction from the selected role definition."""
+    role = get_role(role_id)
+    return (
+        f"你是「{role.name}」。角色说明：{role.description}。\n"
+        "请依据这个角色的职责，分析下面给出的微信群消息，并输出清晰、具体的分析结果。"
+        "保留发送人、原话中的数量与时间；不确定的信息明确标注，不要猜测。"
+        "这是分析报告，不要生成订单 JSON、订单草稿或执行任何业务操作。"
+    )
 
 
 # ------------------------------------------------------------ 规则引擎

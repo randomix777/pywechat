@@ -49,7 +49,13 @@ class TrayMessageTests(unittest.TestCase):
         self.assertIn("右下角", self.source)
 
     def test_it_explains_why_reading_will_not_work(self):
-        self.assertIn("读不到群消息", self.source)
+        """说的是"看不到登录状态"，不是"读不到消息"。
+
+        读取走本机数据库，不碰微信窗口 —— 托盘不影响读取。
+        旧文案写"读不到群消息"，商户会去把窗口翻出来再读，白费工夫。
+        """
+        self.assertIn("看不到登录状态", self.source)
+        self.assertNotIn("读不到群消息", self.source)
 
     def test_it_does_not_claim_wechat_needs_relogin(self):
         """商户没登出任何东西。让他重新登录只会更困惑。"""
