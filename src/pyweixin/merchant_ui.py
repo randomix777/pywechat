@@ -309,6 +309,9 @@ class MerchantWindow:
         #: 取消分析的标记。工作线程每个批次间隙检查一次；界面只置位不等待。
         self._analysis_cancel: Any = None
         self._last_analysis_error = ""
+        #: 最近一次报错的完整文本。商户需要复制给客服/开发时，点底部的
+        #: 「复制错误」按钮即可；不依赖 messagebox 无法复制。
+        self._last_error_text: str = ""
         #: 最近一次角色整理的分类报告。同上，跨页面重建存活。
         self._last_role_report: dict[str, Any] = {}
         #: 最近一次首页数据。同上，重建后补画。
@@ -437,6 +440,15 @@ class MerchantWindow:
         ttk.Separator(self.footer, orient="horizontal").pack(fill="x", pady=(0, 8))
         self.footer_body = ttk.Frame(self.footer, style="TopBar.TFrame")
         self.footer_body.pack(fill="x")
+        # 错误复制按钮：有报错时亮出来，供商户复制完整错误文本发给客服。
+        self._widgets["error_copy"] = ttk.Button(
+            self.footer_body,
+            text="复制错误",
+            command=lambda: self._copy_to_clipboard(self._last_error_text),
+        )
+        self._widgets["error_copy"].configure(state="disabled")
+        self._widgets["error_copy"].pack(side="right", padx=(8, 0))
+        self._widgets["error_copy"].pack_forget()
 
         self._widgets["log"] = ttk.Label(self.root, text="", style="MutedPage.TLabel",
                                          padding=(18, 2))
@@ -602,11 +614,48 @@ class MerchantWindow:
         except Exception:
             # log 只在向导页有。第 4 步没有它，不该因此把错误也一起丢掉。
             LOGGER.debug("no log widget on this page", exc_info=True)
+        self._last_error_text = str(text)
+        self._show_error_copy()
 
     def _on_log(self, text: str) -> None:
         widget = self._widgets.get("log")
         if widget is not None and self._alive(widget):
             widget.configure(text=text)
+
+    # ------------------------------------------------------------- 错误复制
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        """把错误文本复制到剪贴板，供商户发给客服/开发。"""
+        if not text:
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(str(text))
+        except Exception:
+            # 剪贴板不可用不应阻断主流程。
+            LOGGER.debug("剪贴板复制失败", exc_info=True)
+
+    def _show_error_copy(self) -> None:
+        """有错误时把「复制错误」按钮亮出来；没有则藏起来。"""
+        btn = self._widgets.get("error_copy")
+        if btn is None or not self._alive(btn):
+            return
+        if self._last_error_text:
+            btn.configure(state="normal")
+            try:
+                btn.pack(side="right", padx=(8, 0))
+            except tk.TclError:
+                pass
+        else:
+            btn.configure(state="disabled")
+            try:
+                btn.pack_forget()
+            except tk.TclError:
+                pass
+
+    def _hide_error_copy(self) -> None:
+        self._last_error_text = ""
+        self._show_error_copy()
 
     def _on_update_staged(self, info: Any) -> None:
         """新版已下载暂存：在顶栏版本号后面留一句话，下次打开自动更新。"""
@@ -3139,6 +3188,8 @@ class MerchantWindow:
         self._analysis_cancel = threading.Event()
         self._summary_started = time.monotonic()
         self._last_analysis_error = ""
+        self._last_error_text = ""
+        self._show_error_copy()
         self._last_summary = {}
         self._last_analysis_details = []
         self._last_paragraph_outcome = {}
