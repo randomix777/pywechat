@@ -119,13 +119,15 @@ def has_messages_for(app: Any, result: Any) -> bool:
     return any(n for n, _, _ in accumulated_coverage(app, result).values())
 
 
-def messages_for_summary(app: Any, result: Any) -> list[dict[str, Any]]:
-    """按会话取全量，不按「最后一批导入」取。
+def messages_for_summary(app: Any, result: Any, role_id: str = "") -> list[dict[str, Any]]:
+    """按会话取消息供模型分析。
 
-    「更新」之后本次可能只有 1 条新增，但库里已经有几百条 —— 如果只取
-    本次导入批次，摘要范围会塌缩成那 1 条，之前的内容等于白读了。
-    所以：覆盖到的会话一律取库里全部已存消息（按时间正序，LIMIT 兜底）；
-    只有 coverage 为空的老结果对象，才回退到按 import_ids 取当批。
+    有 ``role_id`` 时走**增量路径**：取该会话水位线（上次分析到的消息）
+    之后的新增消息，无水位线（首次或角色切换后）取全量。换角色重新
+    分析互不影响，撤回的消息水位线已过，不再重新纳入。
+
+    返回的消息已带 ``id`` 字段，供水位线回写；``group_label`` 用于结果页
+    展示；``_analysis_document_text`` 等字段由 ``_attach_media`` 回填。
     """
     target = _app(app)
     store = getattr(target, "orders", None)
@@ -139,34 +141,52 @@ def messages_for_summary(app: Any, result: Any) -> list[dict[str, Any]]:
         name = str(getattr(conversation, "name", "") or "") if conversation is not None else ""
         if name and not getattr(item, "error", "") and name not in groups:
             groups.append(name)
-    if groups:
-        marks = ",".join("?" for _ in groups)
-        rows = store.db.execute(
-            "SELECT group_id, sender, content, kind, media_json, COALESCE(sent_at, observed_at) AS sent_at"
-            " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
-            " ORDER BY group_id, COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id"
-            " LIMIT " + str(int(SUMMARY_MESSAGE_LIMIT)),
-            [tenant, *groups],
-        ).fetchall()
-        return _attach_media({"group_id": str(row["group_id"] or ""),
-                              "group_label": labels.get(str(row["group_id"] or ""), str(row["group_id"] or "")),
-                              **_row_to_message(row)}
-                             for row in rows)
-    import_ids = [str(x) for x in (getattr(result, "import_ids", None) or []) if x]
-    if import_ids:
-        marks = ",".join("?" for _ in import_ids)
-        rows = store.db.execute(
-            "SELECT group_id, sender, content, kind, media_json, COALESCE(sent_at, observed_at) AS sent_at"
-            " FROM messages WHERE merchant_id=? AND import_id IN (" + marks + ")"
-            " ORDER BY group_id, COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id"
-            " LIMIT " + str(int(SUMMARY_MESSAGE_LIMIT)),
-            [tenant, *import_ids],
-        ).fetchall()
-        return _attach_media({"group_id": str(row["group_id"] or ""),
-                              "group_label": labels.get(str(row["group_id"] or ""), str(row["group_id"] or "")),
-                              **_row_to_message(row)}
-                             for row in rows)
-    return []
+    if not groups:
+        import_ids = [str(x) for x in (getattr(result, "import_ids", None) or []) if x]
+        if import_ids:
+            marks = ",".join("?" for _ in import_ids)
+            rows = store.db.execute(
+                "SELECT group_id, sender, content, kind, media_json, COALESCE(sent_at, observed_at) AS sent_at, id"
+                " FROM messages WHERE merchant_id=? AND import_id IN (" + marks + ")"
+                " ORDER BY group_id, COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id"
+                " LIMIT " + str(int(SUMMARY_MESSAGE_LIMIT)),
+                [tenant, *import_ids]).fetchall()
+            return _attach_media({"group_id": str(row["group_id"] or ""),
+                                  "group_label": labels.get(str(row["group_id"] or ""), str(row["group_id"] or "")),
+                                  **_row_to_message(row)}
+                                 for row in rows)
+        return []
+
+    _ensure_analysis_tables(store)
+    messages: list[dict[str, Any]] = []
+    last_per_group: dict[str, tuple[str, str]] = {}
+    for group in groups:
+        wm = _get_watermark(store, tenant, group, role_id) if role_id else None
+        if wm is not None:
+            last_msg_id, last_sent_at = wm
+            rows = store.db.execute(
+                "SELECT group_id, sender, content, kind, media_json, COALESCE(sent_at, observed_at) AS sent_at, id"
+                " FROM messages WHERE merchant_id=? AND group_id=? AND "
+                "(COALESCE(sent_at, observed_at) > ? OR (COALESCE(sent_at, observed_at) = ? AND id > ?))"
+                " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id"
+                " LIMIT " + str(int(SUMMARY_MESSAGE_LIMIT)),
+                [tenant, group, last_sent_at, last_sent_at, last_msg_id]).fetchall()
+        else:
+            rows = store.db.execute(
+                "SELECT group_id, sender, content, kind, media_json, COALESCE(sent_at, observed_at) AS sent_at, id"
+                " FROM messages WHERE merchant_id=? AND group_id=? "
+                " ORDER BY COALESCE(sent_at_epoch, strftime('%s', observed_at)), observed_at, id"
+                " LIMIT " + str(int(SUMMARY_MESSAGE_LIMIT)),
+                [tenant, group]).fetchall()
+        for row in rows:
+            messages.append({"group_id": str(row["group_id"] or ""),
+                             "group_label": labels.get(str(row["group_id"] or ""), str(row["group_id"] or "")),
+                             **_row_to_message(row)})
+            last_per_group[group] = (str(row["id"]), str(row["sent_at"]))
+    # 写回水位线：每个会话只记住最后一条（已按时间正序，最后一条最大）。
+    for group, (msg_id, sent_at) in last_per_group.items():
+        _set_watermark(store, tenant, group, role_id, msg_id, sent_at)
+    return _attach_media(messages)
 
 
 def history_message_counts(app: Any, result: Any) -> list[tuple[str, int]]:
@@ -240,7 +260,7 @@ def _row_to_message(row: Any) -> dict[str, Any]:
         media = json.loads(row["media_json"] or "{}")
     except (KeyError, TypeError, ValueError):
         media = {}
-    return {"sender": row["sender"], "content": row["content"],
+    return {"id": row["id"], "sender": row["sender"], "content": row["content"],
             "kind": row["kind"], "sent_at": row["sent_at"],
             "media": media if isinstance(media, dict) else {}}
 
@@ -258,6 +278,99 @@ def _attach_media(messages: Any) -> list[dict[str, Any]]:
 #: 比直调慢，给足时间；超时不代表扣费（以服务端结算为准）。
 SUMMARY_POLL_INTERVAL = 2.0
 SUMMARY_TIMEOUT = 180.0
+
+#: 增量分析用的水位线表与报告表。按 (商户, 会话, 角色) 隔离，换角色
+#: 重新分析互不影响；撤回的消息水位线已过，不再重新纳入（已生成的
+#: 报告保留，不追溯）。
+ANALYSIS_WATERMARK_SQL = (
+    "CREATE TABLE IF NOT EXISTS analysis_watermarks("
+    "merchant_id TEXT NOT NULL, group_id TEXT NOT NULL, role_id TEXT NOT NULL,"
+    " last_msg_id TEXT NOT NULL, last_sent_at TEXT NOT NULL,"
+    " updated_at TEXT NOT NULL,"
+    " PRIMARY KEY(merchant_id, group_id, role_id))"
+)
+ANALYSIS_REPORT_SQL = (
+    "CREATE TABLE IF NOT EXISTS analysis_reports("
+    "merchant_id TEXT NOT NULL, report_key TEXT NOT NULL, role_id TEXT NOT NULL,"
+    " report_text TEXT NOT NULL DEFAULT '', message_count INTEGER NOT NULL DEFAULT 0,"
+    " updated_at TEXT NOT NULL,"
+    " PRIMARY KEY(merchant_id, report_key, role_id))"
+)
+
+
+def _ensure_analysis_tables(store: Any) -> None:
+    """建水位线与报告表（幂等）。"""
+    try:
+        store.db.execute(ANALYSIS_WATERMARK_SQL)
+        store.db.execute(ANALYSIS_REPORT_SQL)
+        store.db.commit()
+    except Exception:
+        # 表建不了不该阻断分析：退回全量取消息，走老路径。
+        LOGGER.debug("analysis tables not created", exc_info=True)
+
+
+def _get_watermark(store: Any, tenant: str, group_id: str, role_id: str) -> tuple[str, str] | None:
+    """返回 (last_msg_id, last_sent_at)；没有水位线返回 None。"""
+    try:
+        row = store.db.execute(
+            "SELECT last_msg_id, last_sent_at FROM analysis_watermarks"
+            " WHERE merchant_id=? AND group_id=? AND role_id=?",
+            [tenant, group_id, role_id]).fetchone()
+    except Exception:
+        LOGGER.debug("read watermark failed", exc_info=True)
+        return None
+    if row is None:
+        return None
+    return str(row["last_msg_id"]), str(row["last_sent_at"])
+
+
+def _set_watermark(store: Any, tenant: str, group_id: str, role_id: str,
+                   msg_id: str, sent_at: str) -> None:
+    """写入/更新水位线。"""
+    try:
+        store.db.execute(
+            "INSERT INTO analysis_watermarks(merchant_id, group_id, role_id,"
+            " last_msg_id, last_sent_at, updated_at) VALUES(?,?,?,?,?,?)"
+            " ON CONFLICT(merchant_id, group_id, role_id) DO UPDATE SET"
+            " last_msg_id=excluded.last_msg_id, last_sent_at=excluded.last_sent_at,"
+            " updated_at=excluded.updated_at",
+            [tenant, group_id, role_id, msg_id, sent_at,
+             __import__("datetime").datetime.now().isoformat()])
+        store.db.commit()
+    except Exception:
+        LOGGER.debug("write watermark failed", exc_info=True)
+
+
+def _get_report(store: Any, tenant: str, report_key: str, role_id: str) -> str:
+    """读已持久化的完整报告；没有返回空字符串。"""
+    _ensure_analysis_tables(store)
+    try:
+        row = store.db.execute(
+            "SELECT report_text FROM analysis_reports"
+            " WHERE merchant_id=? AND report_key=? AND role_id=?",
+            [tenant, report_key, role_id]).fetchone()
+    except Exception:
+        LOGGER.debug("read report failed", exc_info=True)
+        return ""
+    return str(row["report_text"] or "") if row else ""
+
+
+def _set_report(store: Any, tenant: str, report_key: str, role_id: str,
+                report_text: str, message_count: int) -> None:
+    """持久化合并后的完整报告。"""
+    _ensure_analysis_tables(store)
+    try:
+        store.db.execute(
+            "INSERT INTO analysis_reports(merchant_id, report_key, role_id,"
+            " report_text, message_count, updated_at) VALUES(?,?,?,?,?,?)"
+            " ON CONFLICT(merchant_id, report_key, role_id) DO UPDATE SET"
+            " report_text=excluded.report_text, message_count=excluded.message_count,"
+            " updated_at=excluded.updated_at",
+            [tenant, report_key, role_id, report_text, message_count,
+             __import__("datetime").datetime.now().isoformat()])
+        store.db.commit()
+    except Exception:
+        LOGGER.debug("write report failed", exc_info=True)
 
 
 def _gateway_client(app: Any) -> Any | None:
@@ -884,7 +997,8 @@ def _run_summary_jyi(client: Any, messages: list[dict[str, Any]], role_id: str =
         on_progress("已取消分析" if cancelled else ("会话分析完成" if not failures else "部分会话分析完成"))
     return {"summary": combined, "error": error, "partial_error": partial_error,
             "completed_groups": completed_groups, "cost": None,
-            "message_count": processed, "cancelled": cancelled}
+            "message_count": processed, "cancelled": cancelled,
+            "is_incremental": bool(role_id)}
 
 
 def _run_summary_gateway_job(client: Any, messages: list[dict[str, Any]],
@@ -1068,7 +1182,8 @@ def _run_summary_gateway(app: Any, client: Any, messages: list[dict[str, Any]],
     return {"summary": combined, "error": error, "partial_error": partial_error,
             "completed_groups": completed_groups,
             "cost": (total_cost / 1_000_000 if submitted_batches and cost_known else None),
-            "message_count": processed, "cancelled": cancelled}
+            "message_count": processed, "cancelled": cancelled,
+            "is_incremental": bool(role_id)}
 
 
 def run_summary(app: Any, result: Any, role_id: str = "",
@@ -1083,18 +1198,24 @@ def run_summary(app: Any, result: Any, role_id: str = "",
     网络不可预期，不该让调用方的线程死掉。
     ``is_cancelled`` 为可调用对象时，每个批次/轮询间隙检查一次；
     取消后返回已完成分段与 ``cancelled=True``。
+    ``role_id`` 非空时走按角色增量路径：首次取该会话全量，之后只取水位
+    线后的新增消息；返回 ``is_incremental`` 告知调用方是否可与旧报告拼接。
     """
-    messages = messages_override if messages_override is not None else messages_for_summary(app, result)
+    messages = messages_override if messages_override is not None else messages_for_summary(app, result, role_id=role_id)
+    is_incremental = bool(role_id)
     if not messages:
-        return {"summary": "", "error": "没读到消息", "cost": None, "message_count": 0}
+        return {"summary": "", "error": "没读到消息", "cost": None, "message_count": 0,
+                "is_incremental": is_incremental}
     target = _app(app)
     client = _gateway_client(app)
     if client is None:
         return {"summary": "", "error": "需要登录产品账号",
-                "cost": None, "message_count": len(messages)}
+                "cost": None, "message_count": len(messages),
+                "is_incremental": is_incremental}
     if not _SUMMARY_RUN_LOCK.acquire(blocking=False):
         return {"summary": "", "error": "已有智能分析任务正在运行，请等待当前任务结束。",
-                "cost": None, "message_count": len(messages)}
+                "cost": None, "message_count": len(messages),
+                "is_incremental": is_incremental}
     try:
         if _is_jyi_client(client):
             settings = getattr(target, "settings", None)

@@ -3168,7 +3168,8 @@ class MerchantWindow:
             scope_note = ("本次无新增，已按确认分析所选会话的历史消息。"
                           if is_update else "已按确认分析所选会话的历史消息。")
         else:
-            analysis_messages = summary_task.messages_for_summary(self.app, result)
+            role = self._picked_role()
+            analysis_messages = summary_task.messages_for_summary(self.app, result, role_id=role)
             if read_errors:
                 names = "、".join(item.conversation.disambiguation for item in read_errors)
                 scope_note = f"本次按会话分析全部已存消息；以下会话读取失败，未纳入分析：{names}。"
@@ -3181,7 +3182,6 @@ class MerchantWindow:
                 parent=self.root,
             )
             return
-        role = self._picked_role()
         self._analysis_results_mode = True
         self._analysis_call_active = True
         self._analysis_running = True
@@ -3247,11 +3247,36 @@ class MerchantWindow:
                     item for item in text_messages
                     if not completed_groups or str(item.get("group_id") or item.get("group") or "所选会话") in completed_groups
                 ]
+                processed = int(outcome.get("message_count", len(detail_messages)) or 0)
+                # 报告拼接：增量分析时，把新段追加到旧报告后；首次则直接用新报告。
+                new_report = outcome.get("summary", "")
+                is_incremental = bool(outcome.get("is_incremental"))
+                combined_report = new_report
+                if is_incremental and new_report:
+                    target = self.app
+                    store = getattr(target, "orders", None)
+                    tenant = getattr(target, "tenant", "")
+                    if store is not None:
+                        group_ids = []
+                        for item in getattr(result, "coverage", ()) or ():
+                            conversation = getattr(item, "conversation", None)
+                            name = str(getattr(conversation, "name", "") or "") if conversation is not None else ""
+                            if name and not getattr(item, "error", ""):
+                                group_ids.append(name)
+                        report_key = "_".join(sorted(group_ids))
+                        old_report = summary_task._get_report(store, tenant, report_key, role)
+                        if old_report:
+                            combined_report = (
+                                old_report + "\n\n===== 新增消息 (" + time.strftime("%Y-%m-%d") + ") =====\n"
+                                + new_report
+                            )
+                        # 持久化合并后的完整报告，下次增量时做基准。
+                        summary_task._set_report(store, tenant, report_key, role, combined_report, processed)
                 summary = {
-                    "processed": int(outcome.get("message_count", len(detail_messages)) or 0),
+                    "processed": processed,
                     "role_id": outcome.get("role_id", role),
                     "role_name": get_role(role).name,
-                    "analysis_text": outcome.get("summary", ""),
+                    "analysis_text": combined_report,
                     "partial_error": outcome.get("partial_error", ""),
                     "cancelled": bool(outcome.get("cancelled")),
                     "scope_note": scope_note,

@@ -530,6 +530,81 @@ class CancelAnalysisTests(unittest.TestCase):
                 {}, None, 8000, is_cancelled=lambda: True)
 
 
+class WatermarkTests(unittest.TestCase):
+    """增量分析的水位线：首次全量，之后只取新增；角色隔离。
+
+    回归真机 case：Bond 群 50 条消息已分析过，第二天又来了 5 条新消息，
+    商户再点分析不该重跑那 50 条，只该分析新增的 5 条并追加到旧报告。
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.store = OrderStore(str(pathlib.Path(self.dir.name) / "o.db"))
+        self.tenant = self.store.create_merchant("测试商家")["merchant_id"]
+        self.app = _app_for(self.store, self.tenant)
+
+    def tearDown(self):
+        self.store.close()
+        self.dir.cleanup()
+
+    def _add(self, source, rows, time_offset=0):
+        return self.store.add_import(self.tenant, GROUP, [
+            {"sender": s, "content": c, "kind": k,
+             "sent_at": f"2026-10-14T09:{i+time_offset:02d}:00-04:00",
+             "source_id": f"{source}-{i}"}
+            for i, (s, c, k) in enumerate(rows)], source, "demo")
+
+    def test_incremental_takes_only_new_messages(self):
+        """首次取全量，之后只取水位线后的新增。"""
+        self._add("all", [("张姐", "要两箱苹果", "text")] * 3)
+        result = _result(self.store, self.tenant, total=3)
+        first = summary_task.messages_for_summary(self.app, result, role_id="r1")
+        self.assertEqual(len(first), 3)
+        # 再加一条新消息（时间更晚），增量应只取这 1 条
+        self._add("new", [("李叔", "李记酱油 2 瓶", "text")], time_offset=3)
+        second = summary_task.messages_for_summary(self.app, result, role_id="r1")
+        self.assertEqual(len(second), 1)
+        self.assertEqual(second[0]["content"], "李记酱油 2 瓶")
+        # 水位线已推进，第三次再取应为空
+        third = summary_task.messages_for_summary(self.app, result, role_id="r1")
+        self.assertEqual(len(third), 0)
+
+    def test_role_change_refetches_full(self):
+        """换角色重新取全量，不受旧角色水位线影响。"""
+        self._add("all", [("张姐", "要两箱苹果", "text")] * 2)
+        result = _result(self.store, self.tenant, total=2)
+        first_r1 = summary_task.messages_for_summary(self.app, result, role_id="r1")
+        self.assertEqual(len(first_r1), 2)
+        first_r2 = summary_task.messages_for_summary(self.app, result, role_id="r2")
+        self.assertEqual(len(first_r2), 2)
+
+    def test_no_role_id_takes_full_and_writes_no_watermark(self):
+        """不传 role_id 走老路径：取全量，不写水位线，不影响增量。"""
+        self._add("all", [("张姐", "要两箱苹果", "text")] * 2)
+        result = _result(self.store, self.tenant, total=2)
+        full = summary_task.messages_for_summary(self.app, result)
+        self.assertEqual(len(full), 2)
+        # 再加新消息，不传 role_id 应该还取全量（3 条）
+        self._add("new", [("李叔", "李记酱油 2 瓶", "text")])
+        full_again = summary_task.messages_for_summary(self.app, result)
+        self.assertEqual(len(full_again), 3)
+        # 这时候再用 role_id 增量，水位线是空的，应该取全量 3 条
+        first_inc = summary_task.messages_for_summary(self.app, result, role_id="r1")
+        self.assertEqual(len(first_inc), 3)
+
+    def test_report_persist_and_read(self):
+        """报告持久化与读取，不同 (报告键, 角色) 隔离。"""
+        summary_task._set_report(self.store, self.tenant, "群A", "r1", "旧报告", 5)
+        self.assertEqual(summary_task._get_report(self.store, self.tenant, "群A", "r1"), "旧报告")
+        # 覆盖
+        summary_task._set_report(self.store, self.tenant, "群A", "r1", "新报告", 8)
+        self.assertEqual(summary_task._get_report(self.store, self.tenant, "群A", "r1"), "新报告")
+        # 不同 role_id 不互相影响
+        self.assertEqual(summary_task._get_report(self.store, self.tenant, "群A", "r2"), "")
+        # 不同报告键不互相影响
+        self.assertEqual(summary_task._get_report(self.store, self.tenant, "群B", "r1"), "")
+
+
 class GatewayErrorTextTests(unittest.TestCase):
     """网关原话不能掉地上：读错字段就是一句"提交失败"打发人。"""
 
