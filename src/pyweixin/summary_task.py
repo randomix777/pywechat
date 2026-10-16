@@ -240,7 +240,7 @@ def messages_for_history(app: Any, result: Any) -> list[dict[str, Any]]:
     labels = _conversation_labels(result)
     marks = ",".join("?" for _ in names)
     rows = store.db.execute(
-        "SELECT group_id, sender, content, kind, media_json, COALESCE(sent_at, observed_at) AS sent_at"
+        "SELECT group_id, sender, content, kind, media_json, COALESCE(sent_at, observed_at) AS sent_at, id"
         " FROM messages WHERE merchant_id=? AND group_id IN (" + marks + ")"
         " ORDER BY group_id, COALESCE(sent_at_epoch, strftime('%s', observed_at)), id",
         [tenant, *names]).fetchall()

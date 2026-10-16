@@ -3117,6 +3117,36 @@ class MerchantWindow:
             lines.append(f"• {name}：{detail}")
         label.configure(text="\n".join(lines))
 
+    def _mark_analyzed_messages(self, analysis_messages: list, outcome: dict,
+                                processed: int, role: str) -> None:
+        """把已过 AI 的消息记成“整理过”，第 5 步导出门禁认这个。
+
+        ``summary_task.run_summary`` 只写分析水位线，不写 ``parse_runs``；
+        不补这一步，跑完 AI 回第 5 步导出仍会被当成“没整理过”卡住。
+        只在真的分析了消息（``processed>0``）时标记，取消到一条未完成就不记。
+        """
+        if processed <= 0:
+            return
+        store = getattr(self.app, "orders", None)
+        tenant = getattr(self.app, "tenant", "")
+        if store is None:
+            return
+        completed = set((outcome or {}).get("completed_groups") or ())
+        ids = []
+        for item in analysis_messages or ():
+            mid = str(item.get("id") or "")
+            if not mid:
+                continue
+            group = str(item.get("group_id") or item.get("group") or "所选会话")
+            if not completed or group in completed:
+                ids.append(mid)
+        if not ids:
+            return
+        try:
+            store.mark_role_organized(tenant, ids, role)
+        except Exception:
+            LOGGER.exception("标记已分析消息失败")
+
     def _on_analyze(self) -> None:
         result = self._last_read_result or self.app.wizard.history_result
         if result is None:
@@ -3293,6 +3323,7 @@ class MerchantWindow:
                 self._post("error", text=f"AI分析失败：{exc}")
                 summary = None
             if summary is not None:
+                self._mark_analyzed_messages(analysis_messages, outcome, processed, role)
                 self._post("analyzed", summary=summary)
             self._post("analysis_finished", success=summary is not None)
 

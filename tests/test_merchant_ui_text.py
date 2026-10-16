@@ -226,6 +226,62 @@ class ExportGateTests(unittest.TestCase):
             self.assertIsNone(window._check_exportable())
 
 
+class MarkAnalyzedMessagesTests(unittest.TestCase):
+    """AI 分析跑完要把消息记成「整理过」，否则第 5 步导出被门禁卡住。"""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="pyw-mark-"))
+        self.store = OrderStore(str(self.dir / "orders.db"))
+        self.tenant = self.store.create_merchant("测试商家")["merchant_id"]
+        self.group = "测试群"
+
+    def tearDown(self):
+        self.store.close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _window(self):
+        import types
+
+        from pyweixin.merchant_ui import MerchantWindow
+
+        window = MerchantWindow.__new__(MerchantWindow)
+        window.app = types.SimpleNamespace(orders=self.store, tenant=self.tenant)
+        return window
+
+    def _messages(self, contents):
+        self.store.add_import(self.tenant, self.group, [
+            {"sender": "张姐", "content": c, "kind": "text",
+             "sent_at": f"2026-10-14T09:{i:02d}:00-04:00", "source_id": f"s{i}"}
+            for i, c in enumerate(contents)], "src", "demo")
+        rows = self.store.db.execute(
+            "SELECT id, group_id FROM messages WHERE merchant_id=? ORDER BY id",
+            (self.tenant,)).fetchall()
+        return [{"id": str(r["id"]), "group_id": str(r["group_id"])} for r in rows]
+
+    def test_analyzed_messages_become_exportable(self):
+        messages = self._messages(["要两箱苹果", "再要一箱"])
+        window = self._window()
+        window._mark_analyzed_messages(messages, {"completed_groups": []}, 2, "order")
+        processed = self.store.processed_message_ids(self.tenant)
+        self.assertTrue({m["id"] for m in messages} <= processed)
+
+    def test_nothing_processed_marks_nothing(self):
+        messages = self._messages(["要两箱苹果"])
+        window = self._window()
+        window._mark_analyzed_messages(messages, {"completed_groups": []}, 0, "order")
+        self.assertEqual(self.store.processed_message_ids(self.tenant), set())
+
+    def test_only_completed_groups_are_marked(self):
+        messages = self._messages(["甲", "乙"])
+        messages[0]["group_id"] = "完成群"
+        messages[1]["group_id"] = "失败群"
+        window = self._window()
+        window._mark_analyzed_messages(messages, {"completed_groups": ["完成群"]}, 1, "order")
+        processed = self.store.processed_message_ids(self.tenant)
+        self.assertIn(messages[0]["id"], processed)
+        self.assertNotIn(messages[1]["id"], processed)
+
+
 class HomeContentTests(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="pyw-home-"))

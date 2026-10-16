@@ -122,6 +122,45 @@ class MessagesForSummaryTests(unittest.TestCase):
         self.assertIn("LIMIT", source)
 
 
+class MessagesForHistoryTests(unittest.TestCase):
+    """第 6 步「分析历史消息」走的取数路径。"""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.store = OrderStore(str(pathlib.Path(self.dir.name) / "o.db"))
+        self.tenant = self.store.create_merchant("测试商家")["merchant_id"]
+        self.app = _app_for(self.store, self.tenant)
+
+    def tearDown(self):
+        self.store.close()
+        self.dir.cleanup()
+
+    def _add(self, source, rows):
+        return self.store.add_import(self.tenant, GROUP, [
+            {"sender": s, "content": c, "kind": k,
+             "sent_at": f"2026-10-14T09:{i:02d}:00-04:00",
+             "source_id": f"{source}-{i}"}
+            for i, (s, c, k) in enumerate(rows)], source, "demo")
+
+    def test_history_messages_carry_ids(self):
+        """回归：以前没 SELECT id，``_row_to_message`` 取 ``row['id']`` 直接
+        抛 KeyError，点「是」分析历史消息当场炸，界面上看着就是没反应。"""
+        self._add("h", [("张姐", "要两箱苹果", "text")])
+        got = summary_task.messages_for_history(
+            self.app, _result(self.store, self.tenant, total=1))
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0]["id"], "历史消息必须带 id，水位线与导出都靠它")
+
+    def test_history_takes_every_stored_message(self):
+        self._add("old", [("张姐", "要两箱苹果", "text")] * 3)
+        self._add("new", [("李叔", "李记酱油 2 瓶", "text")])
+        result = _result(self.store, self.tenant, total=1, import_ids=[self.store.db.execute(
+            "SELECT id FROM imports WHERE source='new' AND merchant_id=?",
+            (self.tenant,)).fetchone()["id"]])
+        got = summary_task.messages_for_history(self.app, result)
+        self.assertEqual(len(got), 4)
+
+
 class SummaryBatchPlannerTests(unittest.TestCase):
     def test_text_images_and_document_segments_are_separate_and_bounded(self):
         messages = [
