@@ -213,6 +213,30 @@ def history_message_counts(app: Any, result: Any) -> list[tuple[str, int]]:
     return [(name, found.get(name, 0)) for name in names]
 
 
+def analyzed_group_ids(app: Any) -> set[str]:
+    """已经进入过智能整理的会话（有分析水位线，任一角色）。
+
+    导出放行用：只要商户对某个会话跑过一次智能整理，这个会话就算
+    「过了一遍 AI」。按消息逐条记的 ``parse_runs`` 只在成功那一跑写，
+    老数据、或增量跑（会话已到水位线、本次没有新增）都可能没有记录 ——
+    水位线更可靠，否则会话一旦有水印就永远导不出。
+    """
+    target = _app(app)
+    store = getattr(target, "orders", None)
+    tenant = getattr(target, "tenant", "")
+    if store is None:
+        return set()
+    _ensure_analysis_tables(store)
+    try:
+        rows = store.db.execute(
+            "SELECT DISTINCT group_id FROM analysis_watermarks WHERE merchant_id=?",
+            [tenant]).fetchall()
+    except Exception:
+        LOGGER.debug("read analyzed groups failed", exc_info=True)
+        return set()
+    return {str(row["group_id"]) for row in rows if str(row["group_id"] or "")}
+
+
 def _conversation_labels(result: Any) -> dict[str, str]:
     labels: dict[str, str] = {}
     for item in getattr(result, "coverage", None) or ():
@@ -327,6 +351,7 @@ def _get_watermark(store: Any, tenant: str, group_id: str, role_id: str) -> tupl
 def _set_watermark(store: Any, tenant: str, group_id: str, role_id: str,
                    msg_id: str, sent_at: str) -> None:
     """写入/更新水位线。"""
+    _ensure_analysis_tables(store)
     try:
         store.db.execute(
             "INSERT INTO analysis_watermarks(merchant_id, group_id, role_id,"
@@ -1323,5 +1348,6 @@ __all__ = [
     "messages_for_summary",
     "history_message_counts",
     "messages_for_history",
+    "analyzed_group_ids",
     "run_summary",
 ]

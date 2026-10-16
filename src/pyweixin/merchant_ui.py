@@ -1884,11 +1884,19 @@ class MerchantWindow:
                 if store is not None else set()
         except Exception:
             processed = set()
+        # 会话级放行：跑过一次智能整理（有水位线）就算「过了一遍 AI」。
+        # 逐条 parse_runs 只在成功那一跑写，老数据/增量无新增时不会有记录。
+        try:
+            analyzed_groups = summary_task.analyzed_group_ids(self.app)
+        except Exception:
+            analyzed_groups = set()
         rows = []
         skipped = 0
         for row in (getattr(self, "_last_review_rows", []) or []):
             item = dict(row or {})
-            if str(item.get("id", "") or "") not in processed:
+            mid = str(item.get("id", "") or "")
+            group = str(item.get("group", "") or "")
+            if mid not in processed and group not in analyzed_groups:
                 skipped += 1
                 continue
             item["content"] = display_content(item.get("kind", ""), item.get("content", ""))

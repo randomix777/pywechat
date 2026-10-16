@@ -271,6 +271,22 @@ class MarkAnalyzedMessagesTests(unittest.TestCase):
         window._mark_analyzed_messages(messages, {"completed_groups": []}, 0, "order")
         self.assertEqual(self.store.processed_message_ids(self.tenant), set())
 
+    def test_conversation_with_watermark_passes_gate(self):
+        """跑过一次智能整理的会话（有水位线）就该放行，哪怕没有逐条记录。"""
+        from pyweixin import summary_task
+
+        messages = self._messages(["要两箱苹果", "再要一箱"])
+        window = self._window()
+        summary_task._set_watermark(
+            self.store, self.tenant, self.group, "order",
+            messages[-1]["id"], "2026-10-14 09:00")
+        window._last_review_rows = [
+            {"id": m["id"], "group": self.group, "sender": "张姐",
+             "content": "要两箱苹果", "kind": "text", "sent_at": "t"}
+            for m in messages]
+        rows = window._export_review_rows()
+        self.assertEqual([r["id"] for r in rows], [m["id"] for m in messages])
+
     def test_only_completed_groups_are_marked(self):
         messages = self._messages(["甲", "乙"])
         messages[0]["group_id"] = "完成群"
