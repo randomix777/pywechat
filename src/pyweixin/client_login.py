@@ -448,6 +448,11 @@ class MerchantClient:
                     finish_reason = choice.get("finish_reason") or finish_reason
                     delta = choice.get("delta") or {}
                     content = delta.get("content", "") if isinstance(delta, Mapping) else ""
+                    # 部分网关在流式模式下仍用 message.content 而非 delta.content，
+                    # 两者都兼容，避免流式回调彻底丢失。
+                    if not content:
+                        message = choice.get("message") or {}
+                        content = message.get("content", "") if isinstance(message, Mapping) else ""
                     if isinstance(content, str) and content:
                         fragments.append(content)
                         if on_chunk:

@@ -740,6 +740,10 @@ def _complete_summary_prompt(client: Any, model: str,
         continuations += 1
     if output_was_truncated(body):
         raise ValueError("单批分析仍超过模型输出上限。")
+    # 网关未返回任何流式 token（不支持 SSE 或返回非 SSE 格式），
+    # 将完整结果分片回放，让用户看到内容正在生成，而不是干等。
+    if streamed_chars == 0 and text and on_stream:
+        _emit_stream(on_stream, text, chunk=200)
     return validate_summary_result(text)
 
 
