@@ -11,6 +11,13 @@ _IMAGE_MAGIC = {
     "bmp": b"BM", "webp": b"RIFF",
 }
 
+#: 微信 4.0 图片缓存头（AES-128-ECB + 尾部 XOR）。当前解不开，
+#: 见到就如实标注，别当成坏图或"本地没有"。
+_V4_IMAGE_MAGIC = (b"\x07\x08V2\x08\x07", b"\x07\x08V1\x08\x07")
+
+#: 需要去缓存里找附件的消息类型。
+_MEDIA_KINDS = {"image", "video", "voice", "audio", "file"}
+
 
 def _account_root() -> Path | None:
     try:
@@ -21,8 +28,19 @@ def _account_root() -> Path | None:
         return None
 
 
-def _file_index(root: Path) -> dict[str, list[Path]]:
-    index: dict[str, list[Path]] = {}
+#: 去掉这些缓存后缀后，文件名才是媒体的 MD5。
+_CACHE_SUFFIXES = ("_t", "_h", "_s", "_thumb")
+
+
+def _scan_caches(root: Path) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
+    """扫一遍媒体目录，返回 (按 MD5 索引, 按文件名索引)。
+
+    微信 4.x 把缓存摊在 ``msg/attach/<会话hash>/<年月>/Img/`` 等目录里，文件名
+    并不总是 MD5（文档是真实文件名），所以两个索引都要有：图片/视频/语音按
+    MD5 找，文档按 XML 里的 ``filename`` 找。
+    """
+    by_id: dict[str, list[Path]] = {}
+    by_name: dict[str, list[Path]] = {}
     for subdir in (root / "msg" / "attach", root / "msg" / "video",
                    root / "msg" / "file"):
         if not subdir.is_dir():
@@ -31,50 +49,111 @@ def _file_index(root: Path) -> dict[str, list[Path]]:
             for name in files:
                 path = Path(current) / name
                 stem = path.stem.lower()
-                index.setdefault(stem, []).append(path)
-                for suffix in ("_t", "_h", "_s"):
+                by_id.setdefault(stem, []).append(path)
+                for suffix in _CACHE_SUFFIXES:
                     if stem.endswith(suffix):
-                        index.setdefault(stem[:-2], []).append(path)
-    return index
+                        by_id.setdefault(stem[: -len(suffix)], []).append(path)
+                        break
+                by_name.setdefault(name.lower(), []).append(path)
+    return by_id, by_name
+
+
+def _file_index(root: Path) -> dict[str, list[Path]]:
+    """只按 MD5 索引（视频缩略图等少数调用点用）。"""
+    return _scan_caches(root)[0]
+
+
+def _is_encrypted_cache(path: Path) -> bool:
+    """微信 4.0 的 AES 加密图片缓存（.dat）—— 目前解不开。"""
+    try:
+        return Path(path).read_bytes()[:6] in _V4_IMAGE_MAGIC
+    except OSError:
+        return False
+
+
+def _cache_has_v4_images(root: Path) -> bool:
+    """这台机器的图片缓存是不是 4.0 加密格式（抽样看几个 .dat 头）。
+
+    是的话，找不到明文的图片消息多半是"已缓存但没解密"，而不是"没缓存"，
+    说明文件里要分开写，别让商户以为图片丢了。
+    """
+    attach = root / "msg" / "attach"
+    if not attach.is_dir():
+        return False
+    checked = 0
+    for current, _dirs, files in os.walk(attach):
+        for name in files:
+            if not name.lower().endswith(".dat"):
+                continue
+            if _is_encrypted_cache(Path(current) / name):
+                return True
+            checked += 1
+            if checked >= 40:
+                return False
+    return False
+
+
+def _first(candidates: list[Path], allowed: set[str]) -> Path | None:
+    """在候选里挑后缀允许的，优先非 .dat 且路径最短的一个。"""
+    usable = [p for p in candidates if p.suffix.lower() in allowed]
+    if not usable:
+        return None
+    return sorted(usable, key=lambda p: (p.suffix.lower() == ".dat", len(str(p))))[0]
 
 
 def attach_cached_files(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Add local cached files matching the media MD5 while preserving message order."""
+    """Add locally cached files for each media message, preserving order.
+
+    找得到就挂上；图片是 4.0 加密格式就如实标注（不挂一个解不开的 .dat）。
+    """
     root = _account_root()
     if root is None:
         for message in messages:
-            if str(message.get("kind", "")).lower() in {"image", "video", "voice", "file"}:
+            if str(message.get("kind", "")).lower() in _MEDIA_KINDS:
                 message["attachments"] = []
                 message["media_status"] = "无法访问微信本地媒体目录"
         return messages
-    index = _file_index(root)
+    by_id, by_name = _scan_caches(root)
+    v4_images: bool | None = None
     for message in messages:
-        if str(message.get("kind", "")).lower() not in {"image", "video", "voice", "file"}:
+        kind = str(message.get("kind", "")).lower()
+        if kind not in _MEDIA_KINDS:
             continue
         media = message.get("media") or {}
         md5 = str(media.get("md5") or media.get("videomd5") or media.get("filemd5") or "").lower()
-        if not md5:
+        filename = str(media.get("filename") or media.get("name") or "").strip()
+        if not md5 and not filename:
             message["attachments"] = []
             message["media_status"] = "读取到媒体消息，但本次读取未保存附件标识"
             continue
-        candidates = index.get(md5) or []
-        kind = str(message.get("kind", "")).lower()
-        preferred = [p for p in candidates if not p.stem.lower().endswith("_t")]
+        candidates = list(by_id.get(md5) or []) if md5 else []
+        picked: Path | None = None
+        status = "本地缓存中未找到附件"
         if kind == "image":
-            preferred = [p for p in preferred if p.suffix.lower() in {".dat", ".jpg", ".jpeg", ".png", ".webp", ".gif"}]
+            picked = _first(candidates, {".jpg", ".jpeg", ".png", ".webp", ".gif", ".dat"})
+            if picked is not None and _is_encrypted_cache(picked):
+                picked, status = None, "微信4.0加密图片，暂未解密"
+            elif picked is None:
+                if v4_images is None:
+                    v4_images = _cache_has_v4_images(root)
+                if v4_images:
+                    status = "微信4.0加密图片，暂未解密"
         elif kind == "video":
-            preferred = [p for p in preferred if p.suffix.lower() in {".mp4", ".dat", ".mov", ".3gp"}]
+            picked = _first(candidates, {".mp4", ".mov", ".3gp"}) or _first(candidates, {".jpg", ".jpeg", ".png"})
         elif kind == "file":
-            preferred = [p for p in candidates if p.suffix.lower() in
-                         {".docx", ".pdf", ".txt", ".md", ".rtf"}]
+            picked = _first(candidates, {".docx", ".doc", ".pdf", ".txt", ".md", ".rtf",
+                                         ".xlsx", ".xls", ".pptx", ".ppt", ".zip"})
+            if picked is None and filename:
+                picked = _first(list(by_name.get(filename.lower()) or []), {".docx", ".doc", ".pdf",
+                                 ".txt", ".md", ".rtf", ".xlsx", ".xls", ".pptx", ".ppt", ".zip"})
         else:
-            preferred = [p for p in preferred if p.suffix.lower() in {".aud", ".silk", ".amr", ".dat"}]
-        if preferred:
-            message["attachments"] = [str(sorted(preferred, key=lambda p: (p.suffix.lower() == ".dat", len(str(p))))[0])]
+            picked = _first(candidates, {".aud", ".silk", ".amr", ".dat", ".wav", ".mp3"})
+        if picked is not None:
+            message["attachments"] = [str(picked)]
             message["media_status"] = "附件已关联"
         else:
             message["attachments"] = []
-            message["media_status"] = "本地缓存中未找到附件"
+            message["media_status"] = status
     return messages
 
 

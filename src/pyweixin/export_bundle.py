@@ -4,14 +4,14 @@
 文件，一起留档」。所以这里把明细表和实体媒体文件放进同一个压缩包：
 
     明细.csv          消息表格（Excel/WPS 直接打开，含附件相对路径）
-    图片/             图片原图（微信 .dat 已自动解码）
-    视频/             视频
+    图片/             图片（微信 4.0 加密格式，当前暂未解密）
+    视频/             视频（本机多为缩略图）
     音频/             语音/音频（微信原始 .silk/.amr）
     附件/             Word/PDF/文本等文件
-    导出说明.txt      来源会话、条数、时间、未缓存到的附件清单
+    导出说明.txt      来源会话、条数、时间、未导出附件清单（含未解密图片）
 
-只打包微信本机**已缓存**的媒体；没缓存到的消息在表格里保留文字占位，
-并在说明文件里列出来 —— 不会凭空造内容。
+只打包微信本机**已缓存且能读**的媒体；没缓存到、或加密暂未解密的，
+在表格里保留文字占位，并在说明文件里分开列出 —— 不会凭空造内容。
 """
 from __future__ import annotations
 
@@ -93,7 +93,9 @@ def _csv_bytes(pairs: Iterable[tuple[dict, list]]) -> bytes:
     return buffer.getvalue().encode("utf-8-sig")
 
 
-def _readme(rows: list, groups: list, missing: list, generated_at: str) -> str:
+def _readme(rows: list, groups: list, missing: list, generated_at: str,
+            encrypted: list | None = None) -> str:
+    encrypted = encrypted or []
     lines = [
         "微信AI智能助理 · 导出完整包",
         f"生成时间：{generated_at}",
@@ -102,8 +104,8 @@ def _readme(rows: list, groups: list, missing: list, generated_at: str) -> str:
         "",
         "目录说明：",
         "  明细.csv    消息表格（Excel/WPS 直接打开；最后一列是包内附件路径）",
-        "  图片/       图片原图（微信 .dat 已自动解码为 jpg/png 等）",
-        "  视频/       视频",
+        "  图片/       图片（微信 4.0 加密格式，当前版本暂未解密）",
+        "  视频/       视频（本机多为缩略图）",
         "  音频/       语音/音频（微信原始格式 .silk/.amr，可用微信或转换工具播放）",
         "  附件/       Word / PDF / 文本等文件",
         "",
@@ -111,6 +113,16 @@ def _readme(rows: list, groups: list, missing: list, generated_at: str) -> str:
         "  只有微信本机已缓存的媒体文件会出现在包里；未缓存到的消息在"
         "「明细.csv」里保留文字占位。",
     ]
+    if encrypted:
+        lines.append(
+            f"  另有 {len(encrypted)} 条图片消息因微信 4.0 加密格式（AES）暂未解密，"
+            "明细里保留［图片］占位：")
+        for row in encrypted[:50]:
+            lines.append(
+                f"    - {row.get('group', '')} {row.get('sent_at', '')} "
+                f"{row.get('sender', '')}（{row.get('content', '')}）")
+        if len(encrypted) > 50:
+            lines.append(f"    …其余 {len(encrypted) - 50} 条见明细.csv")
     if missing:
         lines.append(f"  本次有 {len(missing)} 条消息的附件没在微信本机缓存里找到：")
         for row in missing[:100]:
@@ -119,7 +131,7 @@ def _readme(rows: list, groups: list, missing: list, generated_at: str) -> str:
                 f"{row.get('sender', '')}（{row.get('content', '')}）")
         if len(missing) > 100:
             lines.append(f"    …其余 {len(missing) - 100} 条见明细.csv")
-    else:
+    if not missing and not encrypted:
         lines.append("  本次所选消息的附件都已随包导出。")
     return "\n".join(lines) + "\n"
 
@@ -151,6 +163,7 @@ def build_export_bundle(rows: list, media_by_id: dict | None = None,
     seq: dict[str, int] = {}
     pairs: list[tuple[dict, list]] = []
     missing: list[dict] = []
+    encrypted: list[dict] = []
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for row, message in zip(rows, messages):
@@ -167,13 +180,17 @@ def build_export_bundle(rows: list, media_by_id: dict | None = None,
                 archive.writestr(arcname, data)
                 rels.append(arcname)
             if not rels and kind in KIND_DIRS:
-                missing.append(row)
+                status = str(message.get("media_status", "") or "")
+                (encrypted if "加密" in status else missing).append(row)
             pairs.append((row, rels))
         archive.writestr("明细.csv", _csv_bytes(pairs))
         stamp = generated_at or time.strftime("%Y-%m-%d %H:%M")
-        archive.writestr("导出说明.txt", _readme(rows, groups, missing, stamp).encode("utf-8"))
+        archive.writestr(
+            "导出说明.txt",
+            _readme(rows, groups, missing, stamp, encrypted).encode("utf-8"))
 
-    summary = {"rows": len(rows), "missing": len(missing), "groups": groups}
+    summary = {"rows": len(rows), "missing": len(missing),
+               "encrypted": len(encrypted), "groups": groups}
     return buffer.getvalue(), summary
 
 

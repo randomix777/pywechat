@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -126,8 +127,8 @@ class ExportBundleTests(unittest.TestCase):
             png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
             import unittest.mock as mock
 
-            with mock.patch("pyweixin.media_attachments._file_index",
-                            return_value={"deadbeef": [png]}), \
+            with mock.patch("pyweixin.media_attachments._scan_caches",
+                            return_value=({"deadbeef": [png]}, {})), \
                  mock.patch("pyweixin.media_attachments._account_root",
                             return_value=Path(tmp)):
                 data, info = build_export_bundle(
@@ -137,6 +138,77 @@ class ExportBundleTests(unittest.TestCase):
         self.assertEqual(len(media), 1)
         self.assertTrue(media[0].endswith(".png"), media[0])
         self.assertEqual(info["missing"], 0)
+
+    def test_encrypted_image_is_reported_not_as_missing(self):
+        import io
+        import tempfile
+        import unittest.mock as mock
+        import zipfile
+        from pathlib import Path
+
+        from pyweixin.export_bundle import build_export_bundle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dat = Path(tmp) / "msg" / "attach" / "room" / "2026-10" / "Img" / "abc.dat"
+            dat.parent.mkdir(parents=True)
+            dat.write_bytes(b"\x07\x08V2\x08\x07" + b"0" * 32)
+            with mock.patch("pyweixin.media_attachments._scan_caches",
+                            return_value=({}, {})), \
+                 mock.patch("pyweixin.media_attachments._account_root",
+                            return_value=Path(tmp)):
+                data, info = build_export_bundle(
+                    self._rows(), {"m2": {"md5": "abc"}})
+        self.assertEqual(info["encrypted"], 1)
+        self.assertEqual(info["missing"], 0)
+        readme = zipfile.ZipFile(io.BytesIO(data)).read("导出说明.txt").decode("utf-8")
+        self.assertIn("加密", readme)
+        self.assertNotIn("都已随包导出", readme)
+
+
+class AttachCachedFilesTests(unittest.TestCase):
+    """本地缓存附件关联：能拿到的接上，4.0 加密图片如实标注。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _attach(self, messages, by_id=None, by_name=None):
+        import unittest.mock as mock
+
+        from pyweixin.media_attachments import attach_cached_files
+
+        with mock.patch("pyweixin.media_attachments._scan_caches",
+                        return_value=(by_id or {}, by_name or {})), \
+             mock.patch("pyweixin.media_attachments._account_root",
+                        return_value=self.root):
+            return attach_cached_files(messages)
+
+    def test_encrypted_v4_image_is_not_attached(self):
+        dat = self.root / "abc.dat"
+        dat.write_bytes(b"\x07\x08V2\x08\x07" + b"0" * 32)
+        [message] = self._attach(
+            [{"kind": "image", "media": {"md5": "abc"}}], by_id={"abc": [dat]}, by_name={})
+        self.assertEqual(message["attachments"], [])
+        self.assertIn("加密", message["media_status"])
+
+    def test_video_thumbnail_is_attached(self):
+        thumb = self.root / "vid1_thumb.jpg"
+        thumb.write_bytes(b"\xff\xd8\xff\xe0" + b"0" * 16)
+        [message] = self._attach(
+            [{"kind": "video", "media": {"md5": "vid1"}}],
+            by_id={"vid1": [thumb], "vid1_thumb": [thumb]}, by_name={})
+        self.assertEqual(message["attachments"], [str(thumb)])
+
+    def test_file_matched_by_name(self):
+        doc = self.root / "invoice.pdf"
+        doc.write_bytes(b"%PDF-1.4\n")
+        [message] = self._attach(
+            [{"kind": "file", "media": {"filename": "invoice.pdf"}}],
+            by_id={}, by_name={"invoice.pdf": [doc]})
+        self.assertEqual(message["attachments"], [str(doc)])
 
 
 if __name__ == "__main__":
