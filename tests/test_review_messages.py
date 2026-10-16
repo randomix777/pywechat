@@ -56,70 +56,87 @@ class RecentMessagesTests(unittest.TestCase):
         self.assertEqual(self.store.recent_messages(self.tenant, ["不存在的群"], 50), [])
 
 
-class ReviewXlsxTests(unittest.TestCase):
-    """xlsx 手写包的回归测试：标准库 zip，保证 Excel 能打开。"""
+class MessagesMediaTests(unittest.TestCase):
+    """导出附件要靠 media_json 里的 md5 关联本机缓存文件。"""
 
-    def test_workbook_contains_headers_and_rows(self):
-        import zipfile
+    def setUp(self):
+        self.store = OrderStore(":memory:")
+        self.tenant = self.store.create_merchant("测试店铺")["merchant_id"]
 
-        from pyweixin.merchant_ui import build_review_xlsx
+    def tearDown(self):
+        self.store.close()
 
-        rows = [
-            {"group": "鲜果群", "sender": "张姐<>&\"",
-             "content": "苹果2箱", "kind": "文本", "sent_at": "2026-10-02 12:10"},
+    def test_media_is_returned_by_id(self):
+        result = self.store.add_import(
+            self.tenant, "鲜果群",
+            [{"sender": "张姐", "content": "图片", "kind": "image",
+              "sent_at": "2026-10-2 12:10", "source_id": "i1",
+              "media": {"md5": "abc123"}}], "seed")
+        mid = result["message_ids"][0]
+        media = self.store.messages_media(self.tenant, [mid])
+        self.assertEqual(media[mid]["md5"], "abc123")
+
+    def test_unknown_ids_are_absent(self):
+        self.assertEqual(self.store.messages_media(self.tenant, ["nope"]), {})
+        self.assertEqual(self.store.messages_media(self.tenant, []), {})
+
+
+class ExportBundleTests(unittest.TestCase):
+    """完整包：明细表 + 分类媒体文件夹 + 说明文件，全在一个 zip 里。"""
+
+    def _rows(self):
+        return [
+            {"id": "m1", "group": "鲜果群", "sender": "张姐",
+             "content": "苹果2箱", "kind": "text", "sent_at": "2026-10-02 12:10"},
+            {"id": "m2", "group": "鲜果群", "sender": "李叔",
+             "content": "［图片］", "kind": "image", "sent_at": "2026-10-02 12:11"},
         ]
-        names = zipfile.ZipFile(__import__("io").BytesIO(build_review_xlsx(rows))).namelist()
-        self.assertIn("xl/worksheets/sheet1.xml", names)
-        self.assertIn("xl/workbook.xml", names)
-        sheet = zipfile.ZipFile(
-            __import__("io").BytesIO(build_review_xlsx(rows))
-        ).read("xl/worksheets/sheet1.xml").decode("utf-8")
-        for text in ("会话", "发送人", "内容", "鲜果群", "苹果2箱"):
-            self.assertIn(text, sheet)
-        # 特殊字符必须转义，否则 Excel 报文件损坏。
-        self.assertIn("张姐&lt;&gt;&amp;&quot;", sheet)
-        self.assertNotIn("张姐<>&\"", sheet)
 
-    def test_empty_rows_still_valid_workbook(self):
+    def test_bundle_has_table_media_folder_and_readme(self):
+        import io
         import zipfile
 
-        from pyweixin.merchant_ui import build_review_xlsx
+        from pyweixin.export_bundle import build_export_bundle
 
-        sheet = zipfile.ZipFile(
-            __import__("io").BytesIO(build_review_xlsx([]))
-        ).read("xl/worksheets/sheet1.xml").decode("utf-8")
-        self.assertIn("会话", sheet)
+        data, info = build_export_bundle(
+            self._rows(), {"m2": {}}, generated_at="2026-10-15 21:00")
+        # media_by_id 空 media → 关联不到缓存，图片计数在 missing 里。
+        self.assertEqual(info["rows"], 2)
+        archive = zipfile.ZipFile(io.BytesIO(data))
+        names = archive.namelist()
+        self.assertIn("明细.csv", names)
+        self.assertIn("导出说明.txt", names)
+        csv_text = archive.read("明细.csv").decode("utf-8-sig")
+        self.assertIn("会话", csv_text)
+        self.assertIn("苹果2箱", csv_text)
+        readme = archive.read("导出说明.txt").decode("utf-8")
+        self.assertIn("鲜果群", readme)
 
-
-class ReviewDocxTests(unittest.TestCase):
-    """docx 手写包的回归测试：标准库 zip，保证 Word 能打开。"""
-
-    def test_document_contains_table_and_rows(self):
+    def test_bundle_places_image_in_media_folder(self):
+        import io
+        import tempfile
         import zipfile
+        from pathlib import Path
 
-        from pyweixin.merchant_ui import build_review_docx
+        from pyweixin.export_bundle import build_export_bundle
 
-        rows = [
-            {"group": "鲜果群", "sender": "张姐<>&\"",
-             "content": "苹果2箱", "kind": "文本", "sent_at": "2026-10-02 12:10"},
-        ]
-        archive = zipfile.ZipFile(__import__("io").BytesIO(build_review_docx(rows)))
-        self.assertIn("word/document.xml", archive.namelist())
-        document = archive.read("word/document.xml").decode("utf-8")
-        for text in ("会话", "发送人", "内容", "鲜果群", "苹果2箱"):
-            self.assertIn(text, document)
-        self.assertIn("张姐&lt;&gt;&amp;&quot;", document)
-        self.assertNotIn("张姐<>&\"", document)
+        with tempfile.TemporaryDirectory() as tmp:
+            # 造一个真能被识别的 png 缓存文件，用微信的 md5 命名与关联。
+            png = Path(tmp) / "deadbeef.png"
+            png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
+            import unittest.mock as mock
 
-    def test_empty_rows_still_valid_document(self):
-        import zipfile
-
-        from pyweixin.merchant_ui import build_review_docx
-
-        document = zipfile.ZipFile(
-            __import__("io").BytesIO(build_review_docx([]))
-        ).read("word/document.xml").decode("utf-8")
-        self.assertIn("会话", document)
+            with mock.patch("pyweixin.media_attachments._file_index",
+                            return_value={"deadbeef": [png]}), \
+                 mock.patch("pyweixin.media_attachments._account_root",
+                            return_value=Path(tmp)):
+                data, info = build_export_bundle(
+                    self._rows(), {"m2": {"md5": "deadbeef"}})
+        archive = zipfile.ZipFile(io.BytesIO(data))
+        media = [n for n in archive.namelist() if n.startswith("图片/")]
+        self.assertEqual(len(media), 1)
+        self.assertTrue(media[0].endswith(".png"), media[0])
+        self.assertEqual(info["missing"], 0)
 
 
 if __name__ == "__main__":

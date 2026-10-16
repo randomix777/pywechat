@@ -14,7 +14,6 @@
 """
 from __future__ import annotations
 
-import csv
 import json
 import logging
 import os
@@ -29,6 +28,7 @@ from typing import Any, Callable, Mapping
 
 from .application import AppEvents, MerchantApplication
 from .conversations import Conversation, ConversationKind, search
+from .export_bundle import build_export_bundle
 from .dashboard import METRIC_DEFINITIONS, STATUS_LABELS, HomeView
 from .history_read import HistoryProgress, HistoryRange, ReadMode, TimeWindow, DEFAULT_MAX_MESSAGES
 from .live_listen import (
@@ -115,167 +115,6 @@ def conv_rows_height(count: int) -> int:
     只有 2 个群却占着 12 行的高度，页面下半截全是空白，看着像坏了。
     """
     return max(CONV_ROWS_MIN, min(CONV_ROWS_MAX, int(count)))
-
-
-def build_review_docx(rows: list) -> bytes:
-    """核对明细拼成 docx 文件字节。同样不依赖 python-docx：docx 也是
-    zip 包 xml，一张表走天下，Word/WPS 直接打开。
-    """
-    import io
-    import zipfile
-    from xml.sax.saxutils import escape
-
-    def _clean(text: Any) -> str:
-        # Word 见到非法 XML 字符直接报损坏：\t\n 留下，其余控制字符去掉。
-        return "".join(
-            ch for ch in str(text or "")
-            if ch in ("\n", "\t") or ch >= " "
-        )
-
-    def _cell(text: str, bold: bool = False, width: str = "") -> str:
-        run = f"<w:r><w:rPr>{'<w:b/>' if bold else ''}</w:rPr><w:t xml:space=\"preserve\">{escape(text)}</w:t></w:r>"
-        paragraph = f"<w:p><w:pPr><w:spacing w:after=\"0\"/></w:pPr>{run}</w:p>"
-        tc_w = f"<w:tcW w:w=\"{width}\" w:type=\"dxa\"/>" if width else ""
-        return f"<w:tc><w:tcPr>{tc_w}</w:tcPr>{paragraph}</w:tc>"
-
-    headers = ["会话", "时间", "发送人", "类型", "内容"]
-    widths = ["1800", "2000", "2000", "1200", "5600"]
-    table_rows = ["<w:tr>" + "".join(
-        _cell(header, bold=True, width=width)
-        for header, width in zip(headers, widths)
-    ) + "</w:tr>"]
-    for row in rows or []:
-        values = [row.get("group", ""), row.get("sent_at", ""), row.get("sender", ""),
-                  row.get("kind", ""), row.get("content", "")]
-        table_rows.append("<w:tr>" + "".join(
-            _cell(_clean(value), width=width)
-            for value, width in zip(values, widths)
-        ) + "</w:tr>")
-    document = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
-        "<w:body><w:tbl>"
-        "<w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/>"
-        "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\"/>"
-        "<w:left w:val=\"single\" w:sz=\"4\"/>"
-        "<w:bottom w:val=\"single\" w:sz=\"4\"/>"
-        "<w:right w:val=\"single\" w:sz=\"4\"/>"
-        "<w:insideH w:val=\"single\" w:sz=\"4\"/>"
-        "<w:insideV w:val=\"single\" w:sz=\"4\"/></w:tblBorders></w:tblPr>"
-        f"<w:tblGrid>{''.join(f'<w:gridCol w:w=\"{w}\"/>' for w in widths)}</w:tblGrid>"
-        f"{''.join(table_rows)}</w:tbl></w:body></w:document>"
-    )
-    content_types = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
-        "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
-        "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
-        "<Override PartName=\"/word/document.xml\" "
-        "ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>"
-        "</Types>"
-    )
-    rels = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
-        "<Relationship Id=\"rId1\" "
-        "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" "
-        "Target=\"word/document.xml\"/></Relationships>"
-    )
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", content_types)
-        archive.writestr("_rels/.rels", rels)
-        archive.writestr("word/document.xml", document)
-    return buffer.getvalue()
-
-
-def build_review_xlsx(rows: list) -> bytes:
-    """核对明细拼成 xlsx 文件字节。不依赖 openpyxl：xlsx 就是 zip 包 xml，
-    商户机器可能没网装不了库，标准库手写最稳，Excel/WPS 直接打开。
-
-    单元格全用 inline 字符串，不建 sharedStrings 表 —— 实现短一半，
-    几千行以内体积差别可忽略。
-    """
-    import io
-    import zipfile
-    from xml.sax.saxutils import escape
-
-    def _clean(text: Any) -> str:
-        # Excel 见到控制字符直接报"文件损坏"：\n\t 留下，其余控制字符去掉。
-        return "".join(
-            ch for ch in str(text or "")
-            if ch == "\n" or ch == "\t" or ch >= " "
-        )
-
-    def _col(index: int) -> str:
-        letters = ""
-        index += 1
-        while index:
-            index, rest = divmod(index - 1, 26)
-            letters = chr(65 + rest) + letters
-        return letters
-
-    headers = ["会话", "时间", "发送人", "类型", "内容"]
-    widths = [18, 20, 18, 12, 80]
-    sheet_rows = ["<row r=\"1\">" + "".join(
-        f"<c r=\"{_col(i)}1\" t=\"inlineStr\"><is><t>{escape(h)}</t></is></c>"
-        for i, h in enumerate(headers)
-    ) + "</row>"]
-    for number, row in enumerate(rows or [], start=2):
-        values = [row.get("group", ""), row.get("sent_at", ""), row.get("sender", ""),
-                  row.get("kind", ""), row.get("content", "")]
-        sheet_rows.append("<row r=\"%d\">" % number + "".join(
-            f"<c r=\"{_col(i)}{number}\" t=\"inlineStr\"><is><t>{escape(_clean(v))}</t></is></c>"
-            for i, v in enumerate(values)
-        ) + "</row>")
-    cols = "".join(
-        f"<col min=\"{i + 1}\" max=\"{i + 1}\" width=\"{w}\" customWidth=\"1\"/>"
-        for i, w in enumerate(widths)
-    )
-    sheet = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
-        f"<cols>{cols}</cols><sheetData>{''.join(sheet_rows)}</sheetData></worksheet>"
-    )
-    content_types = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
-        "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
-        "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
-        "<Override PartName=\"/xl/workbook.xml\" "
-        "ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
-        "<Override PartName=\"/xl/worksheets/sheet1.xml\" "
-        "ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
-        "</Types>"
-    )
-    rels = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
-        "<Relationship Id=\"rId1\" "
-        "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" "
-        "Target=\"xl/workbook.xml\"/></Relationships>"
-    )
-    workbook = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
-        "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
-        "<sheets><sheet name=\"读取明细\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>"
-    )
-    workbook_rels = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
-        "<Relationship Id=\"rId1\" "
-        "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" "
-        "Target=\"worksheets/sheet1.xml\"/></Relationships>"
-    )
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", content_types)
-        archive.writestr("_rels/.rels", rels)
-        archive.writestr("xl/workbook.xml", workbook)
-        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
-        archive.writestr("xl/worksheets/sheet1.xml", sheet)
-    return buffer.getvalue()
 
 
 class MerchantWindow:
@@ -1850,11 +1689,9 @@ class MerchantWindow:
 
         actions = ttk.Frame(self.footer_body)
         actions.pack(fill="x")
-        ttk.Button(actions, text="导出CSV", command=self._export_review_csv).pack(side="left")
-        ttk.Button(actions, text="导出XLSX", command=self._export_review_xlsx).pack(side="left", padx=8)
-        ttk.Button(actions, text="导出DOCX", command=self._export_review_docx).pack(side="left")
-        ttk.Button(actions, text="导出JSON", command=self._export_review_json).pack(side="left")
-        ttk.Button(actions, text="上一步", command=lambda: self._show_step(WizardStep.READ)).pack(side="left")
+        ttk.Button(actions, text="导出完整包（ZIP）", style="Big.TButton",
+                   command=self._export_review_bundle).pack(side="left")
+        ttk.Button(actions, text="上一步", command=lambda: self._show_step(WizardStep.READ)).pack(side="left", padx=8)
         ttk.Button(actions, text="下一步：智能整理", style="Big.TButton",
                    command=lambda: self._go_next_from_history(WizardStep.ANALYZE)).pack(side="left", padx=8)
 
@@ -1935,10 +1772,9 @@ class MerchantWindow:
         return cleaned[:limit]
 
     def _suggest_export_name(self, ext: str, rows: list | None = None) -> str:
-        """预生成导出文件名：产品名-内容-群-条数-时间。
+        """预生成导出文件名：产品名-群-条数-时间。
 
-        商户以前每次都要手敲文件名 —— 四个格式各敲一次。名字里带上
-        群、条数和时间，存完在文件夹里一眼认得出来，不用来回改。
+        名字里带上群、条数和时间，存完在文件夹里一眼认得出来，不用来回改。
         """
         rows = rows if rows is not None else self._export_review_rows()
         groups = []
@@ -1953,7 +1789,8 @@ class MerchantWindow:
         else:
             scope = "会话"
         stamp = time.strftime("%Y%m%d_%H%M")
-        return f"微信AI智能助理-核对明细-{scope}-{len(rows)}条-{stamp}.{ext}"
+        label = "完整导出" if ext == "zip" else "核对明细"
+        return f"微信AI智能助理-{label}-{scope}-{len(rows)}条-{stamp}.{ext}"
 
     @staticmethod
     def _export_initial_dir() -> str:
@@ -1993,86 +1830,43 @@ class MerchantWindow:
             return rows
         return None
 
-    def _export_review_csv(self) -> None:
-        rows = self._check_exportable()
-        if rows is None:
-            return
-        path = self._ask_saveas(
-            title="导出读取明细",
-            initialfile=self._suggest_export_name("csv", rows),
-            filetypes=[("CSV 表格", "*.csv"), ("所有文件", "*.*")],
-            defaultextension=".csv")
-        if not path:
-            return
-        try:
-            with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(["会话", "时间", "发送人", "类型", "内容"])
-                for row in rows:
-                    writer.writerow([row.get("group", ""), row.get("sent_at", ""),
-                                     row.get("sender", ""), row.get("kind", ""),
-                                     row.get("content", "")])
-        except Exception as exc:
-            messagebox.showerror("导出失败", f"写文件时出错：{exc}"[:200])
-            return
-        messagebox.showinfo("已导出", f"共导出 {len(rows)} 条：\n{path}")
+    def _export_review_bundle(self) -> None:
+        """导出完整包：一个 zip，内含明细表 + 图片/视频/音频/附件实体文件。
 
-    def _export_review_json(self) -> None:
+        只打包微信本机已缓存的媒体；没缓存到的消息在表格里保留占位，
+        并在包内「导出说明.txt」里列出来。
+        """
         rows = self._check_exportable()
         if rows is None:
             return
+        store = getattr(self.app, "orders", None)
+        tenant = getattr(self.app, "tenant", "")
+        media_by_id: dict = {}
+        if store is not None:
+            try:
+                media_by_id = store.messages_media(
+                    tenant, [row.get("id") for row in rows])
+            except Exception:
+                media_by_id = {}
         path = self._ask_saveas(
-            title="导出读取明细",
-            initialfile=self._suggest_export_name("json", rows),
-            filetypes=[("JSON", "*.json"), ("所有文件", "*.*")],
-            defaultextension=".json")
+            title="导出完整包",
+            initialfile=self._suggest_export_name("zip", rows),
+            filetypes=[("ZIP 压缩包", "*.zip"), ("所有文件", "*.*")],
+            defaultextension=".zip")
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(rows, handle, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            messagebox.showerror("导出失败", f"写文件时出错：{exc}"[:200])
-            return
-        messagebox.showinfo("已导出", f"共导出 {len(rows)} 条：\n{path}")
-
-    def _export_review_xlsx(self) -> None:
-        rows = self._check_exportable()
-        if rows is None:
-            return
-        path = self._ask_saveas(
-            title="导出读取明细",
-            initialfile=self._suggest_export_name("xlsx", rows),
-            filetypes=[("Excel 表格", "*.xlsx"), ("所有文件", "*.*")],
-            defaultextension=".xlsx")
-        if not path:
-            return
-        try:
+            data, info = build_export_bundle(rows, media_by_id)
             with open(path, "wb") as handle:
-                handle.write(build_review_xlsx(rows))
+                handle.write(data)
         except Exception as exc:
             messagebox.showerror("导出失败", f"写文件时出错：{exc}"[:200])
             return
-        messagebox.showinfo("已导出", f"共导出 {len(rows)} 条：\n{path}")
-
-    def _export_review_docx(self) -> None:
-        rows = self._check_exportable()
-        if rows is None:
-            return
-        path = self._ask_saveas(
-            title="导出读取明细",
-            initialfile=self._suggest_export_name("docx", rows),
-            filetypes=[("Word 文档", "*.docx"), ("所有文件", "*.*")],
-            defaultextension=".docx")
-        if not path:
-            return
-        try:
-            with open(path, "wb") as handle:
-                handle.write(build_review_docx(rows))
-        except Exception as exc:
-            messagebox.showerror("导出失败", f"写文件时出错：{exc}"[:200])
-            return
-        messagebox.showinfo("已导出", f"共导出 {len(rows)} 条：\n{path}")
+        message = f"共导出 {info.get('rows', len(rows))} 条：\n{path}"
+        if info.get("missing"):
+            message += (f"\n\n有 {info['missing']} 条消息的附件没在微信本机缓存里找到，"
+                        "已在明细里保留占位，详见包内「导出说明.txt」。")
+        messagebox.showinfo("已导出完整包", message)
 
     # ------------------------------------------------- ⑥ 智能整理（额度同屏）
 

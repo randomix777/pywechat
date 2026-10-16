@@ -1323,6 +1323,32 @@ class OrderStore:
             })
         return out
 
+    def messages_media(self, tenant: str, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """按 message_id 取 ``media_json``（导出附件时用来关联本机缓存文件）。
+
+        核对页的 ``recent_messages`` 不带 media（页面上用不到），导出要按
+        md5 找微信缓存，所以单独查一次。拿不到的记空字典，调用方照常走。
+        """
+        clean = [str(i) for i in (ids or []) if str(i or "").strip()]
+        out: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(clean), 500):
+            chunk = clean[start:start + 500]
+            marks = ",".join("?" for _ in chunk)
+            try:
+                rows = self.db.execute(
+                    "SELECT id, media_json FROM messages"
+                    f" WHERE merchant_id=? AND id IN ({marks})",
+                    [tenant, *chunk]).fetchall()
+            except Exception:
+                continue
+            for row in rows:
+                try:
+                    media = json.loads(row["media_json"] or "{}")
+                except Exception:
+                    media = {}
+                out[str(row["id"])] = media if isinstance(media, dict) else {}
+        return out
+
     def parse_import(self, tenant: str, group: str, import_id: str | None = None, timezone_name: str="America/Toronto") -> dict[str,int]:
         """Use configured model with deterministic validation, or explicit demo rules."""
         self._plan(tenant); rows=self._messages(tenant,group,import_id)

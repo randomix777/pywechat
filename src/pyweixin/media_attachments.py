@@ -78,8 +78,13 @@ def attach_cached_files(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return messages
 
 
-def image_data_url(path: str) -> str:
-    """Read a cached WeChat image; decode the legacy single-byte XOR .dat format."""
+def image_bytes(path: str) -> tuple[bytes, str]:
+    """Read a cached WeChat image and decode the legacy ``.dat`` format.
+
+    Returns ``(data, ext)`` where ``ext`` is a real image extension
+    (``jpg``/``png``/``gif``/``webp``) — the exporter needs the bytes and a
+    truthful name, ``image_data_url`` needs a MIME type.
+    """
     file_path = Path(path)
     data = file_path.read_bytes()
     if file_path.suffix.lower() == ".dat" and data:
@@ -90,15 +95,26 @@ def image_data_url(path: str) -> str:
                 data = decoded
                 break
     if data.startswith(b"\xff\xd8\xff"):
-        mime = "image/jpeg"
+        ext = "jpg"
     elif data.startswith(b"\x89PNG"):
-        mime = "image/png"
+        ext = "png"
     elif data.startswith(b"GIF8"):
-        mime = "image/gif"
+        ext = "gif"
     elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-        mime = "image/webp"
+        ext = "webp"
     else:
         raise ValueError("图片缓存无法识别")
+    return data, ext
+
+
+def image_data_url(path: str) -> str:
+    """Read a cached WeChat image; decode the legacy single-byte XOR .dat format."""
+    try:
+        data, ext = image_bytes(path)
+    except ValueError:
+        raise
+    mime = {"jpg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp"}[ext]
     if len(data) > 2 * 1024 * 1024:
         try:
             from io import BytesIO
@@ -150,4 +166,4 @@ def document_text(path: str, *, max_chars: int = 20000) -> str:
     return text
 
 
-__all__ = ["attach_cached_files", "document_text", "image_data_url"]
+__all__ = ["attach_cached_files", "document_text", "image_bytes", "image_data_url"]
