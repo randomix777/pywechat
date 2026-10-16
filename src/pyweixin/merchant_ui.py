@@ -3164,6 +3164,7 @@ class MerchantWindow:
             )
             if not messagebox.askyesno("分析历史消息？", prompt, parent=self.root):
                 return
+            role = self._picked_role()
             analysis_messages = summary_task.messages_for_history(self.app, result)
             scope_note = ("本次无新增，已按确认分析所选会话的历史消息。"
                           if is_update else "已按确认分析所选会话的历史消息。")
