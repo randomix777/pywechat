@@ -17,7 +17,7 @@ for _name in ("business_agent", "order_agent", "support_triage"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.model_catalog import (  # noqa: E402
+from wechat_ai_assistant.model_catalog import (  # noqa: E402
     CatalogStatus,
     CatalogStore,
     ModelCatalog,
@@ -27,7 +27,7 @@ from pyweixin.model_catalog import (  # noqa: E402
     reject_client_model_override,
     stable_alias,
 )
-from pyweixin.product import ProductStore  # noqa: E402
+from wechat_ai_assistant.product import ProductStore  # noqa: E402
 
 #: 仿真的上游载荷。刻意包含 `key` / `options` / `env`，用来验证它们不外泄。
 FAKE_UPSTREAM = [
@@ -302,7 +302,7 @@ class FreeQuotaTests(unittest.TestCase):
 
 class ClientOverrideTests(unittest.TestCase):
     def test_client_cannot_name_provider_model_or_upstream(self):
-        from pyweixin.client_login import GatewayError
+        from wechat_ai_assistant.client_login import GatewayError
 
         for payload in (
             {"provider": "openai"},
@@ -317,14 +317,14 @@ class ClientOverrideTests(unittest.TestCase):
                 reject_client_model_override(payload)
 
     def test_client_may_send_the_product_alias(self):
-        from pyweixin.client_login import GatewayError
+        from wechat_ai_assistant.client_login import GatewayError
 
         reject_client_model_override({"model": "abc-123", "message": {}})   # 不抛
 
 
 class ResolveTests(unittest.TestCase):
     def test_unavailable_model_is_refused_not_replaced(self):
-        from pyweixin.client_login import GatewayError
+        from wechat_ai_assistant.client_login import GatewayError
 
         catalog = built()
         with self.assertRaises(GatewayError) as caught:
@@ -332,7 +332,7 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "model_unavailable")
 
     def test_unknown_alias_is_refused(self):
-        from pyweixin.client_login import GatewayError
+        from wechat_ai_assistant.client_login import GatewayError
 
         catalog = verified(built(), FAST)
         with self.assertRaises(GatewayError) as caught:
@@ -349,7 +349,7 @@ class ResolveTests(unittest.TestCase):
 class FakeBackendIsolationTests(unittest.TestCase):
     def test_fake_backend_is_not_a_catalog_source(self):
         """FakeBackend 不在正式目录里：它没有 provider_id / model_id。"""
-        from pyweixin.opencode import LocalRuleAdapter
+        from wechat_ai_assistant.opencode import LocalRuleAdapter
 
         adapter = LocalRuleAdapter()
         self.assertFalse(getattr(adapter, "is_model", False))

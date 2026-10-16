@@ -21,8 +21,8 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.client_login import GatewayError  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.client_login import GatewayError  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 VALID = {
     "intent": "new_order", "customer_alias": "张姐", "target_order": None,
@@ -173,7 +173,7 @@ class ClarificationTests(unittest.TestCase):
             self.tenant, "群A", message["id"],
             {**VALID, "intent": "unclear", "items": [], "evidence": ["来两箱那个"]},
         )
-        from pyweixin.dashboard import DashboardBuilder
+        from wechat_ai_assistant.dashboard import DashboardBuilder
 
         builder = DashboardBuilder(self.store, self.tenant)
         self.assertEqual(builder.stock_summary(), [], "澄清任务不是备货")
@@ -442,12 +442,12 @@ class BillingSourceTests(unittest.TestCase):
     def setUp(self):
         import tempfile
 
-        from pyweixin.gateway import ProductGateway
-        from pyweixin.model_catalog import (
+        from wechat_ai_assistant.gateway import ProductGateway
+        from wechat_ai_assistant.model_catalog import (
             CatalogStatus, CatalogStore, OperatorModelPolicy, PricingClass, build_catalog,
         )
-        from pyweixin.opencode import LocalRuleAdapter
-        from pyweixin.product import ProductStore
+        from wechat_ai_assistant.opencode import LocalRuleAdapter
+        from wechat_ai_assistant.product import ProductStore
 
         self.dir = tempfile.TemporaryDirectory()
         self.store = ProductStore(":memory:")
@@ -613,7 +613,7 @@ class BillingSourceTests(unittest.TestCase):
 
     def test_client_never_computes_the_charge_itself(self):
         """客户端拿到的必须是服务端数字；本地没有第二套算法。"""
-        from pyweixin.local_parse import LocalParseService
+        from wechat_ai_assistant.local_parse import LocalParseService
 
         source = source_of(LocalParseService)
         # 服务端字段被读取并原样转述…
@@ -627,7 +627,7 @@ class BillingSourceTests(unittest.TestCase):
     def test_wizard_summary_aggregates_server_numbers_only(self):
         import inspect
 
-        from pyweixin.wizard import Wizard
+        from wechat_ai_assistant.wizard import Wizard
 
         source = inspect.getsource(Wizard.analyze)
         self.assertIn("billing_fact", source, "汇总必须来自服务端事实")
@@ -635,7 +635,7 @@ class BillingSourceTests(unittest.TestCase):
         self.assertNotIn("charged += 1", source)
 
     def test_gateway_error_carries_billing_facts(self):
-        from pyweixin.client_login import GatewayError
+        from wechat_ai_assistant.client_login import GatewayError
 
         error = GatewayError("pricing_changed", "变了", 409, billing={"cost_micro_usd_per_job": 3})
         self.assertEqual(error.billing["cost_micro_usd_per_job"], 3)
@@ -654,7 +654,7 @@ class UpstreamModelIdentityTests(unittest.TestCase):
     """能力验证与正式任务必须走同一套路由，并且**核对**上游实际跑的是哪个模型。"""
 
     def _adapter(self, replies, requested=("opencode-go", "qwen3.6-plus"), returned=None):
-        from pyweixin.opencode import OpenCodeAdapter
+        from wechat_ai_assistant.opencode import OpenCodeAdapter
 
         seen: list[dict] = []
         returned = returned or requested
@@ -704,7 +704,7 @@ class UpstreamModelIdentityTests(unittest.TestCase):
 
     def test_missing_upstream_model_identity_is_reported_as_unconfirmed(self):
         """上游没回模型标识时标「未能独立确认」，**不编造**一致性证据。"""
-        from pyweixin.opencode import OpenCodeAdapter
+        from wechat_ai_assistant.opencode import OpenCodeAdapter
 
         seen: list[dict] = []
 

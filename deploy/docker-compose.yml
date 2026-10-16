@@ -8,25 +8,25 @@
 # Before first start: copy deploy/gateway.env.example to deploy/gateway.env and
 # fill in the secrets. Never commit the filled-in file.
 
-name: pyweixin-gateway
+name: wechat-ai-assistant-gateway
 
 services:
   gateway:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: pyweixin-gateway:1.0.0
+    image: wechat-ai-assistant-gateway:1.0.0
     restart: unless-stopped
     env_file:
       - ./gateway.env
     environment:
       # Loopback inside the container: the gateway never listens on a public
       # interface directly. TLS is terminated by the reverse proxy below.
-      PYWEIXIN_GATEWAY_HOST: "0.0.0.0"
-      PYWEIXIN_GATEWAY_PORT: "8080"
-      PYWEIXIN_PRODUCT_DB: "/data/product.db"
-      PYWEIXIN_OPENCODE_URL: "http://opencode:4096"
-      PYWEIXIN_SECURE_COOKIES: "1"
+      WECHAT_AI_GATEWAY_HOST: "0.0.0.0"
+      WECHAT_AI_GATEWAY_PORT: "8080"
+      WECHAT_AI_PRODUCT_DB: "/data/product.db"
+      WECHAT_AI_OPENCODE_URL: "http://opencode:4096"
+      WECHAT_AI_SECURE_COOKIES: "1"
     volumes:
       - gateway-data:/data
     depends_on:

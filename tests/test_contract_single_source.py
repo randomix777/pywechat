@@ -38,12 +38,12 @@ from order_agent.contract import INTENTS, ITEM_KEYS, OUTPUT_KEYS, OUTPUT_SCHEMA 
 class SingleSourceTests(unittest.TestCase):
     def test_the_parser_uses_the_contract_schema_itself(self):
         """不是「碰巧相等」，而是**同一个对象**。"""
-        from pyweixin.orders import OpenAICompatibleParser
+        from wechat_ai_assistant.orders import OpenAICompatibleParser
 
         self.assertIs(OpenAICompatibleParser.schema, OUTPUT_SCHEMA)
 
     def test_the_parser_uses_the_contract_intents(self):
-        from pyweixin.orders import OpenAICompatibleParser
+        from wechat_ai_assistant.orders import OpenAICompatibleParser
 
         self.assertEqual(
             list(OpenAICompatibleParser.schema["properties"]["intent"]["enum"]),
@@ -51,7 +51,7 @@ class SingleSourceTests(unittest.TestCase):
         )
 
     def test_the_schema_and_the_validator_agree_on_item_keys(self):
-        from pyweixin.orders import ITEM_KEYS as ValidatorKeys
+        from wechat_ai_assistant.orders import ITEM_KEYS as ValidatorKeys
 
         self.assertEqual(list(OUTPUT_SCHEMA["properties"]["items"]["items"]["required"]),
                          list(ITEM_KEYS))
@@ -84,7 +84,7 @@ class SingleSourceTests(unittest.TestCase):
         self.assertNotIn("context.product_catalog", SYSTEM_PROMPT)
 
         # 实际载荷里真的有 products
-        from pyweixin.deepseek_adapter import _build_prompt
+        from wechat_ai_assistant.deepseek_adapter import _build_prompt
 
         payload = {"messages": [{"role": "user", "content": "x"}],
                    "context": {"products": [{"sku": "S", "name": "苹果", "unit": "箱"}]}}
@@ -109,7 +109,7 @@ class NoDuplicateShapeTests(unittest.TestCase):
 
     def test_no_module_redefines_the_item_key_set(self):
         offenders = []
-        for path in list(ROOT.glob("src/pyweixin/*.py")) + \
+        for path in list(ROOT.glob("src/wechat_ai_assistant/*.py")) + \
                 list(ROOT.glob("packages/order_agent/src/order_agent/*.py")):
             if path.name in self.ALLOWED_LITERALS:
                 continue

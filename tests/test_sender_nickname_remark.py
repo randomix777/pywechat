@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.utils import (  # noqa: E402
+from wechat_ai_assistant.utils import (  # noqa: E402
     UNRESOLVED_SENDER,
     avatar_click_point,
     avatar_group_key,
@@ -130,7 +130,7 @@ class ParseWithNicknameRemarkTests(unittest.TestCase):
 
 class GroupMembersDetailTests(unittest.TestCase):
     def test_remark_is_merged_from_friends_detail(self):
-        from pyweixin.WeChatAuto import Contacts
+        from wechat_ai_assistant.WeChatAuto import Contacts
 
         friends = [
             {"昵称": "张老板", "备注": "苹果哥"},
@@ -145,7 +145,7 @@ class GroupMembersDetailTests(unittest.TestCase):
         ])
 
     def test_without_friends_detail_remark_is_empty(self):
-        from pyweixin.WeChatAuto import Contacts
+        from wechat_ai_assistant.WeChatAuto import Contacts
 
         with patch.object(Contacts, "get_groupMembers_info", return_value=["张老板"]):
             detail = Contacts.get_groupMembers_detail(group="测试群")
@@ -218,7 +218,7 @@ class AvatarClickPointTests(unittest.TestCase):
 
 class AvatarProfileParseTests(unittest.TestCase):
     def test_full_card(self):
-        from pyweixin.Uielements import Special_Labels
+        from wechat_ai_assistant.Uielements import Special_Labels
 
         texts = ["张老板", Special_Labels.WxNum, "wxid_abc",
                  Special_Labels.Remark, "苹果哥", Special_Labels.Region, "广东"]
@@ -236,14 +236,14 @@ class AvatarProfileParseTests(unittest.TestCase):
                          {"昵称": "", "备注": "", "微信号": ""})
 
     def test_wu_remark_is_dropped(self):
-        from pyweixin.Uielements import Special_Labels
+        from wechat_ai_assistant.Uielements import Special_Labels
 
         texts = ["张老板", Special_Labels.Remark, "无"]
         info = parse_avatar_profile_texts(texts)
         self.assertEqual(info["备注"], "")
 
     def test_label_nickname_wins_over_first_line(self):
-        from pyweixin.Uielements import Special_Labels
+        from wechat_ai_assistant.Uielements import Special_Labels
 
         texts = ["显示名", Special_Labels.Nickname, "张老板"]
         self.assertEqual(parse_avatar_profile_texts(texts)["昵称"], "张老板")
@@ -275,7 +275,7 @@ class AvatarResolveGuardsTests(unittest.TestCase):
             return SimpleNamespace(left=0, top=0, right=1000, bottom=1000)
 
     def test_system_and_self_are_skipped_without_clicking(self):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
 
         items = [self.FakeItem("mmui::ChatSystemInfoItemView", 1),
                  self.FakeItem("mmui::ChatTextItemView", 2),
@@ -292,7 +292,7 @@ class AvatarResolveGuardsTests(unittest.TestCase):
         self.assertEqual(clicked.call_count, 1)
 
     def test_click_failure_is_none_not_raise(self):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
 
         items = [self.FakeItem("mmui::ChatTextItemView", 9)]
         with patch.object(utils_mod.Tools, "is_my_bubble", return_value=False):
@@ -303,7 +303,7 @@ class AvatarResolveGuardsTests(unittest.TestCase):
         self.assertEqual(got, [None])
 
     def test_max_clicks_bounds_time(self):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
 
         items = [self.FakeItem("mmui::ChatTextItemView", i) for i in range(5)]
         with patch.object(utils_mod.Tools, "is_my_bubble", return_value=False):
@@ -315,7 +315,7 @@ class AvatarResolveGuardsTests(unittest.TestCase):
         self.assertEqual(got[2], None)
 
     def test_offscreen_item_is_skipped_without_clicking(self):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
         from types import SimpleNamespace
 
         class FarItem(self.FakeItem):
@@ -371,13 +371,13 @@ class BubbleSideTests(unittest.TestCase):
         self.assertEqual(bubble_side(Broken(), chat_list), "middle")
 
     def test_side_short_circuits_pixel_check(self):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
 
         left, chat_list = self._rects((60, 100, 500, 160))
         right, _ = self._rects((500, 100, 840, 160))
         middle, _ = self._rects((60, 100, 840, 160))
         with patch.object(utils_mod.Tools, "is_my_bubble") as pixels:
-            from pyweixin.WeChatAuto import _mine_by_side_or_pixels
+            from wechat_ai_assistant.WeChatAuto import _mine_by_side_or_pixels
             self.assertFalse(_mine_by_side_or_pixels(left, chat_list))
             self.assertTrue(_mine_by_side_or_pixels(right, chat_list))
             self.assertEqual(pixels.call_count, 0)
@@ -435,7 +435,7 @@ class MyNicknameCacheTests(unittest.TestCase):
     """本人昵称取一次就缓存：每跑一次读取都去点自己资料卡纯属浪费。"""
 
     def test_cached_name_skips_contacts(self):
-        import pyweixin.WeChatAuto as auto
+        import wechat_ai_assistant.WeChatAuto as auto
 
         old = auto._MY_NICKNAME
         auto._MY_NICKNAME = "老板娘"
@@ -447,7 +447,7 @@ class MyNicknameCacheTests(unittest.TestCase):
             auto._MY_NICKNAME = old
 
     def test_first_fetch_is_cached(self):
-        import pyweixin.WeChatAuto as auto
+        import wechat_ai_assistant.WeChatAuto as auto
 
         old = auto._MY_NICKNAME
         auto._MY_NICKNAME = None

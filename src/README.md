@@ -1,8 +1,8 @@
-# pyweixin🥇
+# WeChat AI Assistant
 
 ![image](/pics/wechat.png)
 
-## 🍬🍬微信RPA工具,支持4.1+微信自动化
+## 微信 4.x 自动化与 AI 商务助手
 
 pywechat是一个基于pywinauto实现的Windows系统下PC微信自动化(pure uiautomation)的项目(**不涉及逆向Hook操作**)，可以用来收发消息和数据获取。
 注意，本项目开发的初衷为使用UI自动化和分享UI自动化技术，请勿将该工具用于违反微信使用条例的操作！
@@ -14,9 +14,11 @@ pywechat是一个基于pywinauto实现的Windows系统下PC微信自动化(pure 
 > 3. **python版本**:3.10+(支持TypeHint)
 > 4. **支持语言**:简体中文,English,繁體中文
 
-### pyweixin 与 pywechat 项目结构(pywechat只能用于32位x86🪟10,32位x86🪟7)
+### Python 包结构
 
-![pyweixin结构](/pics/pyweixin结构.png "pyweixin结构")
+当前应用使用 `wechat_ai_assistant`；旧 `pyweixin` 导入名保留兼容。`pywechat` 是微信 3.9 的旧版包。
+
+![兼容包结构](/pics/pyweixin结构.png "旧版兼容包结构")
 </br>
 
 ### Skill
@@ -36,7 +38,7 @@ pywechat是一个基于pywinauto实现的Windows系统下PC微信自动化(pure 
 使用示例：
 
 <p align="center">
-  <img src="/pics/pyweixin-rpa测试.png" alt="pyweixin-rpa测试" />
+  <img src="/pics/pyweixin-rpa测试.png" alt="旧版 RPA Skill 演示" />
 </p>
 
 实际效果:
@@ -49,12 +51,12 @@ pywechat是一个基于pywinauto实现的Windows系统下PC微信自动化(pure 
 
 [点击查看QuickStart.md](/QuickStart.md)
 
-### pyweixin模块介绍(适用于4.1+微信)
+### wechat_ai_assistant模块介绍(适用于4.1+微信)
 
-pyweixin内所有方法需要先导入模块下的类然后调用内部方法☸︎
+wechat_ai_assistant内所有方法需要先导入模块下的类然后调用内部方法☸︎
 
 ```python
-from pyweixin import xx(class)
+from wechat_ai_assistant import xx(class)
 xx(class).yy(method)
 ```
 
@@ -69,7 +71,7 @@ xx(class).yy(method)
 
 ##### class(类) 包括
 
-- `AutoReply`:自动回复操作。(一种简单的实现方式，如果对此感兴趣可以使用pyweixin内部的一些方法自行尝试)
+- `AutoReply`:自动回复操作。(一种简单的实现方式，如果对此感兴趣可以使用wechat_ai_assistant内部的一些方法自行尝试)
 - `Call`: 给某个好友打视频或语音电话。
 - `Contacts`: 获取通讯录内各分区(联系人,企业微信联系人,公众号,服务号)好友的名称与详情。
 - `Files`: 文件发送，聊天文件从本地导出等。
@@ -105,12 +107,12 @@ xx(class).yy(method)
 
 </br>
 
-### pyweixin使用示例
+### wechat_ai_assistant使用示例
 
 所有自动化操作只需两行代码即可实现，即:
 
 ```python
-from pyweixin import xxx
+from wechat_ai_assistant import xxx
 xxx.yy
 ```
 
@@ -121,14 +123,14 @@ xxx.yy
 微信版本>=4.1.9,且配置过虚拟驱动,并且安装sounddevice与soundfile库,具体可见
 https://mrcrab.blog.csdn.net/article/details/160481307?fromshare=blogdetail&sharetype=blogdetail&sharerId=160481307&sharerefer=PC&sharesource=weixin_73953650&sharefrom=from_link
 ''''
-from pyweixin import Messages
+from wechat_ai_assistant import Messages
 Messages.send_audios_to_friend(friend='小号测试',audios=[r"E:\Desktop\录音.wav",r"E:\Desktop\音乐.mp3",r"E:\Desktop\音乐.ogg"])
 ```
 
 #### 关于微信的基本信息输出
 
 ```python
-from pyweixin import Tools
+from wechat_ai_assistant import Tools
 print(Tools.about_weixin())
 ```
 
@@ -139,7 +141,7 @@ print(Tools.about_weixin())
 
 ```python
 from concurrent.futures import ThreadPoolExecutor
-from pyweixin import Navigator,Monitor
+from wechat_ai_assistant import Navigator,Monitor
 #先打开所有好友的独立窗口
 dialog_windows=[]
 friends=['Hello,Mr Crab','Pywechat测试群']
@@ -160,7 +162,7 @@ for friend,result in zip(friends,results):
 #### 监听会话列表内的新消息
 
 ```python
-from pyweixin import Monitor
+from wechat_ai_assistant import Monitor
 #maxPages设置为0不滚动,只在顶部可见部分监听,全屏+maxPages为0+需要监听对象置顶=稳定安全
 result=Monitor.listen_on_newMessages(duration='30s',maxPages=0)
 print(result)
@@ -174,7 +176,7 @@ print(result)
 #### 自动回复会话列表内的新消息
 
 ```python
-from pyweixin import AutoReply
+from wechat_ai_assistant import AutoReply
 def reply_func(friend,newMessage):
     return f'我在自动回复:{friend},这是对方发送的新消息:{newMessage}'
 #maxPages设置为0不滚动,只在顶部可见部分自动回复,全屏+maxPages为0+需要回复对象置顶=稳定安全
@@ -188,7 +190,7 @@ print(responded_detail)
 #### 朋友圈内容导出
 
 ```python
-from pyweixin import Moments
+from wechat_ai_assistant import Moments
 #获取并导出今日前20个好友发布的朋友圈的具体内容
 posts=Moments.dump_recent_posts(recent='Today',save_detail=True,number=10)
 for dic in posts:
@@ -201,7 +203,7 @@ for dic in posts:
 #### 发布朋友圈
 
 ```python
-from pyweixin import Moments
+from wechat_ai_assistant import Moments
 Moments.post_moments(texts='''发布朋友圈测试[旺柴]''',medias=[r"E:\Desktop\test0.png",r"E:\Desktop\test1.png"])
 ```
 
@@ -213,7 +215,7 @@ Moments.post_moments(texts='''发布朋友圈测试[旺柴]''',medias=[r"E:\Desk
 #### 好友朋友圈内容导出
 
 ```python
-from pyweixin import Moments
+from wechat_ai_assistant import Moments
 Moments.dump_friend_posts(friend='xxx',number=3,save_detail=True,target_folder=r"E:\Desktop\好友朋友圈内容导出")
 ```
 
@@ -224,7 +226,7 @@ Moments.dump_friend_posts(friend='xxx',number=3,save_detail=True,target_folder=r
 #### 好友朋友圈自定义评论
 
 ```python
-from pyweixin import Moments
+from wechat_ai_assistant import Moments
 def comment_func(content):
     if 'xxx' in content:
         return 'yyy'
@@ -238,7 +240,7 @@ Moments.like_friend_posts(friend='xxx',number=20,callback=comment_func,use_green
 
 ```python
 #注意,该方法不稳定
-from pyweixin import Collections
+from wechat_ai_assistant import Collections
 Collections.collect_offAcc_articles(name='新华社',number=10)
 urls=Collections.cardLink_to_url(number=10)
 for url,text in urls.items():
@@ -251,17 +253,17 @@ for url,text in urls.items():
 #### 收藏内的笔记导出为MarkDown
 
 ```python
-from pyweixin import Collections
+from wechat_ai_assistant import Collections
 Collections.save_notes(number=1)
 ```
 
 ![微信笔记导出](/pics/微信收藏笔记.png "微信收藏笔记导出")
 </br>
 
-#### 此外pyweixin内所有方法及函数的一些位置参数支持全局设定,be like
+#### 此外wechat_ai_assistant内所有方法及函数的一些位置参数支持全局设定,be like
 
 ```python
-from pyweixin import Navigator,GlobalConfig
+from wechat_ai_assistant import Navigator,GlobalConfig
 GlobalConfig.load_delay=2.5
 GlobalConfig.is_maximize=True
 GlobalConfig.close_weixin=False
@@ -270,14 +272,14 @@ Navigator.search_miniprogram(name='问卷星')
 Navigator.search_official_account(name='微信')
 ```
 
-#### 其他使用方法可见代码中详细的文档注释以及pyweixin操作手册.docx
+#### 其他使用方法可见代码中详细的文档注释以及wechat_ai_assistant操作手册.docx
 
 ### 可靠性扩展
 
-`pyweixin.reliability` 提供结构化消息事件、带 TTL 的去重账本、串行 UI 操作队列和有限重试工具：
+`wechat_ai_assistant.reliability` 提供结构化消息事件、带 TTL 的去重账本、串行 UI 操作队列和有限重试工具：
 
 ```python
-from pyweixin import MessageEvent, MessageLedger, UiOperationQueue
+from wechat_ai_assistant import MessageEvent, MessageLedger, UiOperationQueue
 
 ledger = MessageLedger(ttl_seconds=900)
 event = MessageEvent(chat_id='chat', content='hello', stable_id='message-1')
@@ -296,7 +298,7 @@ with UiOperationQueue(max_pending=100) as queue:
 本地 Agent 负责历史补读、实时监听、SQLite 事件账本和串行发送；云端只通过出站 HTTPS 接收健康状态、事件和命令。云端远程地址必须使用 HTTPS。
 
 ```bash
-python -m pyweixin.agent_cli --group "Family 家" --history 50 --listen 30s --db agent.db --once
+python -m wechat_ai_assistant.agent_cli --group "Family 家" --history 50 --listen 30s --db agent.db --once
 ```
 
 不配置 `--cloud-url` 时，Agent 完全在本地运行；配置后使用 `CloudClient` 对接心跳、事件上传、命令拉取和命令确认接口。历史补读默认对每个 `--db` 只执行一次；需要重新导入时使用新的数据库文件。
@@ -304,12 +306,12 @@ python -m pyweixin.agent_cli --group "Family 家" --history 50 --listen 30s --db
 本地参考云端服务：
 
 ```bash
-python -m pyweixin.cloud_server --host 127.0.0.1 --port 8787 --token change-me --db cloud.db
+python -m wechat_ai_assistant.cloud_server --host 127.0.0.1 --port 8787 --token change-me --db cloud.db
 ```
 
-多 Agent 部署时可用 `PYWEIXIN_AGENT_TOKENS` 环境变量提供 JSON 对象（例如 `{"agent-1":"..."}`），服务端会按 `X-Agent-Id` 校验独立 token；生产环境仍应放在 HTTPS 反向代理和密钥管理系统之后。
+多 Agent 部署时可用 `WECHAT_AI_AGENT_TOKENS` 环境变量提供 JSON 对象（例如 `{"agent-1":"..."}`），服务端会按 `X-Agent-Id` 校验独立 token；生产环境仍应放在 HTTPS 反向代理和密钥管理系统之后。
 
-参考服务默认只监听本机，生产环境应放到 HTTPS 反向代理和独立数据库之后。启动后访问 `http://127.0.0.1:8787/console`，输入 token 即可查看 Agent、事件和命令队列；可用 `PYWEIXIN_CONSOLE_TOKEN` 为控制台单独设置访问令牌。
+参考服务默认只监听本机，生产环境应放到 HTTPS 反向代理和独立数据库之后。启动后访问 `http://127.0.0.1:8787/console`，输入 token 即可查看 Agent、事件和命令队列；可用 `WECHAT_AI_CONSOLE_TOKEN` 为控制台单独设置访问令牌。
 
 ### Pywechat(3.9+微信)
 

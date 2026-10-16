@@ -3,7 +3,7 @@
 客户端默认网关：`https://gateway.jyisolutions.com`。
 授权页面：`https://ai.jyisolutions.com/connect/authorize`。
 授权码兑换：`POST https://ai.jyisolutions.com/oauth/token`。
-客户端 ID：`pyweixin-desktop`；作用域：`config:read`。
+客户端 ID：`pyweixin-desktop`；作用域：`config:read`。这是 JYI 服务端已登记的兼容 ID。
 回调：`http://127.0.0.1:<随机端口>/oauth/callback`。
 
 点登录后自动打开系统浏览器，用户登录并批准连接。客户端校验 state，
@@ -34,20 +34,20 @@ JYI 模型目录使用 `GET /v1/models`。其模型调用使用
 不会将授权响应的 `allocated_micros` 当作当前余额，也不会将 Key 发往旧任务接口。
 
 本地开发仍可使用 `--gateway http://127.0.0.1:8080` 或设置
-`PYWEIXIN_GATEWAY_URL`，原设备码登录流程继续适用于自带产品服务器。
+`WECHAT_AI_GATEWAY_URL`，原设备码登录流程继续适用于自带产品服务器。
 
 ---
 
 ## 文字分析接线（JYI chat 直调）
 
 JYI 网关只有透传的 `/v1/chat/completions`，没有产品网关的任务队列，
-所以提示词、校验、落地三件事挪到客户端（`src/pyweixin/jyi_parse.py`）：
+所以提示词、校验、落地三件事挪到客户端（`src/wechat_ai_assistant/jyi_parse.py`）：
 
 * 订单提示词复用 `order_agent` 的 SYSTEM_PROMPT，输出走同一套
   `validate_order_parse_result`，落地走同一套 `apply_cloud_suggestion`；
 * 摘要提示词复用 `summary` 的 SUMMARY_SYSTEM_PROMPT；
 * 钥匙用 JYI 登录态，不读本地任何密钥；
-* 默认文字模型 `jyi-default`（使用 JYI `/v1/models` 返回的原始 ID），`PYWEIXIN_TEXT_MODEL`
+* 默认文字模型 `jyi-default`（使用 JYI `/v1/models` 返回的原始 ID），`WECHAT_AI_TEXT_MODEL`
   环境变量可覆盖（切模型先在小群实测意图识别）；
 * 额度门对 JYI 不过（JYI 按账号计量，不在客户端结算），
   整理结果页写"用量按 JYI 账号计量"，不谎报"扣费 0"；
@@ -56,4 +56,14 @@ JYI 网关只有透传的 `/v1/chat/completions`，没有产品网关的任务�
   `plan_code`、`period_end`、`active`（可缺，默认 true），
   剩余额客户端自己算。
 
-图片/音频/视频等 JYI 开出多模态模型后再接（按消息 kind 选模型）。
+2026-10-16 已接入图片：文字与图片统一使用 `jyi-default` 和
+`/v1/chat/completions`，默认路由为 OpenCode Go 的 DeepSeek V4.1 Flash。
+客户端把图片压缩为 WebP 再编码成 Base64 data URL；默认开启最高档推理
+（`thinking=enabled`、`reasoning_effort=max`），常规请求预算为 131,072 token。
+网关按模型目录允许最高 384,000 token，每批最多 5 张图片，
+请求最多 8 MiB；音频和视频暂不分析。
+
+当前网关发布版本为 `6eb19c2e-9e64-4e0e-ae04-3084d385b2b5`，包含模型预算、
+图片输入及 SSE 完成结算修复。已通过最高档推理单图及此前图文分批合并的真实验收。
+调查与验证记录见
+[AI 分析调查](ai-analysis-investigation-2026-10-16.md)。

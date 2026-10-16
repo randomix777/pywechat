@@ -18,13 +18,13 @@
 
 | 能力 | 实际代码依据 | 结论 |
 | --- | --- | --- |
-| 历史消息导出 | `src/pyweixin/WeChatAuto.py:3977`，`Messages.dump_chat_history` | 能通过微信界面遍历指定数量消息，输出发送人、正文、类型、时间；会打开历史窗口、最大化、滚动，不是无焦点数据库查询 |
-| 群消息发送人解析 | `src/pyweixin/utils.py:638`；监听函数中的 `extract_info` | 支持成员名称辅助解析；昵称并非稳定账户标识，缺失、重名、改名必须另行处理 |
-| 最小化监听路径 | `src/pyweixin/WeChatAuto.py:4291`，`Monitor.listen_on_chat` | 文档声明关闭涉及键鼠的选项后可最小化；主要循环读取 UIA 子项，具备试验价值，不能据此认定所有客户端版本可用 |
-| 本地 Agent | `src/pyweixin/agent.py:573` 起 | 已有历史初始化、监听、上传、命令处理流程 |
-| 消息缓存与重试 | `src/pyweixin/agent.py:95` 起，`AgentStore` | SQLite WAL、消息持久化、上传租约、重试和 outbox 可复用 |
-| 事件结构与队列 | `src/pyweixin/reliability.py:63`、`:258` | 已有结构化消息、身份质量、去重账本和 UI 串行队列 |
-| 云端与控制台 | `src/pyweixin/cloud_server.py`、`src/pyweixin/console.py` | 可作为设备管理和人工操作界面基础；目前没有客户、商品、订单业务模型 |
+| 历史消息导出 | `src/wechat_ai_assistant/WeChatAuto.py:3977`，`Messages.dump_chat_history` | 能通过微信界面遍历指定数量消息，输出发送人、正文、类型、时间；会打开历史窗口、最大化、滚动，不是无焦点数据库查询 |
+| 群消息发送人解析 | `src/wechat_ai_assistant/utils.py:638`；监听函数中的 `extract_info` | 支持成员名称辅助解析；昵称并非稳定账户标识，缺失、重名、改名必须另行处理 |
+| 最小化监听路径 | `src/wechat_ai_assistant/WeChatAuto.py:4291`，`Monitor.listen_on_chat` | 文档声明关闭涉及键鼠的选项后可最小化；主要循环读取 UIA 子项，具备试验价值，不能据此认定所有客户端版本可用 |
+| 本地 Agent | `src/wechat_ai_assistant/agent.py:573` 起 | 已有历史初始化、监听、上传、命令处理流程 |
+| 消息缓存与重试 | `src/wechat_ai_assistant/agent.py:95` 起，`AgentStore` | SQLite WAL、消息持久化、上传租约、重试和 outbox 可复用 |
+| 事件结构与队列 | `src/wechat_ai_assistant/reliability.py:63`、`:258` | 已有结构化消息、身份质量、去重账本和 UI 串行队列 |
+| 云端与控制台 | `src/wechat_ai_assistant/cloud_server.py`、`src/wechat_ai_assistant/console.py` | 可作为设备管理和人工操作界面基础；目前没有客户、商品、订单业务模型 |
 | AI 与客户记忆 | 检查 `agent.py`、`cloud_server.py`、依赖声明 | 当前 Agent 是采集/命令执行代理，没有已实现的 LLM 订单解析和长期客户业务记忆 |
 
 本次执行 `.venv/Scripts/python.exe -m unittest discover -s tests -v`，42 项测试全部通过。主要覆盖解析片段、消息与命令持久化、重试、租约、云端本地往返和队列。没有证明真实微信 500 人群的历史完整性、无焦点运行或 AI 准确率。
@@ -189,7 +189,7 @@ flowchart LR
 
 | 项目 | 可借鉴内容 / 核查事实 | 本项目建议 |
 | --- | --- | --- |
-| [pywechat / pyweixin](https://github.com/Hello-Mr-Crab/pywechat) | 本地已有 UIA 采集、事件和云端基础 | 保留采集端，重点修生命周期、身份和覆盖范围 |
+| [pywechat / wechat_ai_assistant](https://github.com/Hello-Mr-Crab/pywechat) | 本地已有 UIA 采集、事件和云端基础 | 保留采集端，重点修生命周期、身份和覆盖范围 |
 | [wxauto](https://github.com/cluic/wxauto) | 官方当前 README 标示微信 3.9.X，并包含禁止生产及商业用途的声明 | 可比较 UIA 思路；不当作客户项目的直接替代，不能推定支持 4.1 或解决焦点问题 |
 | [chatlog](https://github.com/sjzar/chatlog) | 官方仓库公告注明 2025-10-20 移除全部代码和提交历史，不再提供支持 | 排除为新的生产依赖；不要按旧教程设计必需接口 |
 | [WeChatMsg / 留痕](https://github.com/LC044/WeChatMsg) | 当前 README 明确表示很久没有、也不会更新 | 可了解历史数据产品方向；不承诺现有客户端适配或可直接安装使用 |

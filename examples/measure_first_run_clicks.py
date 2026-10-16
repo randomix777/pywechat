@@ -20,13 +20,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "order_agent" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "business_agent" / "src"))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.history_read import SimulatedHistory  # noqa: E402
-from pyweixin.merchant_app import _force_utf8_stdout  # noqa: E402
-from pyweixin.merchant_ui import MerchantWindow  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.wizard import WizardStep  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.history_read import SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.merchant_app import _force_utf8_stdout  # noqa: E402
+from wechat_ai_assistant.merchant_ui import MerchantWindow  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.wizard import WizardStep  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 

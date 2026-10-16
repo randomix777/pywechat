@@ -10,9 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 
 def _app(data_dir, store, tenant):
@@ -82,7 +82,7 @@ class WxidAliasTests(unittest.TestCase):
         self.dir = Path(self._tmp.name)
         self.store = OrderStore(str(self.dir / "orders.db"))
         self.tenant = self.store.create_merchant("备注店")["merchant_id"]
-        from pyweixin.application import MerchantApplication
+        from wechat_ai_assistant.application import MerchantApplication
 
         self.app = MerchantApplication(
             data_dir=self.dir, orders=self.store, tenant=self.tenant)
@@ -102,7 +102,7 @@ class WxidAliasTests(unittest.TestCase):
         self.assertEqual(self.app.display_name_for(""), "")
 
     def test_alias_survives_restart(self):
-        from pyweixin.application import MerchantApplication
+        from wechat_ai_assistant.application import MerchantApplication
 
         self.app.set_alias("123@chatroom", "水果群")
         rebooted = MerchantApplication(

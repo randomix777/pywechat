@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.pricing import (  # noqa: E402
+from wechat_ai_assistant.pricing import (  # noqa: E402
     US_PER_MILLION,
     merchant_micro_usd_for,
     price_from_mapping,

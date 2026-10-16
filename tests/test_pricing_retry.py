@@ -25,10 +25,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.local_parse import (  # noqa: E402
+from wechat_ai_assistant.local_parse import (  # noqa: E402
     LocalParseService, PRICING_CONFIRM_ERRORS,
 )
-from pyweixin.client_login import GatewayError  # noqa: E402
+from wechat_ai_assistant.client_login import GatewayError  # noqa: E402
 
 
 class FakeClient:
@@ -59,8 +59,8 @@ class FakeClient:
 def _service():
     import tempfile
 
-    from pyweixin.local_parse import PendingQueue
-    from pyweixin.orders import OrderStore
+    from wechat_ai_assistant.local_parse import PendingQueue
+    from wechat_ai_assistant.orders import OrderStore
 
     tmp = Path(tempfile.mkdtemp(prefix="pyw-pricing-"))
     orders = OrderStore(str(tmp / "o.db"))

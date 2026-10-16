@@ -44,12 +44,12 @@ Examples
 ========
 使用该模块的方法时,你可以:
 
-    >>> from pyweixin.WeChatTools import Tools
+    >>> from wechat_ai_assistant.WeChatTools import Tools
     >>> Navigator.open_dialog_window(name='一家人')
 
 或者:
 
-    >>> from pyweixin import Tools
+    >>> from wechat_ai_assistant import Tools
     >>> Navigator.open_dialog_window(friend='一家人')
 
 
@@ -59,7 +59,7 @@ Also:
     pywechat内所有方法的位置参数的支持全局设置,be like:
 
     ```
-    from pyweixin import Navigator,GlobalConfig
+    from wechat_ai_assistant import Navigator,GlobalConfig
     GlobalConfig.load_delay=1.5
     GlobalConfig.is_maximize=True
     GlobalConfig.close_weixin=False

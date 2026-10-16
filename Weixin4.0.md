@@ -7,7 +7,7 @@
 - 在本地电脑上登录一个UI树可见的账号使用(稳定安全,不过只有使用过无障碍模式才可以)
 - 使用ocr的方式进行Rpa
 
-## 已经实现的一些方法(pyweixin内)
+## 已经实现的一些方法(wechat_ai_assistant内)
 
 - WeChatTools.Navigator
 - WeChatTools.Tools
@@ -37,7 +37,7 @@ Windows的可访问性API（UI Automation）在设计上必须向屏幕阅读器
 
 ## 说明
 
-此方法若稳定且不会被修复的话，后续将持续更新，目前可用功能已全部在Pyweixin内。
+此方法若稳定且不会被修复的话，后续将持续更新；原 `pyweixin` Python 导入名由兼容包继续提供。
 
 ## 使用方式
 

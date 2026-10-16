@@ -11,10 +11,10 @@ appDir = fso.GetParentFolderName(WScript.ScriptFullName)
 ' 1) 随软件附带的 Python
 pythonExe = appDir & "\runtime\python.exe"
 If fso.FileExists(pythonExe) Then
-    cmd = """" & pythonExe & """ """ & appDir & "\src\pyweixin\launcher.py"""
+    cmd = """" & pythonExe & """ """ & appDir & "\src\wechat_ai_assistant\launcher.py"""
 ' 2) Windows 的 Python 启动器
 Else
-    cmd = "py -3 """ & appDir & "\src\pyweixin\launcher.py"""
+    cmd = "py -3 """ & appDir & "\src\wechat_ai_assistant\launcher.py"""
 End If
 
 ' 隐藏窗口运行；启动器自己会在出错时弹出中文说明。

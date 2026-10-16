@@ -33,7 +33,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.orders import OrderStore, _match_items_to_products  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore, _match_items_to_products  # noqa: E402
 
 GROUP = "鲜果群"
 
@@ -135,14 +135,14 @@ class WhatGetsLearnedTests(unittest.TestCase):
         self.assertLessEqual(OrderStore.LEARNABLE_ALIAS_MAX, 12)
 
     def test_the_threshold_is_applied_when_picking_phrases(self):
-        source = (ROOT / "src/pyweixin/orders.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/orders.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                   and n.name == "_learn_from_correction")
         self.assertIn("LEARNABLE_ALIAS_MAX", ast.unparse(fn))
 
     def test_it_prefers_the_customers_own_words(self):
-        source = (ROOT / "src/pyweixin/orders.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/orders.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                   and n.name == "_phrases_for_order")

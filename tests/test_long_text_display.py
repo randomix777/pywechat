@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.merchant_ui import CELL_LIMIT, _cell  # noqa: E402
+from wechat_ai_assistant.merchant_ui import CELL_LIMIT, _cell  # noqa: E402
 
 
 class CellTruncationTests(unittest.TestCase):
@@ -34,13 +34,13 @@ class CellTruncationTests(unittest.TestCase):
 
     def test_the_real_question_survives_the_default_limit(self):
         """真实群里这条 31 字。上限必须盖得住它，否则问题本身被吃掉。"""
-        from pyweixin.merchant_ui import _cell as cell
+        from wechat_ai_assistant.merchant_ui import _cell as cell
 
         self.assertEqual(cell("抱歉这周太忙了，太太有货柜到，修改后对之前的订单数据有影响吗？"),
                          "抱歉这周太忙了，太太有货柜到，修改后对之前的订单数据有影响吗？")
 
     def test_the_default_limit_covers_a_real_long_message(self):
-        from pyweixin.merchant_ui import _cell as cell
+        from wechat_ai_assistant.merchant_ui import _cell as cell
 
         text = ("@Daniel黄大为 您好 根据您 后期打算加入的功能，系统需要进行大面积重构，"
                 "您看我是先保留大统华PDF导入和在线下单功能让你们先用着还是直接改完再说？")
@@ -74,7 +74,7 @@ class OrderWindowTests(unittest.TestCase):
 
     def setUp(self):
         self.source = (Path(__file__).resolve().parent.parent
-                       / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+                       / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
         code = [line.split("#")[0] for line in self.source.splitlines()]
         self.code = "\n".join(code)
 

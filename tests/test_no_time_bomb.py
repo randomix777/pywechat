@@ -109,7 +109,7 @@ class ClockIsIndependentTests(unittest.TestCase):
 
     def test_every_message_is_inside_the_window_the_test_uses(self):
         from tests import test_history_read_modes as modes
-        from pyweixin.wechat_time import parse_timestamp
+        from wechat_ai_assistant.wechat_time import parse_timestamp
 
         now = dt.datetime.now(dt.timezone.utc)
         start = now - dt.timedelta(days=1)

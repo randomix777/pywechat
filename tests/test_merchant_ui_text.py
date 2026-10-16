@@ -20,19 +20,19 @@ for _name in ("business_agent", "order_agent", "support_triage"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import Conversation, ConversationKind, SimulatedConversations, search  # noqa: E402
-from pyweixin.dashboard import STATUS_LABELS, DashboardBuilder  # noqa: E402
-from pyweixin.history_read import HistoryRange, SimulatedHistory  # noqa: E402
-from pyweixin.merchant_ui import (  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind, SimulatedConversations, search  # noqa: E402
+from wechat_ai_assistant.dashboard import STATUS_LABELS, DashboardBuilder  # noqa: E402
+from wechat_ai_assistant.history_read import HistoryRange, SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.merchant_ui import (  # noqa: E402
     FORBIDDEN_TERMS,
     PRIVACY_TEXT,
     audit_text,
 )
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.runmode import AutoOrderSettings, RunMode  # noqa: E402
-from pyweixin.wechat_state import STATE_COPY, SimulatedWeChat, WeChatState  # noqa: E402
-from pyweixin.wizard import QuotaView  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.runmode import AutoOrderSettings, RunMode  # noqa: E402
+from wechat_ai_assistant.wechat_state import STATE_COPY, SimulatedWeChat, WeChatState  # noqa: E402
+from wechat_ai_assistant.wizard import QuotaView  # noqa: E402
 
 NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -128,12 +128,12 @@ class DisplayContentTests(unittest.TestCase):
     """空内容按类型给占位：图片行不能看着像坏了。只测显示，不碰库。"""
 
     def test_text_shows_as_is(self):
-        from pyweixin.merchant_ui import display_content
+        from wechat_ai_assistant.merchant_ui import display_content
 
         self.assertEqual(display_content("text", "苹果两箱"), "苹果两箱")
 
     def test_empty_content_shows_kind_label(self):
-        from pyweixin.merchant_ui import display_content
+        from wechat_ai_assistant.merchant_ui import display_content
 
         self.assertEqual(display_content("image", ""), "［图片］")
         self.assertEqual(display_content("voice", None), "［语音］")
@@ -146,7 +146,7 @@ class DisplayContentTests(unittest.TestCase):
         """导出和核对页一个口径：图片/语音行导出占位，不导空白格。"""
         import types
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         window = MerchantWindow.__new__(MerchantWindow)
         window._last_review_rows = [
@@ -170,7 +170,7 @@ class ExportGateTests(unittest.TestCase):
     def _window(self, rows, processed):
         import types
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         window = MerchantWindow.__new__(MerchantWindow)
         window._last_review_rows = list(rows)
@@ -188,7 +188,7 @@ class ExportGateTests(unittest.TestCase):
 
         window = self._window([self._row("m1")], {"m1"})
         with unittest.mock.patch(
-                "pyweixin.merchant_ui.messagebox") as box:
+                "wechat_ai_assistant.merchant_ui.messagebox") as box:
             rows = window._check_exportable()
         self.assertEqual(len(rows), 1)
         box.showinfo.assert_not_called()
@@ -199,7 +199,7 @@ class ExportGateTests(unittest.TestCase):
 
         window = self._window([self._row("m1")], set())
         with unittest.mock.patch(
-                "pyweixin.merchant_ui.messagebox") as box:
+                "wechat_ai_assistant.merchant_ui.messagebox") as box:
             self.assertIsNone(window._check_exportable())
         box.showinfo.assert_called_once()
         self.assertIn("智能整理", box.showinfo.call_args.args[1])
@@ -210,7 +210,7 @@ class ExportGateTests(unittest.TestCase):
         window = self._window(
             [self._row("m1"), self._row("m2")], {"m1"})
         with unittest.mock.patch(
-                "pyweixin.merchant_ui.messagebox") as box:
+                "wechat_ai_assistant.merchant_ui.messagebox") as box:
             box.askyesno.return_value = True
             rows = window._check_exportable()
         self.assertEqual([row["id"] for row in rows], ["m1"])
@@ -221,7 +221,7 @@ class ExportGateTests(unittest.TestCase):
         window = self._window(
             [self._row("m1"), self._row("m2")], {"m1"})
         with unittest.mock.patch(
-                "pyweixin.merchant_ui.messagebox") as box:
+                "wechat_ai_assistant.merchant_ui.messagebox") as box:
             box.askyesno.return_value = False
             self.assertIsNone(window._check_exportable())
 
@@ -242,7 +242,7 @@ class MarkAnalyzedMessagesTests(unittest.TestCase):
     def _window(self):
         import types
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         window = MerchantWindow.__new__(MerchantWindow)
         window.app = types.SimpleNamespace(orders=self.store, tenant=self.tenant)
@@ -273,7 +273,7 @@ class MarkAnalyzedMessagesTests(unittest.TestCase):
 
     def test_conversation_with_watermark_passes_gate(self):
         """跑过一次智能整理的会话（有水位线）就该放行，哪怕没有逐条记录。"""
-        from pyweixin import summary_task
+        from wechat_ai_assistant import summary_task
 
         messages = self._messages(["要两箱苹果", "再要一箱"])
         window = self._window()
@@ -420,7 +420,7 @@ class ConversationTabTests(unittest.TestCase):
             return self.text
 
     def _window(self, items, query: str = ""):
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         window = MerchantWindow.__new__(MerchantWindow)  # 不跑 __init__，也就没有 Tk
         window._conversations = list(items)
@@ -479,7 +479,7 @@ class ConversationTabTests(unittest.TestCase):
 
     def test_the_tab_order_is_stable(self):
         """页签顺序写死在 CONV_TABS 里，取值和画界面都依赖它。"""
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         self.assertEqual([key for key, _t, _k in MerchantWindow.CONV_TABS], ["groups", "friends"])
         self.assertEqual([title for _k, title, _kind in MerchantWindow.CONV_TABS], ["群聊", "联系人"])
@@ -490,7 +490,7 @@ class EmptySpaceTests(unittest.TestCase):
 
     def test_the_list_height_follows_its_content(self):
         """只有 2 个群却占 12 行高度，页面下半截全是空白。"""
-        from pyweixin.merchant_ui import CONV_ROWS_MAX, CONV_ROWS_MIN, conv_rows_height
+        from wechat_ai_assistant.merchant_ui import CONV_ROWS_MAX, CONV_ROWS_MIN, conv_rows_height
 
         self.assertEqual(conv_rows_height(0), CONV_ROWS_MIN, "空列表也不该塌成 0 行")
         self.assertEqual(conv_rows_height(2), CONV_ROWS_MIN, "2 行数据不该占满 12 行")
@@ -501,7 +501,7 @@ class EmptySpaceTests(unittest.TestCase):
         """那一列放的是人数。以前标题叫「说明」，里面写着「64 人」。"""
         import inspect
 
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         source = inspect.getsource(merchant_ui.MerchantWindow._page_conversations)
         self.assertIn('"members", "人数"', source)
@@ -511,7 +511,7 @@ class EmptySpaceTests(unittest.TestCase):
         """「待澄清」和「系统解析失败」平时都是空的，不该一直占着首页。"""
         import inspect
 
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         self.assertTrue(hasattr(merchant_ui.MerchantWindow, "_toggle_box"))
         render = inspect.getsource(merchant_ui.MerchantWindow._render_home)
@@ -522,7 +522,7 @@ class EmptySpaceTests(unittest.TestCase):
         """主按钮只有 padding 没有别的，一眼看不出该点哪个。"""
         import inspect
 
-        from pyweixin import ui_theme
+        from wechat_ai_assistant import ui_theme
 
         build = inspect.getsource(ui_theme.apply_theme)
         big = build[build.index('for name in ("Big.TButton"'):build.index('"Subtle.TButton"')]
@@ -535,7 +535,7 @@ class FlowSimplicityTests(unittest.TestCase):
 
     def test_the_merchant_walks_seven_steps_not_more(self):
         """确认范围、真正执行、核对明细各占一步，额度查询与智能整理合成一步。"""
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         self.assertEqual(len(WizardStep.ORDER), 7, "商户要走的步骤变多了")
         self.assertNotIn(WizardStep.QUOTA, WizardStep.ORDER, "额度查询不该再单独占一步")
@@ -552,7 +552,7 @@ class FlowSimplicityTests(unittest.TestCase):
         """额度与整理是同一件事的两半，拆成两屏只是多一次点击。"""
         import inspect
 
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         source = inspect.getsource(merchant_ui.MerchantWindow._show_step)
         self.assertIn("WizardStep.QUOTA: self._page_analyze", source)
@@ -566,7 +566,7 @@ class FlowSimplicityTests(unittest.TestCase):
         """
         import inspect
 
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         source = inspect.getsource(merchant_ui.MerchantWindow._page_analyze)
         self.assertNotIn("_build_history_summary", source)
@@ -579,13 +579,13 @@ class FlowSimplicityTests(unittest.TestCase):
         """额度够用就跳走，读到的条数和缺口就看不见了。"""
         import inspect
 
-        from pyweixin.wizard import Wizard
+        from wechat_ai_assistant.wizard import Wizard
 
         source = inspect.getsource(Wizard.check_quota)
         self.assertNotIn("self._go(", source, "查额度时还在跳转")
 
     def test_the_merged_step_says_it_is_step_four(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         self.assertEqual(WizardStep.TITLES[WizardStep.ANALYZE], "智能整理")
         self.assertEqual(WizardStep.TITLES[WizardStep.QUOTA], "智能整理")
@@ -594,7 +594,7 @@ class FlowSimplicityTests(unittest.TestCase):
         """还没查过就摆失败脸，商户以为一上来就坏了。"""
         import inspect
 
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         source = inspect.getsource(merchant_ui.MerchantWindow._page_wechat)
         self.assertIn("正在检测微信状态", source)
@@ -613,14 +613,14 @@ class NoLeakedExceptionTests(unittest.TestCase):
              "object at 0x", "AttributeError", "KeyError", "ValueError", "Exception")
 
     def test_no_python_exception_shape_reaches_the_merchant(self):
-        from pyweixin.application import MODEL_STALE_NOTICE
+        from wechat_ai_assistant.application import MODEL_STALE_NOTICE
 
         text = MODEL_STALE_NOTICE
         for leak in self.LEAKS:
             self.assertNotIn(leak, text, f"商户文案里出现了 {leak}：{text}")
 
     def test_the_stale_notice_is_plain_chinese_and_actionable(self):
-        from pyweixin.application import MODEL_STALE_NOTICE
+        from wechat_ai_assistant.application import MODEL_STALE_NOTICE
 
         self.assertIn("保留", MODEL_STALE_NOTICE, "要让商户知道消息没丢")
         self.assertIn("刷新", MODEL_STALE_NOTICE, "要告诉商户下一步能做什么")
@@ -628,7 +628,7 @@ class NoLeakedExceptionTests(unittest.TestCase):
 
     def test_a_failing_model_refresh_never_writes_the_exception_into_the_notice(self):
         """真触发一次失败：客户端抛异常，界面上不许出现异常原文。"""
-        from pyweixin.application import MerchantApplication
+        from wechat_ai_assistant.application import MerchantApplication
 
         class Exploding:
             def list_models(self):
@@ -659,8 +659,8 @@ class NextStepTargetTests(unittest.TestCase):
     def _window(self, result):
         from types import SimpleNamespace
 
-        from pyweixin.merchant_ui import MerchantWindow
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.wizard import WizardStep
 
         window = MerchantWindow.__new__(MerchantWindow)
         window._last_read_result = result
@@ -671,7 +671,7 @@ class NextStepTargetTests(unittest.TestCase):
         return window, calls
 
     def test_review_page_advances_to_analyze(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, calls = self._window(object())
         with unittest.mock.patch.object(
@@ -680,7 +680,7 @@ class NextStepTargetTests(unittest.TestCase):
         self.assertEqual(calls, [WizardStep.ANALYZE])
 
     def test_execute_page_still_goes_to_review(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, calls = self._window(object())
         with unittest.mock.patch.object(
@@ -689,12 +689,12 @@ class NextStepTargetTests(unittest.TestCase):
         self.assertEqual(calls, [WizardStep.REVIEW])
 
     def test_no_messages_blocks_with_a_dialog(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, calls = self._window(None)
         with unittest.mock.patch.object(
                 window, "_has_messages_for", return_value=False), \
-            unittest.mock.patch("pyweixin.merchant_ui.messagebox") as box:
+            unittest.mock.patch("wechat_ai_assistant.merchant_ui.messagebox") as box:
             window._go_next_from_history(WizardStep.ANALYZE)
         self.assertEqual(calls, [])
         self.assertTrue(box.showinfo.called)

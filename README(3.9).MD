@@ -44,7 +44,7 @@
 from pywechat import xxx
 xxx.yy
 
-from pyweixin import xxx
+from pywechat import xxx
 xxx,yy
 ```
 

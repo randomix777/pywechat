@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin import diagnostics  # noqa: E402
+from wechat_ai_assistant import diagnostics  # noqa: E402
 
 
 class LogFileTests(unittest.TestCase):
@@ -56,7 +56,7 @@ class LogFileTests(unittest.TestCase):
 
     def test_messages_actually_land_in_it(self):
         _path, expected = self._install()
-        logging.getLogger("pyweixin.demo").warning("读取消息失败")
+        logging.getLogger("wechat_ai_assistant.demo").warning("读取消息失败")
         for handler in logging.getLogger().handlers:
             handler.flush()
         text = expected.read_text(encoding="utf-8")
@@ -68,7 +68,7 @@ class LogFileTests(unittest.TestCase):
         只在 ``main()`` 里找：模块顶部有这些名字的 import 和函数定义，
         拿它们的位置比是比错的。
         """
-        source = (ROOT / "src" / "pyweixin" / "merchant_app.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_app.py").read_text(encoding="utf-8")
         main_body = source[source.index("def main("):]
         install_at = main_body.index("diagnostics.install(")
         for later in ("ensure_local_store(", "build_application(", "MerchantWindow("):
@@ -119,7 +119,7 @@ class SizeTests(unittest.TestCase):
 class NoisyModuleTests(unittest.TestCase):
     def test_high_frequency_modules_are_quiet(self):
         """每 2 秒探测一次微信，记 INFO 会把真问题淹掉。"""
-        self.assertIn("pyweixin.wechat_state", diagnostics.QUIET_BY_DEFAULT)
+        self.assertIn("wechat_ai_assistant.wechat_state", diagnostics.QUIET_BY_DEFAULT)
         self.assertIn("pywinauto", diagnostics.QUIET_BY_DEFAULT)
 
     def test_quieting_them_does_not_raise_their_level_above_warning(self):
@@ -132,7 +132,7 @@ class NoisyModuleTests(unittest.TestCase):
 
 class SourceTests(unittest.TestCase):
     def test_the_app_actually_calls_install(self):
-        source = (ROOT / "src" / "pyweixin" / "merchant_app.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_app.py").read_text(encoding="utf-8")
         self.assertIn("diagnostics.install(", source,
                       "入口没装日志 = 改了一堆 LOGGER 也不会有文件")
         self.assertIn("diagnostics.quiet_noisy_modules()", source)

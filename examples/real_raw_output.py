@@ -34,7 +34,7 @@ def load_key() -> str:
 def main() -> int:
     from business_agent.backends.deepseek import DeepSeekBackend
 
-    from pyweixin.deepseek_adapter import _build_agent_request
+    from wechat_ai_assistant.deepseek_adapter import _build_agent_request
 
     key = load_key()
     if not key:
@@ -52,7 +52,7 @@ def main() -> int:
 
     backend = DeepSeekBackend(
         api_key=key,
-        model=os.environ.get("PYWEIXIN_OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+        model=os.environ.get("WECHAT_AI_OPENROUTER_MODEL", "openai/gpt-4o-mini"),
         base_url="https://openrouter.ai/api/v1",
         timeout=90,
         transport=spy,
@@ -65,7 +65,7 @@ def main() -> int:
         }],
         "merchant_id": "m1",
     }
-    from pyweixin.deepseek_adapter import _build_prompt
+    from wechat_ai_assistant.deepseek_adapter import _build_prompt
 
     prompt = _build_prompt(payload, "job-raw-1")
     request = _build_agent_request(payload, "job-raw-1", time.time() + 120)

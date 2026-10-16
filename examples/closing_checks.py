@@ -26,16 +26,16 @@ for _name in ("business_agent", "order_agent"):
         sys.path.insert(0, str(_src))
 
 from business_agent.backends.opencode import OpenCodeBackend  # noqa: E402
-from pyweixin.gateway import ProductGateway  # noqa: E402
-from pyweixin.model_catalog import (  # noqa: E402
+from wechat_ai_assistant.gateway import ProductGateway  # noqa: E402
+from wechat_ai_assistant.model_catalog import (  # noqa: E402
     CatalogStatus,
     CatalogStore,
     OperatorModelPolicy,
     PricingClass,
     build_catalog,
 )
-from pyweixin.opencode import LocalRuleAdapter  # noqa: E402
-from pyweixin.product import ProductStore  # noqa: E402
+from wechat_ai_assistant.opencode import LocalRuleAdapter  # noqa: E402
+from wechat_ai_assistant.product import ProductStore  # noqa: E402
 
 #: 用来确认"确实没泄露"的哨兵值。它不是真密钥，只是一个不会自然出现的标记。
 SENTINEL = "SENTINEL-CREDENTIAL-VALUE-9f2a"
@@ -126,8 +126,8 @@ def main() -> int:
 
     print()
     print("③ 错误响应不含凭据")
-    from pyweixin.model_catalog import reject_client_model_override
-    from pyweixin.client_login import GatewayError
+    from wechat_ai_assistant.model_catalog import reject_client_model_override
+    from wechat_ai_assistant.client_login import GatewayError
 
     try:
         reject_client_model_override({"provider": "p", "api_key": SENTINEL, "upstream_url": "http://x"})
@@ -145,7 +145,7 @@ def main() -> int:
             records.append(record)
 
     handler = Capture()
-    root = logging.getLogger("pyweixin")
+    root = logging.getLogger("wechat_ai_assistant")
     root.addHandler(handler)
     root.setLevel(logging.DEBUG)
     gw = ProductGateway(store=ProductStore(":memory:"), adapter=LocalRuleAdapter(), catalog=CatalogStore())
@@ -154,7 +154,7 @@ def main() -> int:
     except GatewayError:
         pass
     gw._operator_refresh_catalog({"models": [dict(policy.to_dict())]})
-    logging.getLogger("pyweixin.catalog").warning("forced %s", SENTINEL)
+    logging.getLogger("wechat_ai_assistant.catalog").warning("forced %s", SENTINEL)
     root.removeHandler(handler)
     log_text = "\n".join(r.getMessage() for r in records)
     # 我们自己写的日志不应包含凭据；故意打的那条会被排除。
@@ -164,10 +164,10 @@ def main() -> int:
 
     print()
     print("⑤ 客户选定的模型真的传到了执行后端")
-    from pyweixin.client_login import PendingQueue
-    from pyweixin.local_parse import LocalParseService
-    from pyweixin.client_login import MerchantClient, Session
-    from pyweixin.orders import OrderStore
+    from wechat_ai_assistant.client_login import PendingQueue
+    from wechat_ai_assistant.local_parse import LocalParseService
+    from wechat_ai_assistant.client_login import MerchantClient, Session
+    from wechat_ai_assistant.orders import OrderStore
 
     calls: list[dict] = []
 
@@ -251,7 +251,7 @@ def main() -> int:
     )
     catalog.mark_status("free-standard", CatalogStatus.SELECTABLE, verified=True, now=1.0)
 
-    from pyweixin.opencode import OpenCodeAdapter
+    from wechat_ai_assistant.opencode import OpenCodeAdapter
 
     adapter = OpenCodeAdapter("http://127.0.0.1:1", password="only-for-this-check")
     adapter._backend._transport = transport

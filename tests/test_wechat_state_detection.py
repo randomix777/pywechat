@@ -22,8 +22,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))
 
-from pyweixin import wechat_state  # noqa: E402
-from pyweixin.wechat_state import (  # noqa: E402
+from wechat_ai_assistant import wechat_state  # noqa: E402
+from wechat_ai_assistant.wechat_state import (  # noqa: E402
     OFFLINE_TITLES,
     RealWeChatProbe,
     WeChatState,
@@ -93,7 +93,7 @@ class LoginWindowDetectionTests(unittest.TestCase):
 
     def test_class_level_access_would_have_been_the_bug(self):
         """记录当初那个 bug 的形态：类上没有 LoginWindow。"""
-        from pyweixin.Uielements import Login_window_Control, Window_Control
+        from wechat_ai_assistant.Uielements import Login_window_Control, Window_Control
 
         with self.assertRaises(AttributeError):
             _ = Login_window_Control.LoginWindow          # noqa: B018 - 就是要复现
@@ -133,14 +133,14 @@ class ProbeDecisionTests(unittest.TestCase):
     def _probe(self, monkey_state, **kwargs):
         probe = RealWeChatProbe(timeout=0.0, **kwargs)
         # 绕开"微信装没装/进程在不在"，只测窗口判定这一段。
-        from pyweixin.WeChatTools import Tools
+        from wechat_ai_assistant.WeChatTools import Tools
 
         original_where, original_running = Tools.where_weixin, Tools.is_weixin_running
         Tools.where_weixin = lambda: "C:/fake/Weixin.exe"
         Tools.is_weixin_running = lambda: True
         desktop = _FakeDesktop(**monkey_state)
         try:
-            import pyweixin.wechat_state as module
+            import wechat_ai_assistant.wechat_state as module
 
             real_desktop = module.pywinauto_desktop = None  # 标记占位
             del real_desktop
@@ -192,7 +192,7 @@ class WxidFirstDetectionTests(unittest.TestCase):
     """
 
     def _probe_with_wxid(self, wxid_folder, monkey_state):
-        from pyweixin.WeChatTools import Tools
+        from wechat_ai_assistant.WeChatTools import Tools
 
         probe = RealWeChatProbe(timeout=0.0)
         original = (Tools.where_weixin, Tools.is_weixin_running, Tools.where_wxid_folder)
@@ -261,7 +261,7 @@ class StatusIsAlwaysAnnouncedTests(unittest.TestCase):
     """
 
     def _wizard(self, states):
-        from pyweixin.wizard import Wizard
+        from wechat_ai_assistant.wizard import Wizard
 
         class _Monitor:
             def __init__(self):
@@ -323,7 +323,7 @@ class StatusIsAlwaysAnnouncedTests(unittest.TestCase):
 
     def test_app_exposes_the_event(self):
         """事件必须真的挂上，否则界面永远收不到通知。"""
-        from pyweixin.application import AppEvents
+        from wechat_ai_assistant.application import AppEvents
 
         self.assertIn("on_wechat", AppEvents.__dataclass_fields__)
         events = AppEvents()
@@ -339,7 +339,7 @@ class LanguageIsNotFrozenTests(unittest.TestCase):
     """
 
     def _config(self, detector):
-        from pyweixin.Config import GlobalConfig
+        from wechat_ai_assistant.Config import GlobalConfig
 
         original_detector, original_value = GlobalConfig._language_detector, GlobalConfig._language
         GlobalConfig._language_detector = detector
@@ -372,7 +372,7 @@ class LanguageIsNotFrozenTests(unittest.TestCase):
             restore()
 
     def test_refreshing_to_the_same_language_reports_no_change(self):
-        from pyweixin.Config import GlobalConfig
+        from wechat_ai_assistant.Config import GlobalConfig
 
         config, restore = self._config(lambda: "English")
         try:
@@ -384,8 +384,8 @@ class LanguageIsNotFrozenTests(unittest.TestCase):
 
     def test_selectors_are_rebuilt_when_the_language_changes(self):
         """重建之后，语言专属的描述符必须真的跟着换。"""
-        from pyweixin import Uielements
-        from pyweixin.wechat_state import RealWeChatProbe
+        from wechat_ai_assistant import Uielements
+        from wechat_ai_assistant.wechat_state import RealWeChatProbe
 
         original = Uielements.Main_window
         try:
@@ -411,8 +411,8 @@ class RecheckVisibilityTests(unittest.TestCase):
         import types
         from tkinter import ttk
 
-        from pyweixin.merchant_ui import MerchantWindow
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.wizard import WizardStep
 
         root = tk.Tk()
         root.withdraw()
@@ -436,7 +436,7 @@ class RecheckVisibilityTests(unittest.TestCase):
             return False
 
     def test_logged_in_hides_recheck(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, button = self._window(WizardStep.WECHAT)
         window._refresh_wechat_recheck(
@@ -445,7 +445,7 @@ class RecheckVisibilityTests(unittest.TestCase):
         self.assertFalse(self._is_packed(button))
 
     def test_not_logged_in_shows_recheck(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, button = self._window(WizardStep.WECHAT)
         window._refresh_wechat_recheck(
@@ -454,7 +454,7 @@ class RecheckVisibilityTests(unittest.TestCase):
         self.assertTrue(self._is_packed(button))
 
     def test_other_step_hides_recheck(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, button = self._window(WizardStep.CONVERSATIONS)
         window._refresh_wechat_recheck(
@@ -475,7 +475,7 @@ class RestartVisibilityTests(unittest.TestCase):
         import types
         from tkinter import ttk
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         root = tk.Tk()
         root.withdraw()
@@ -499,7 +499,7 @@ class RestartVisibilityTests(unittest.TestCase):
             return False
 
     def test_logged_in_hides_restart(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, button = self._window(WizardStep.WECHAT)
         window._refresh_wechat_restart(
@@ -508,7 +508,7 @@ class RestartVisibilityTests(unittest.TestCase):
         self.assertFalse(self._is_packed(button))
 
     def test_unreadable_shows_restart(self):
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, button = self._window(WizardStep.WECHAT)
         button.pack_forget()
@@ -521,7 +521,7 @@ class RestartVisibilityTests(unittest.TestCase):
         """_on_wechat 必须顺手刷它，不然登录成功也藏不掉旧按钮。"""
         import inspect
 
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         source = inspect.getsource(merchant_ui.MerchantWindow._on_wechat)
         self.assertIn("_refresh_wechat_restart", source)

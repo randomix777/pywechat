@@ -1,4 +1,4 @@
-"""为 pyweixin 准备一个**独立**的 OpenCode 实例（不碰共享的 4096）。
+"""为 wechat_ai_assistant 准备一个**独立**的 OpenCode 实例（不碰共享的 4096）。
 
     python examples/prepare_isolated_opencode.py [--start]
 
@@ -34,7 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.gateway_server import (  # noqa: E402
+from wechat_ai_assistant.gateway_server import (  # noqa: E402
     OPENCODE_PASSWORD_ENV,
     OPENCODE_PASSWORD_FILE_ENV,
     write_secret_file,
@@ -106,13 +106,13 @@ def private_env(password_file: Path, port: int) -> dict[str, str]:
     for target in (PRIVATE_ROOT / "appdata", PRIVATE_ROOT / "localappdata", PRIVATE_ROOT / "state"):
         target.mkdir(parents=True, exist_ok=True)
     env["OPENCODE_SERVER_PASSWORD"] = ""  # 由调用方在同一进程内注入，见 main()
-    env["OPENCODE_SERVER_USERNAME"] = "pyweixin"
+    env["OPENCODE_SERVER_USERNAME"] = "wechat_ai_assistant"
     env[OPENCODE_PASSWORD_FILE_ENV] = str(password_file)
     del env["OPENCODE_SERVER_PASSWORD"]
     return env
 
 
-def http(url: str, password: str, user: str = "pyweixin", timeout: float = 8.0):
+def http(url: str, password: str, user: str = "wechat_ai_assistant", timeout: float = 8.0):
     import base64
 
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
@@ -126,7 +126,7 @@ def start_instance(port: int, password: str, log: Path) -> subprocess.Popen:
     creation = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     env = private_env(PRIVATE_ROOT / "secret.pw", port)
     env["OPENCODE_SERVER_PASSWORD"] = password
-    env["OPENCODE_SERVER_USERNAME"] = "pyweixin"
+    env["OPENCODE_SERVER_USERNAME"] = "wechat_ai_assistant"
     handle = open(log, "w", encoding="utf-8", errors="replace")
     return subprocess.Popen(
         [str(OPENCODE_BIN), "serve", "--port", str(port), "--hostname", "127.0.0.1", "--pure"],
@@ -237,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     # OpenCode 的服务端口令只能从环境变量读；这里注入到**子进程**环境，
     # 不写到命令行、不落到任何日志。
     env["OPENCODE_SERVER_PASSWORD"] = password
-    env["OPENCODE_SERVER_USERNAME"] = "pyweixin"
+    env["OPENCODE_SERVER_USERNAME"] = "wechat_ai_assistant"
     (PRIVATE_ROOT / "serve.env").write_text(
         f"{OPENCODE_PASSWORD_FILE_ENV}={password_file}\nOPENCODE_SERVER_PASSWORD_FILE={password_file}\n"
         "# 真实口令不写进任何文件；由 --serve 脚本在同一进程内注入。\n",

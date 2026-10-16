@@ -47,7 +47,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.orders import OrderStore, _match_items_to_products  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore, _match_items_to_products  # noqa: E402
 
 GROUP = "鲜果群"
 
@@ -182,7 +182,7 @@ class ProductCorrectionMovesTheAliasTests(unittest.TestCase):
 
     def test_the_correction_is_recorded_in_the_audit_trail(self):
         """别名被删了，得留下「谁在什么时候改的」。"""
-        source = (ROOT / "src/pyweixin/orders.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/orders.py").read_text(encoding="utf-8")
         self.assertIn("DELETE FROM product_aliases", source)
         self.assertIn("learn_aliases", source)
 

@@ -23,14 +23,14 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.history_read import HistoryRange, SimulatedHistory  # noqa: E402
-from pyweixin.merchant_ui import MerchantWindow  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.runmode import AutoOrderSettings, RunMode  # noqa: E402
-from pyweixin.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
-from pyweixin.wizard import WizardStep  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.history_read import HistoryRange, SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.merchant_ui import MerchantWindow  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.runmode import AutoOrderSettings, RunMode  # noqa: E402
+from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
+from wechat_ai_assistant.wizard import WizardStep  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 SHOTS = ROOT / "docs" / "screenshots"
@@ -165,7 +165,7 @@ class DemoParse:
     """走**真实**规则引擎的假网关。
 
     注意这里没有跳过业务逻辑：消息进来后交给
-    :meth:`pyweixin.orders.OrderStore.parse_import` 的确定性规则解析，
+    :meth:`wechat_ai_assistant.orders.OrderStore.parse_import` 的确定性规则解析，
     老样子、追加、改量、取消都按真实规则处理。唯一假的是"模型"这一层。
 
     ``model_executed = False`` 会一路传到界面和结果里，界面上会显示
@@ -182,7 +182,7 @@ class DemoParse:
         self.results: dict[str, str] = {}
 
     def submit(self, message_id, on_progress=None):
-        from pyweixin.local_parse import ParseProgress
+        from wechat_ai_assistant.local_parse import ParseProgress
 
         self.submitted.append(message_id)
         row = self.store.db.execute(
@@ -205,7 +205,7 @@ class DemoParse:
         return ParseProgress("done", "已处理", message_id=message_id, job_id="job_demo")
 
     def settle(self, on_progress=None):
-        from pyweixin.local_parse import ParseProgress
+        from wechat_ai_assistant.local_parse import ParseProgress
 
         if not self.submitted:
             return ParseProgress("pending", "没有待处理的解析")
@@ -425,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     shoot(window, "10-paused")
 
     print("⑪ 短消息合并")
-    from pyweixin.merging import BufferedMessage, MergeKey
+    from wechat_ai_assistant.merging import BufferedMessage, MergeKey
 
     key = MergeKey(account_id="wxid_demo", conversation=fruit.name, sender="张姐")
     base = 1_780_000_000.0

@@ -30,8 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.reliability import UiOperationQueue  # noqa: E402
-from pyweixin.wechat_state import RealWeChatProbe, WeChatMonitor  # noqa: E402
+from wechat_ai_assistant.reliability import UiOperationQueue  # noqa: E402
+from wechat_ai_assistant.wechat_state import RealWeChatProbe, WeChatMonitor  # noqa: E402
 
 
 class BusyFlagTests(unittest.TestCase):
@@ -88,7 +88,7 @@ class MonitorSkipsWhileBusyTests(unittest.TestCase):
         class SpyProbe:
             def probe(self):
                 calls.append(1)
-                from pyweixin.wechat_state import WeChatState, WeChatStatus
+                from wechat_ai_assistant.wechat_state import WeChatState, WeChatStatus
 
                 return WeChatStatus(WeChatState.LOGGED_IN, "已登录", checked_at=0.0)
 
@@ -107,7 +107,7 @@ class MonitorSkipsWhileBusyTests(unittest.TestCase):
         class SpyProbe:
             def probe(self):
                 calls.append(1)
-                from pyweixin.wechat_state import WeChatState, WeChatStatus
+                from wechat_ai_assistant.wechat_state import WeChatState, WeChatStatus
 
                 return WeChatStatus(WeChatState.LOGGED_IN, "已登录", checked_at=0.0)
 
@@ -138,7 +138,7 @@ class WiringTests(unittest.TestCase):
     """应用必须真的把锁交给监视器 —— 忘了接就等于没修。"""
 
     def test_the_application_passes_the_ui_lock_to_the_monitor(self):
-        source = (ROOT / "src" / "pyweixin" / "application.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "application.py").read_text(encoding="utf-8")
         start = source.index("self.monitor = WeChatMonitor(")
         block = source[start:start + 400]
         self.assertIn("ui_lock=self.ui_lock", block,
@@ -151,7 +151,7 @@ class WiringTests(unittest.TestCase):
         class SpyProbe:
             def probe(self):
                 calls.append(1)
-                from pyweixin.wechat_state import WeChatState, WeChatStatus
+                from wechat_ai_assistant.wechat_state import WeChatState, WeChatStatus
 
                 return WeChatStatus(WeChatState.LOGGED_IN, "已登录", checked_at=0.0)
 

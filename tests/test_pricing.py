@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.pricing import (  # noqa: E402
+from wechat_ai_assistant.pricing import (  # noqa: E402
     MERCHANT_USD_PER_VENDOR_USD,
     US_PER_USD,
     ModelPrice,
@@ -53,7 +53,7 @@ class RateTests(unittest.TestCase):
         是正确写法，不算复制。要防的是有人直接把 10 写进某个函数体或者
         另一个模块，那样改定价时只会改到一处，另一处就悄悄失效了。
         """
-        import pyweixin.pricing as pricing
+        import wechat_ai_assistant.pricing as pricing
 
         source = Path(pricing.__file__).read_text(encoding="utf-8")
         definitions = sum(

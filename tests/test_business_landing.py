@@ -24,9 +24,9 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.dashboard import DashboardBuilder  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.opencode import ScriptedBackend, validate_parse_result  # noqa: E402
+from wechat_ai_assistant.dashboard import DashboardBuilder  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.opencode import ScriptedBackend, validate_parse_result  # noqa: E402
 
 APL, ORG = "APL", "ORG"
 
@@ -523,7 +523,7 @@ class PendingChangeAndIdempotencyTests(BusinessLandingBase):
                 reopened.close()
 
     def test_reanalysis_after_a_version_bump_is_refused_as_stale(self):
-        from pyweixin.orders import _same_quantity
+        from wechat_ai_assistant.orders import _same_quantity
 
         base_msg = add_message(self.store, self.tenant, "鲜果群", "苹果两箱", self.customers["zhang"], source="d6")
         base = self.deliver(base_msg, suggestion(
@@ -579,7 +579,7 @@ class ScriptedBackendTests(unittest.TestCase):
         self.assertEqual(outcome.model_requested, "p/m")
 
     def test_scripted_backend_refuses_unscripted_text(self):
-        from pyweixin.opencode import InvalidParseOutput
+        from wechat_ai_assistant.opencode import InvalidParseOutput
 
         backend = ScriptedBackend({})
         session = backend.create_session("job-1")

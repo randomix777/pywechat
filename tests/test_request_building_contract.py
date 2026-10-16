@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.deepseek_adapter import _build_agent_request  # noqa: E402
+from wechat_ai_assistant.deepseek_adapter import _build_agent_request  # noqa: E402
 
 
 PAYLOAD = {

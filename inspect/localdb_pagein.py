@@ -19,9 +19,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.Config import GlobalConfig  # noqa: E402
-from pyweixin.Uielements import Lists  # noqa: E402
-from pyweixin.WeChatTools import Navigator, Tools  # noqa: E402
+from wechat_ai_assistant.Config import GlobalConfig  # noqa: E402
+from wechat_ai_assistant.Uielements import Lists  # noqa: E402
+from wechat_ai_assistant.WeChatTools import Navigator, Tools  # noqa: E402
 
 
 def page_in(group: str, pages: int) -> int:

@@ -25,13 +25,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "order_agent" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "business_agent" / "src"))
 
-from pyweixin.dashboard import HomeView  # noqa: E402
+from wechat_ai_assistant.dashboard import HomeView  # noqa: E402
 
 
 class MergeVisibilityTests(unittest.TestCase):
     def setUp(self):
         self.source = (Path(__file__).resolve().parent.parent
-                       / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+                       / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
         self.code = "\n".join(line.split("#")[0] for line in self.source.splitlines())
 
     def test_the_merge_count_is_not_guarded_by_hasattr(self):
@@ -58,7 +58,7 @@ class MergeCountWordingTests(unittest.TestCase):
 
     def setUp(self):
         self.source = (Path(__file__).resolve().parent.parent
-                       / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+                       / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
 
     def test_it_says_the_content_was_not_lost(self):
         """商户的第一反应是"漏单了"。这句话必须先回答这个。"""
@@ -71,7 +71,7 @@ class MergeCountWordingTests(unittest.TestCase):
 class MergeSourceTests(unittest.TestCase):
     def setUp(self):
         self.source = (Path(__file__).resolve().parent.parent
-                       / "src" / "pyweixin" / "service.py").read_text(encoding="utf-8")
+                       / "src" / "wechat_ai_assistant" / "service.py").read_text(encoding="utf-8")
 
     def test_the_service_reports_which_messages_were_merged(self):
         self.assertIn("on_merged", self.source)

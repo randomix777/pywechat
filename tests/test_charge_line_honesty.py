@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.model_catalog import _claims_to_be_free, _note_contradicts  # noqa: E402
+from wechat_ai_assistant.model_catalog import _claims_to_be_free, _note_contradicts  # noqa: E402
 
 
 class FreeClaimsTests(unittest.TestCase):
@@ -70,7 +70,7 @@ class MerchantFacingLineTests(unittest.TestCase):
         """美元计价下不存在「固定扣 N 次」这回事，说死一个数就是撒谎。"""
         import re
 
-        from pyweixin.model_catalog import PricingClass, build_catalog, CatalogStore, OperatorModelPolicy
+        from wechat_ai_assistant.model_catalog import PricingClass, build_catalog, CatalogStore, OperatorModelPolicy
 
         policy = OperatorModelPolicy(
             alias="m", provider_id="p", model_id="m",

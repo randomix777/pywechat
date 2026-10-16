@@ -36,7 +36,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin import summary_task, web_dev  # noqa: E402
+from wechat_ai_assistant import summary_task, web_dev  # noqa: E402
 
 
 class _FakeApp:
@@ -145,7 +145,7 @@ class PageAndStateTests(unittest.TestCase):
 
     def test_a_remote_address_is_rejected(self):
         """"只绑本机"不够 —— 绑定地址可能被改掉，所以要主动拒绝来源。"""
-        source = (ROOT / "src/pyweixin/web_dev.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/web_dev.py").read_text(encoding="utf-8")
         self.assertIn("_reject_remote", source)
         self.assertIn("403", source)
         # \u5fc5\u987b\u5728\u6bcf\u4e2a\u5165\u53e3\u90fd\u8c03
@@ -154,7 +154,7 @@ class PageAndStateTests(unittest.TestCase):
 
     def test_the_page_shows_which_data_directory_it_reads(self):
         """目录错了就表现为「没数据 / 未登录」，不显示出来没人会往哪找。"""
-        source = (ROOT / "src/pyweixin/web_dev.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/web_dev.py").read_text(encoding="utf-8")
         self.assertIn("__DATADIR__", source, "\u9875\u9762\u6ca1\u6709\u63a5\u6536\u6570\u636e\u76ee\u5f55")
 
     def test_the_placeholder_is_always_replaced(self):
@@ -246,7 +246,7 @@ class GateSharesOneTruthTests(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.orders import OrderStore
 
         self.store = OrderStore(str(pathlib.Path(self.dir.name) / "o.db"))
         self.tenant = self.store.create_merchant("\u6d4b\u8bd5\u5546\u5bb6")["merchant_id"]

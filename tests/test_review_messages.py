@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 
 def _seed(store, tenant):
@@ -97,7 +97,7 @@ class ExportBundleTests(unittest.TestCase):
         import io
         import zipfile
 
-        from pyweixin.export_bundle import build_export_bundle
+        from wechat_ai_assistant.export_bundle import build_export_bundle
 
         data, info = build_export_bundle(
             self._rows(), {"m2": {}}, generated_at="2026-10-15 21:00")
@@ -119,7 +119,7 @@ class ExportBundleTests(unittest.TestCase):
         import zipfile
         from pathlib import Path
 
-        from pyweixin.export_bundle import build_export_bundle
+        from wechat_ai_assistant.export_bundle import build_export_bundle
 
         with tempfile.TemporaryDirectory() as tmp:
             # 造一个真能被识别的 png 缓存文件，用微信的 md5 命名与关联。
@@ -127,9 +127,9 @@ class ExportBundleTests(unittest.TestCase):
             png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
             import unittest.mock as mock
 
-            with mock.patch("pyweixin.media_attachments._scan_caches",
+            with mock.patch("wechat_ai_assistant.media_attachments._scan_caches",
                             return_value=({"deadbeef": [png]}, {})), \
-                 mock.patch("pyweixin.media_attachments._account_root",
+                 mock.patch("wechat_ai_assistant.media_attachments._account_root",
                             return_value=Path(tmp)):
                 data, info = build_export_bundle(
                     self._rows(), {"m2": {"md5": "deadbeef"}})
@@ -146,15 +146,15 @@ class ExportBundleTests(unittest.TestCase):
         import zipfile
         from pathlib import Path
 
-        from pyweixin.export_bundle import build_export_bundle
+        from wechat_ai_assistant.export_bundle import build_export_bundle
 
         with tempfile.TemporaryDirectory() as tmp:
             dat = Path(tmp) / "msg" / "attach" / "room" / "2026-10" / "Img" / "abc.dat"
             dat.parent.mkdir(parents=True)
             dat.write_bytes(b"\x07\x08V2\x08\x07" + b"0" * 32)
-            with mock.patch("pyweixin.media_attachments._scan_caches",
+            with mock.patch("wechat_ai_assistant.media_attachments._scan_caches",
                             return_value=({}, {})), \
-                 mock.patch("pyweixin.media_attachments._account_root",
+                 mock.patch("wechat_ai_assistant.media_attachments._account_root",
                             return_value=Path(tmp)):
                 data, info = build_export_bundle(
                     self._rows(), {"m2": {"md5": "abc"}})
@@ -178,21 +178,21 @@ class AttachCachedFilesTests(unittest.TestCase):
     def _attach(self, messages, by_id=None, by_name=None):
         import unittest.mock as mock
 
-        from pyweixin.media_attachments import attach_cached_files
+        from wechat_ai_assistant.media_attachments import attach_cached_files
 
-        with mock.patch("pyweixin.media_attachments._scan_caches",
+        with mock.patch("wechat_ai_assistant.media_attachments._scan_caches",
                         return_value=(by_id or {}, by_name or {})), \
-             mock.patch("pyweixin.media_attachments._account_root",
+             mock.patch("wechat_ai_assistant.media_attachments._account_root",
                         return_value=self.root):
             return attach_cached_files(messages)
 
-    def test_encrypted_v4_image_is_not_attached(self):
+    def test_encrypted_v4_image_is_attached_for_lazy_decryption(self):
         dat = self.root / "abc.dat"
         dat.write_bytes(b"\x07\x08V2\x08\x07" + b"0" * 32)
         [message] = self._attach(
             [{"kind": "image", "media": {"md5": "abc"}}], by_id={"abc": [dat]}, by_name={})
-        self.assertEqual(message["attachments"], [])
-        self.assertIn("加密", message["media_status"])
+        self.assertEqual(message["attachments"], [str(dat)])
+        self.assertIn("读取时解密", message["media_status"])
 
     def test_video_thumbnail_is_attached(self):
         thumb = self.root / "vid1_thumb.jpg"

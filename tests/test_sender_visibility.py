@@ -40,8 +40,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.history_read import ConversationCoverage  # noqa: E402
-from pyweixin.utils import (LEGACY_UNRESOLVED_SENDER, UNRESOLVED_SENDER,  # noqa: E402
+from wechat_ai_assistant.history_read import ConversationCoverage  # noqa: E402
+from wechat_ai_assistant.utils import (LEGACY_UNRESOLVED_SENDER, UNRESOLVED_SENDER,  # noqa: E402
                             UNRESOLVED_TIMESTAMP, sender_is_resolved)
 
 
@@ -62,7 +62,7 @@ class PlaceholderTellsTheTruthTests(unittest.TestCase):
 
     def test_the_source_no_longer_writes_the_old_string(self):
         """\u5199\u5165\u8def\u5f84\u4e0d\u5f97\u518d\u51fa\u73b0\u65e7\u4e32\uff08\u9664\u4e86\u5b9a\u4e49\u5b83\u7684\u5e38\u91cf\uff09\u3002"""
-        source = (ROOT / "src/pyweixin/utils.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/utils.py").read_text(encoding="utf-8")
         lines = source.splitlines()
         offenders = [f"L{i}: {l.strip()[:70]}" for i, l in enumerate(lines, 1)
                      if ("\u7ea2\u5305\u6216\u8f6c\u8d26(\u65e0\u6cd5\u83b7\u53d6" in l
@@ -96,16 +96,16 @@ class CoverageCarriesTheSignalTests(unittest.TestCase):
         self.assertEqual(coverage.unresolved_senders, 0)
 
     def test_the_reader_counts_it(self):
-        source = (ROOT / "src/pyweixin/history_read.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/history_read.py").read_text(encoding="utf-8")
         self.assertIn("unresolved_senders", source)
         self.assertIn("sender_is_resolved", source,
                       "\u6570\u91cf\u5fc5\u987b\u6309\u300c\u8ba4\u51fa\u6765\u4e86\u5417\u300d\u7b97\uff0c\u4e0d\u80fd\u53ea\u6570\u7a7a\u7684")
 
     def test_both_interfaces_show_it(self):
         """\u53ea\u5199\u8fdb\u5e93\u4e0d\u7b49\u4e8e\u8bf4\u51fa\u6765 \u2014\u2014 \u5546\u6237\u770b\u7684\u662f\u754c\u9762\u3002"""
-        ui = (ROOT / "src/pyweixin/merchant_ui.py").read_text(encoding="utf-8")
-        web = (ROOT / "src/pyweixin/web_dev.py").read_text(encoding="utf-8")
-        page = (ROOT / "src/pyweixin/web_page.py").read_text(encoding="utf-8")
+        ui = (ROOT / "src/wechat_ai_assistant/merchant_ui.py").read_text(encoding="utf-8")
+        web = (ROOT / "src/wechat_ai_assistant/web_dev.py").read_text(encoding="utf-8")
+        page = (ROOT / "src/wechat_ai_assistant/web_page.py").read_text(encoding="utf-8")
         self.assertIn("unresolved_senders", ui, "Tk \u754c\u9762\u6ca1\u663e\u793a")
         self.assertIn('"unresolved"', web, "Web \u7aef\u70b9\u6ca1\u4f20\u8fd9\u4e2a\u503c")
         self.assertIn("row.unresolved", page, "Web \u9875\u9762\u6ca1\u663e\u793a")

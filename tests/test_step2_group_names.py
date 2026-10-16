@@ -18,8 +18,8 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from pyweixin import localdb  # noqa: E402
-from pyweixin.conversations import (  # noqa: E402
+from wechat_ai_assistant import localdb  # noqa: E402
+from wechat_ai_assistant.conversations import (  # noqa: E402
     Conversation,
     ConversationKind,
 )
@@ -101,11 +101,11 @@ class DisplayPriorityTests(unittest.TestCase):
     """显示优先级：手动备注 > 内存真名 > 原始编号。"""
 
     def _app(self):
-        from pyweixin.application import MerchantApplication
-        from pyweixin.conversations import SimulatedConversations
-        from pyweixin.history_read import SimulatedHistory
-        from pyweixin.orders import OrderStore
-        from pyweixin.wechat_state import SimulatedWeChat, WeChatState
+        from wechat_ai_assistant.application import MerchantApplication
+        from wechat_ai_assistant.conversations import SimulatedConversations
+        from wechat_ai_assistant.history_read import SimulatedHistory
+        from wechat_ai_assistant.orders import OrderStore
+        from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState
 
         self.dir = Path(tempfile.mkdtemp(prefix="pyw-find-"))
         self.store = OrderStore(str(self.dir / "orders.db"))
@@ -169,7 +169,7 @@ class ConvOrderKeyTests(unittest.TestCase):
             return raw
 
     def _window(self, aliases):
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         window = MerchantWindow.__new__(MerchantWindow)
         window.app = self._FakeApp(aliases)
@@ -226,7 +226,7 @@ class RecencyOrderTests(unittest.TestCase):
     """会话列表和微信一样：有新消息的在上，不知道时间的沉底。"""
 
     def test_newest_first(self):
-        from pyweixin.conversations import disambiguate
+        from wechat_ai_assistant.conversations import disambiguate
 
         old = Conversation(name="老群", kind=ConversationKind.GROUP,
                            last_active=100)
@@ -239,7 +239,7 @@ class RecencyOrderTests(unittest.TestCase):
 
     def test_no_timestamp_falls_back_to_name_order(self):
         """都没时间 = 老行为（名字排序），内存路、通讯录路不受影响。"""
-        from pyweixin.conversations import disambiguate
+        from wechat_ai_assistant.conversations import disambiguate
 
         got = disambiguate([
             Conversation(name="香蕉群", kind=ConversationKind.GROUP),
@@ -248,7 +248,7 @@ class RecencyOrderTests(unittest.TestCase):
         self.assertEqual([c.name for c in got], ["苹果群", "香蕉群"])
 
     def test_unknown_time_sinks_below_known(self):
-        from pyweixin.conversations import disambiguate
+        from wechat_ai_assistant.conversations import disambiguate
 
         known = Conversation(name="有消息群", kind=ConversationKind.GROUP,
                              last_active=100)
@@ -266,8 +266,8 @@ class RecencyOrderTests(unittest.TestCase):
 
     def test_source_carries_recency(self):
         """解密库行的时间一路带到 Conversation。"""
-        from pyweixin.conversations import RealConversationSource
-        from pyweixin.wcdb import WcdbConversation
+        from wechat_ai_assistant.conversations import RealConversationSource
+        from wechat_ai_assistant.wcdb import WcdbConversation
 
         rows = [
             WcdbConversation(username="old@chatroom", display="老群",
@@ -287,8 +287,8 @@ class AutoRefreshTests(unittest.TestCase):
     def _window(self, conversations, logged_in):
         import types
 
-        from pyweixin.merchant_ui import MerchantWindow
-        from pyweixin.wechat_state import WeChatState
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.wechat_state import WeChatState
 
         window = MerchantWindow.__new__(MerchantWindow)
         window._widgets = {}
@@ -309,7 +309,7 @@ class AutoRefreshTests(unittest.TestCase):
 
     def test_existing_list_still_refreshes(self):
         """有列表也刷：和微信一致，每次看列表都是新的。"""
-        from pyweixin.conversations import Conversation
+        from wechat_ai_assistant.conversations import Conversation
 
         window, spawned = self._window(
             [Conversation(name="群", kind=ConversationKind.GROUP)], True)
@@ -325,7 +325,7 @@ class AutoRefreshTests(unittest.TestCase):
         """读崩了也不能把"正在刷"卡死，不然以后再也不自动刷。"""
         import types
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         window = MerchantWindow.__new__(MerchantWindow)
         window._widgets = {}
@@ -347,8 +347,8 @@ class FocusBackTests(unittest.TestCase):
         import time
         import types
 
-        from pyweixin.merchant_ui import MerchantWindow
-        from pyweixin.wechat_state import WeChatState
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.wechat_state import WeChatState
 
         window = MerchantWindow.__new__(MerchantWindow)
         window._widgets = {}
@@ -367,7 +367,7 @@ class FocusBackTests(unittest.TestCase):
     def test_stale_focus_refreshes(self):
         import time
 
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, spawned = self._window(
             WizardStep.CONVERSATIONS, time.time() - 61)
@@ -377,7 +377,7 @@ class FocusBackTests(unittest.TestCase):
     def test_fresh_focus_does_nothing(self):
         import time
 
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, spawned = self._window(
             WizardStep.CONVERSATIONS, time.time() - 10)
@@ -387,7 +387,7 @@ class FocusBackTests(unittest.TestCase):
     def test_other_step_does_nothing(self):
         import time
 
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, spawned = self._window(
             WizardStep.READ, time.time() - 3600)
@@ -397,7 +397,7 @@ class FocusBackTests(unittest.TestCase):
     def test_in_flight_does_not_double_refresh(self):
         import time
 
-        from pyweixin.wizard import WizardStep
+        from wechat_ai_assistant.wizard import WizardStep
 
         window, spawned = self._window(
             WizardStep.CONVERSATIONS, time.time() - 3600, refreshing=True)

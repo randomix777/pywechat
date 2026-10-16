@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
-from pyweixin.history_read import HistoryReader  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind  # noqa: E402
+from wechat_ai_assistant.history_read import HistoryReader  # noqa: E402
 
 
 def _group(name="测试群"):
@@ -56,7 +56,7 @@ class AvatarRoutingTests(unittest.TestCase):
             dump, group_members=lambda conv: members_calls.append(conv) or ["张老板"],
             sender_source="avatar",
         )
-        with patch("pyweixin.WeChatAuto.Messages.dump_senders_via_avatar",
+        with patch("wechat_ai_assistant.WeChatAuto.Messages.dump_senders_via_avatar",
                    return_value=list(AVATAR_RECORDS)) as avatar:
             got = reader._read_one(_group(), 50)
         self.assertEqual(avatar.call_count, 1)
@@ -72,7 +72,7 @@ class AvatarRoutingTests(unittest.TestCase):
         dump = _reader([{"消息发送人": "张老板", "消息内容": "你好",
                          "消息类型": "文本", "消息发送时间": "2026-10-2 12:21"}])
         reader = HistoryReader(dump, sender_source="avatar")
-        with patch("pyweixin.WeChatAuto.Messages.dump_senders_via_avatar") as avatar:
+        with patch("wechat_ai_assistant.WeChatAuto.Messages.dump_senders_via_avatar") as avatar:
             got = reader._read_one(_friend(), 50)
         self.assertEqual(avatar.call_count, 0)
         self.assertEqual(len(dump.calls), 1)
@@ -85,7 +85,7 @@ class AvatarRoutingTests(unittest.TestCase):
         reader = HistoryReader(
             dump, group_members=lambda conv: ["张老板"], sender_source="members",
         )
-        with patch("pyweixin.WeChatAuto.Messages.dump_senders_via_avatar") as avatar:
+        with patch("wechat_ai_assistant.WeChatAuto.Messages.dump_senders_via_avatar") as avatar:
             got = reader._read_one(_group(), 50)
         self.assertEqual(avatar.call_count, 0)
         self.assertEqual(len(dump.calls), 1)
@@ -96,7 +96,7 @@ class AvatarRoutingTests(unittest.TestCase):
         dump = _reader([])
         reader = HistoryReader(dump, group_members=lambda conv: [], sender_source="whatever")
         self.assertEqual(reader._sender_source, "members")
-        with patch("pyweixin.WeChatAuto.Messages.dump_senders_via_avatar") as avatar:
+        with patch("wechat_ai_assistant.WeChatAuto.Messages.dump_senders_via_avatar") as avatar:
             reader._read_one(_group(), 5)
         self.assertEqual(avatar.call_count, 0)
         self.assertEqual(len(dump.calls), 1)
@@ -128,7 +128,7 @@ class AvatarCardCopyTests(unittest.TestCase):
             return self.copy_item
 
     def _clipboard(self, reads):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
 
         writes = []
         return (
@@ -139,7 +139,7 @@ class AvatarCardCopyTests(unittest.TestCase):
         )
 
     def test_copy_success_returns_text_and_restores_clipboard(self):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
 
         profile = self.FakeProfile()
         get_patch, set_patch, writes = self._clipboard(["旧剪贴板", "张老板\n微信号：wxid_1"])
@@ -151,7 +151,7 @@ class AvatarCardCopyTests(unittest.TestCase):
         self.assertEqual(writes[-1], "旧剪贴板")
 
     def test_no_copy_menu_raises(self):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
 
         profile = self.FakeProfile(exists=False)
         get_patch, set_patch, writes = self._clipboard(["旧剪贴板"])
@@ -161,7 +161,7 @@ class AvatarCardCopyTests(unittest.TestCase):
         self.assertEqual(writes[-1], "旧剪贴板")
 
     def test_empty_clipboard_after_copy_raises(self):
-        import pyweixin.utils as utils_mod
+        import wechat_ai_assistant.utils as utils_mod
 
         profile = self.FakeProfile()
         get_patch, set_patch, writes = self._clipboard(["旧剪贴板", "   "])

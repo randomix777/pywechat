@@ -94,10 +94,10 @@ OpenCodeAdapter(url, password="")   # ValueError
 
 ```bash
 docker compose -f docker-compose.yml exec gateway \
-  python -m pyweixin.admin --db /data/product.db create-operator --username ops
+  python -m wechat_ai_assistant.admin --db /data/product.db create-operator --username ops
 
 docker compose -f docker-compose.yml exec gateway \
-  python -m pyweixin.admin --db /data/product.db create-merchant \
+  python -m wechat_ai_assistant.admin --db /data/product.db create-merchant \
     --username demo-shop --display-name "示例商家" --quota 200 --period-days 30
 ```
 
@@ -106,12 +106,12 @@ docker compose -f docker-compose.yml exec gateway \
 其它常用运维命令：
 
 ```bash
-python -m pyweixin.admin --db /data/product.db list-accounts
-python -m pyweixin.admin --db /data/product.db set-plan --username demo-shop --quota 500 --period-days 60
-python -m pyweixin.admin --db /data/product.db list-devices --username demo-shop
-python -m pyweixin.admin --db /data/product.db disable-device --device dv_xxxxxxxx
-python -m pyweixin.admin --db /data/product.db list-jobs --state outcome_unknown,failed
-python -m pyweixin.admin --db /data/product.db purge --older-than-days 7
+python -m wechat_ai_assistant.admin --db /data/product.db list-accounts
+python -m wechat_ai_assistant.admin --db /data/product.db set-plan --username demo-shop --quota 500 --period-days 60
+python -m wechat_ai_assistant.admin --db /data/product.db list-devices --username demo-shop
+python -m wechat_ai_assistant.admin --db /data/product.db disable-device --device dv_xxxxxxxx
+python -m wechat_ai_assistant.admin --db /data/product.db list-jobs --state outcome_unknown,failed
+python -m wechat_ai_assistant.admin --db /data/product.db purge --older-than-days 7
 ```
 
 ---
@@ -156,11 +156,11 @@ curl -fsS https://gateway.example.com/healthz
 
 ### 4.3 数据库迁移与回滚
 
-- 网关库由 `pyweixin.product` 在启动时用 `CREATE TABLE IF NOT EXISTS` 建表，版本记录在 `product_schema_version`。
+- 网关库由 `wechat_ai_assistant.product` 在启动时用 `CREATE TABLE IF NOT EXISTS` 建表，版本记录在 `product_schema_version`。
 - 当前版本为 **1**（`PRODUCT_SCHEMA_VERSION`）。
 - 升级：先备份 → 部署新镜像 → `GET /healthz` 的 `schema_version` 应为新值。
 - 回滚：镜像回退到上一版本即可，**因为迁移只做加列/加表，旧代码可继续读取**。如果未来的迁移包含破坏性变更，回滚必须先恢复备份，不能只换镜像。
-- 订单业务库 `orders.db`（`pyweixin.orders`，`SCHEMA_VERSION = 2`）遵循同样约定，但它是**商家本机**的文件，不在云端备份范围内。
+- 订单业务库 `orders.db`（`wechat_ai_assistant.orders`，`SCHEMA_VERSION = 2`）遵循同样约定，但它是**商家本机**的文件，不在云端备份范围内。
 
 ---
 
@@ -326,7 +326,7 @@ curl -fsS https://gateway.example.com/healthz
   最多 200 条，单条上限与订单任务同口径。
 - 不需要绑定客户、不需要商品资料 —— 摘要只转述，不归属。
   要这两样的请求说明调错了任务。
-- 执行提示词与输出校验的唯一来源是 `pyweixin.summary`
+- 执行提示词与输出校验的唯一来源是 `wechat_ai_assistant.summary`
  （`SUMMARY_SYSTEM_PROMPT` + `validate_summary_result`），
   客户端传 `system_prompt` 照样被拒。
 - 结算：同一套冻结结算，按实际 token 用量实结（`billing` 下发为准）。
@@ -383,7 +383,7 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests      # 171 项
 .\.venv\Scripts\python.exe examples\smoke_gateway.py            # 16 步真实进程演练
 .\.venv\Scripts\python.exe examples\check_hygiene.py            # 静态检查
-.\.venv\Scripts\python.exe -m pyweixin.merchant_app --check     # 本地软件自检（不需要网络）
+.\.venv\Scripts\python.exe -m wechat_ai_assistant.merchant_app --check     # 本地软件自检（不需要网络）
 ```
 
 `smoke_gateway.py` 第 15–16 步使用**固定桩结果**（`LocalRuleAdapter`）驱动本地落地，用来验证本地业务规则；它**不是模型解析结果**，也不构成任何关于 OpenCode 或模型质量的证据。

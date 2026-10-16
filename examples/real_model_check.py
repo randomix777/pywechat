@@ -40,8 +40,8 @@ def section(title: str) -> None:
 
 def prove_routing() -> int:
     """不需要凭据就能证明的六件事。"""
-    from pyweixin.capability_check import run_order_capability_check
-    from pyweixin.opencode import OpenCodeAdapter, validate_parse_result
+    from wechat_ai_assistant.capability_check import run_order_capability_check
+    from wechat_ai_assistant.opencode import OpenCodeAdapter, validate_parse_result
 
     section("① 路由证明（注入传输层，不发真实请求）")
     failures = 0
@@ -159,25 +159,25 @@ def prove_routing() -> int:
 
 def bounded_real_call(gateway: str, alias: str, max_calls: int, timeout: float) -> int:
     section(f"② 真实模型探测（上限 {max_calls} 次，单次 {timeout:.0f}s，并发 1）")
-    from pyweixin.gateway_server import build_gateway, resolve_opencode_password
-    from pyweixin.model_catalog import OperatorModelPolicy, PricingClass
+    from wechat_ai_assistant.gateway_server import build_gateway, resolve_opencode_password
+    from wechat_ai_assistant.model_catalog import OperatorModelPolicy, PricingClass
 
-    url = os.environ.get("PYWEIXIN_OPENCODE_URL", "")
+    url = os.environ.get("WECHAT_AI_OPENCODE_URL", "")
     if not url:
-        print("  SKIP  未设置 PYWEIXIN_OPENCODE_URL —— 没有指向任何 OpenCode 实例")
+        print("  SKIP  未设置 WECHAT_AI_OPENCODE_URL —— 没有指向任何 OpenCode 实例")
         print("        独立实例已准备好，见 .opencode-private/instance.json")
         return 0
     password = resolve_opencode_password()
     print(f"  上游地址：{url}")
-    print(f"  认证：{'来自文件（内容不显示）' if os.environ.get('PYWEIXIN_OPENCODE_PASSWORD_FILE') else '环境变量' if password else '未配置'}")
+    print(f"  认证：{'来自文件（内容不显示）' if os.environ.get('WECHAT_AI_OPENCODE_PASSWORD_FILE') else '环境变量' if password else '未配置'}")
 
     gateway_obj = build_gateway(
-        os.environ.get("PYWEIXIN_PRODUCT_DB", ":memory:"),
+        os.environ.get("WECHAT_AI_PRODUCT_DB", ":memory:"),
         opencode_url=url,
-        opencode_user=os.environ.get("PYWEIXIN_OPENCODE_USER", "pyweixin"),
+        opencode_user=os.environ.get("WECHAT_AI_OPENCODE_USER", "wechat_ai_assistant"),
         opencode_password=password,
-        opencode_provider=os.environ.get("PYWEIXIN_OPENCODE_PROVIDER", ""),
-        opencode_model=os.environ.get("PYWEIXIN_OPENCODE_MODEL", ""),
+        opencode_provider=os.environ.get("WECHAT_AI_OPENCODE_PROVIDER", ""),
+        opencode_model=os.environ.get("WECHAT_AI_OPENCODE_MODEL", ""),
     )
     report = gateway_obj.execution_backend_report()
     print(f"  后端自检 ok={report.get('ok')} 版本={report.get('version', report.get('error', ''))}")
@@ -188,8 +188,8 @@ def bounded_real_call(gateway: str, alias: str, max_calls: int, timeout: float) 
     started = time.time()
     policies = [
         OperatorModelPolicy(
-            alias=alias, provider_id=os.environ.get("PYWEIXIN_OPENCODE_PROVIDER", ""),
-            model_id=os.environ.get("PYWEIXIN_OPENCODE_MODEL", ""),
+            alias=alias, provider_id=os.environ.get("WECHAT_AI_OPENCODE_PROVIDER", ""),
+            model_id=os.environ.get("WECHAT_AI_OPENCODE_MODEL", ""),
             pricing_class=PricingClass.METERED, cost_micro_usd_per_job=1, is_default=True,
         )
     ]
@@ -205,11 +205,11 @@ def bounded_real_call(gateway: str, alias: str, max_calls: int, timeout: float) 
     entry = gateway_obj.catalog.catalog.entry(alias)
     if entry is None:
         print(f"  结论：上游目录里没有策略声明的 "
-              f"{os.environ.get('PYWEIXIN_OPENCODE_PROVIDER','')}/"
-              f"{os.environ.get('PYWEIXIN_OPENCODE_MODEL','')}，**未发送任何模型请求**。")
+              f"{os.environ.get('WECHAT_AI_OPENCODE_PROVIDER','')}/"
+              f"{os.environ.get('WECHAT_AI_OPENCODE_MODEL','')}，**未发送任何模型请求**。")
         return 1
     print(f"  别名 {alias} -> provider/model 已解析（客户视图不含这两项）")
-    from pyweixin.capability_check import SYNTHETIC_CASES
+    from wechat_ai_assistant.capability_check import SYNTHETIC_CASES
     if max_calls < len(SYNTHETIC_CASES):
         # 硬上限：只跑前 N 个用例，其余标为"未运行"，不假装跑过。
         print(f"  按上限只运行 {max_calls}/{len(SYNTHETIC_CASES)} 个用例，其余不运行")

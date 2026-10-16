@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.product import (  # noqa: E402
+from wechat_ai_assistant.product import (  # noqa: E402
     ProductStore, Conflict, IdempotencyConflict,
     QuotaExhausted, SubscriptionInactive,
 )

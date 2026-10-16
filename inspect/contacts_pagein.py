@@ -13,8 +13,8 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.Config import GlobalConfig  # noqa: E402
-from pyweixin.WeChatTools import Navigator  # noqa: E402
+from wechat_ai_assistant.Config import GlobalConfig  # noqa: E402
+from wechat_ai_assistant.WeChatTools import Navigator  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

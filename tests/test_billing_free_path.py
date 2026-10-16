@@ -27,24 +27,24 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.client_login import GatewayError, PendingQueue, status_label  # noqa: E402
-from pyweixin.gateway import ProductGateway  # noqa: E402
-from pyweixin.gateway_server import platform_budget_from_env  # noqa: E402
-from pyweixin.local_parse import LOCAL_BLOCKED, LocalParseService  # noqa: E402
-from pyweixin.model_catalog import (  # noqa: E402
+from wechat_ai_assistant.client_login import GatewayError, PendingQueue, status_label  # noqa: E402
+from wechat_ai_assistant.gateway import ProductGateway  # noqa: E402
+from wechat_ai_assistant.gateway_server import platform_budget_from_env  # noqa: E402
+from wechat_ai_assistant.local_parse import LOCAL_BLOCKED, LocalParseService  # noqa: E402
+from wechat_ai_assistant.model_catalog import (  # noqa: E402
     CatalogStatus,
     CatalogStore,
     OperatorModelPolicy,
     PricingClass,
     build_catalog,
 )
-from pyweixin.opencode import (  # noqa: E402
+from wechat_ai_assistant.opencode import (  # noqa: E402
     AdapterRejected,
     AdapterUnavailable,
     LocalRuleAdapter,
     OpenCodeAdapter,
 )
-from pyweixin.product import (  # noqa: E402
+from wechat_ai_assistant.product import (  # noqa: E402
     ModelUnavailable,
     PlatformBudget,
     PlatformBudgetExhausted,
@@ -264,7 +264,7 @@ class FrozenRouteIsNotAnAvailabilityPromiseTests(GatewayHarness):
 
     def test_a_delisted_model_that_fails_does_not_charge_or_switch(self):
         """上游真的下架了，这一单会失败 —— 冻结路由不等于保证可用。"""
-        from pyweixin.opencode import AdapterRejected
+        from wechat_ai_assistant.opencode import AdapterRejected
 
         class GoneAdapter(LocalRuleAdapter):
             def run_parse(self, session_id, payload, job_id, deadline, cancel_check=None,
@@ -519,13 +519,13 @@ class PlatformBudgetGateTests(GatewayHarness):
     def test_budget_is_read_from_the_environment(self):
         self.assertIsNone(platform_budget_from_env({}), "什么都没配就是不限制")
         budget = platform_budget_from_env({
-            "PYWEIXIN_PLATFORM_DAILY_JOBS": "50",
-            "PYWEIXIN_PLATFORM_MAX_CONCURRENCY": "2",
+            "WECHAT_AI_PLATFORM_DAILY_JOBS": "50",
+            "WECHAT_AI_PLATFORM_MAX_CONCURRENCY": "2",
         })
         self.assertEqual((budget.daily_paid_jobs, budget.max_paid_concurrency), (50, 2))
         self.assertIsNone(budget.cost_cents_per_paid_job, "没有单价时不得编造成本")
-        self.assertIsNone(platform_budget_from_env({"PYWEIXIN_PLATFORM_DAILY_JOBS": "x"}))
-        priced = platform_budget_from_env({"PYWEIXIN_PLATFORM_COST_CENTS_PER_JOB": "3"})
+        self.assertIsNone(platform_budget_from_env({"WECHAT_AI_PLATFORM_DAILY_JOBS": "x"}))
+        priced = platform_budget_from_env({"WECHAT_AI_PLATFORM_COST_CENTS_PER_JOB": "3"})
         self.assertEqual(priced.cost_cents_per_paid_job, 3)
 
 
@@ -545,7 +545,7 @@ class PendingMessageIsHeldTests(unittest.TestCase):
     """免费次数用完、模型暂不可用、平台暂停接收 —— 一律留在本地队列里。"""
 
     def _service(self, code: str, tmp: Path):
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.orders import OrderStore
 
         orders = OrderStore(str(tmp / "orders.db"))
         merchant = orders.create_merchant("本地店", plan="demo", ai_quota=0)

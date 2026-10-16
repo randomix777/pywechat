@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.orders import _match_items_to_products  # noqa: E402
+from wechat_ai_assistant.orders import _match_items_to_products  # noqa: E402
 
 CATALOG = [
     {"sku": "P-SOY", "name": "酱油", "unit": "瓶", "aliases": "酱油|李记酱油"},

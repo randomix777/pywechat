@@ -5,7 +5,7 @@ structure, product matching, auto-recording policy, the minimal follow-up
 question, receipt rendering and order memory proposals.
 
 It imports the generic core and nothing else. In particular it does not import
-``pyweixin``, so it runs on a server with no WeChat automation installed.
+``wechat_ai_assistant``, so it runs on a server with no WeChat automation installed.
 """
 from __future__ import annotations
 

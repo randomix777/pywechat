@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pyweixin.client_login import (
+from wechat_ai_assistant.client_login import (
     STATUS_CANCELLED,
     STATUS_LOGGED_IN,
     STATUS_LOGGED_OUT,
@@ -34,9 +34,9 @@ from pyweixin.client_login import (
     should_retry,
     status_label,
 )
-from pyweixin.gateway import ProductGateway
-from pyweixin.opencode import LocalRuleAdapter
-from pyweixin.product import ProductStore
+from wechat_ai_assistant.gateway import ProductGateway
+from wechat_ai_assistant.opencode import LocalRuleAdapter
+from wechat_ai_assistant.product import ProductStore
 
 from tests.test_product_gateway import VALID_PARSE_RESULT, sample_request
 
@@ -47,7 +47,7 @@ from urllib.request import urlopen
 
 class CredentialStoreTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.directory = Path(tempfile.mkdtemp(prefix="pyweixin-client-"))
+        self.directory = Path(tempfile.mkdtemp(prefix="wechat_ai_assistant-client-"))
         self.path = self.directory / "credentials.bin"
 
     def tearDown(self) -> None:
@@ -141,7 +141,7 @@ class StatusWordingTests(unittest.TestCase):
 
 class PendingQueueTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.directory = tempfile.mkdtemp(prefix="pyweixin-queue-")
+        self.directory = tempfile.mkdtemp(prefix="wechat_ai_assistant-queue-")
         self.queue = PendingQueue(os.path.join(self.directory, "pending.db"))
 
     def tearDown(self) -> None:
@@ -187,7 +187,7 @@ def _client_catalog() -> Any:
 
     没有目录网关会如实拒绝任务（这是正确行为），所以这里显式配置。
     """
-    from pyweixin.model_catalog import (
+    from wechat_ai_assistant.model_catalog import (
         CatalogStatus,
         CatalogStore,
         OperatorModelPolicy,
@@ -224,7 +224,7 @@ class ClientAgainstRealGatewayTests(unittest.TestCase):
             secure_cookies=False,
             catalog=_client_catalog(),
         )
-        from pyweixin.gateway_server import GatewayHTTPRequestHandler
+        from wechat_ai_assistant.gateway_server import GatewayHTTPRequestHandler
 
         class Handler(GatewayHTTPRequestHandler):
             pass
@@ -235,7 +235,7 @@ class ClientAgainstRealGatewayTests(unittest.TestCase):
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         self.account = self.store.create_account("client-shop", "password-1234", display_name="客户端店", quota_micro_usd=9)
-        self.directory = Path(tempfile.mkdtemp(prefix="pyweixin-login-"))
+        self.directory = Path(tempfile.mkdtemp(prefix="wechat_ai_assistant-login-"))
         self.credentials = CredentialStore(self.directory / "creds.bin")
 
     def tearDown(self) -> None:

@@ -7,8 +7,8 @@ from pathlib import Path
 from threading import Event, Thread
 
 
-MODULE_PATH = Path(__file__).parents[1] / "src" / "pyweixin" / "reliability.py"
-SPEC = importlib.util.spec_from_file_location("pyweixin_reliability_test_module", MODULE_PATH)
+MODULE_PATH = Path(__file__).parents[1] / "src" / "wechat_ai_assistant" / "reliability.py"
+SPEC = importlib.util.spec_from_file_location("wechat_ai_assistant_reliability_test_module", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)

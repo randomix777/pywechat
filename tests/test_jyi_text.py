@@ -17,8 +17,8 @@ sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT / "packages" / "order_agent" / "src"))
 sys.path.insert(0, str(_ROOT / "packages" / "business_agent" / "src"))
 
-from pyweixin import jyi_parse  # noqa: E402
-from pyweixin.jyi_client import JYI_AUTH_ORIGIN, JYI_GATEWAY, JYIClient  # noqa: E402
+from wechat_ai_assistant import jyi_parse  # noqa: E402
+from wechat_ai_assistant.jyi_client import JYI_AUTH_ORIGIN, JYI_GATEWAY, JYIClient  # noqa: E402
 
 
 def _chat_body(text, prompt_tokens=10, completion_tokens=5):
@@ -42,7 +42,7 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(json.loads(messages[1]["content"]), {"a": 1})
 
     def test_summary_prompt_reuses_summary(self):
-        from pyweixin.summary import SUMMARY_SYSTEM_PROMPT
+        from wechat_ai_assistant.summary import SUMMARY_SYSTEM_PROMPT
 
         messages = jyi_parse.build_summary_messages([
             {"sender": "张姐", "content": "苹果两箱",
@@ -61,7 +61,7 @@ class PromptTests(unittest.TestCase):
                          {"input_tokens": 0, "output_tokens": 0})
 
     def test_parse_order_json_validates(self):
-        from pyweixin.opencode import InvalidParseOutput
+        from wechat_ai_assistant.opencode import InvalidParseOutput
 
         result = jyi_parse.parse_order_json(VALID_ORDER_JSON)
         self.assertEqual(result["intent"], "new_order")
@@ -74,8 +74,8 @@ class PromptTests(unittest.TestCase):
 
 class ServiceTests(unittest.TestCase):
     def _service(self, chat):
-        from pyweixin.client_login import PendingQueue
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.client_login import PendingQueue
+        from wechat_ai_assistant.orders import OrderStore
 
         self._tmp = tempfile.TemporaryDirectory(prefix="pyw-jyi-")
         store = OrderStore(str(Path(self._tmp.name) / "o.db"))
@@ -138,8 +138,8 @@ class ServiceTests(unittest.TestCase):
         store.close()
 
     def test_network_error_is_retryable(self):
-        from pyweixin.client_login import GatewayError
-        from pyweixin.local_parse import LOCAL_NEEDS_RETRY
+        from wechat_ai_assistant.client_login import GatewayError
+        from wechat_ai_assistant.local_parse import LOCAL_NEEDS_RETRY
 
         def _down(*a, **k):
             raise GatewayError("network_unavailable", "网络暂不可用")
@@ -153,10 +153,10 @@ class ServiceTests(unittest.TestCase):
 
 class WiringTests(unittest.TestCase):
     def test_factory_picks_jyi_service(self):
-        from pyweixin.client_login import Session
-        from pyweixin.merchant_app import build_service_factory
-        from pyweixin.local_parse import PendingQueue
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.client_login import Session
+        from wechat_ai_assistant.merchant_app import build_service_factory
+        from wechat_ai_assistant.local_parse import PendingQueue
+        from wechat_ai_assistant.orders import OrderStore
 
         tmp = tempfile.TemporaryDirectory(prefix="pyw-jyif-")
         queue = None
@@ -182,12 +182,12 @@ class WiringTests(unittest.TestCase):
     def test_quota_gate_skips_jyi(self):
         import tempfile
 
-        from pyweixin.conversations import ConversationRegistry
-        from pyweixin.history_read import HistoryReader
-        from pyweixin.orders import OrderStore
-        from pyweixin.runmode import SettingsStore
-        from pyweixin.wechat_state import SimulatedWeChat, WeChatMonitor
-        from pyweixin.wizard import Wizard
+        from wechat_ai_assistant.conversations import ConversationRegistry
+        from wechat_ai_assistant.history_read import HistoryReader
+        from wechat_ai_assistant.orders import OrderStore
+        from wechat_ai_assistant.runmode import SettingsStore
+        from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatMonitor
+        from wechat_ai_assistant.wizard import Wizard
 
         tmp = tempfile.TemporaryDirectory(prefix="pyw-jyiq-")
         try:

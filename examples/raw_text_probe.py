@@ -39,10 +39,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.Config import GlobalConfig  # noqa: E402
-from pyweixin.Uielements import Lists  # noqa: E402
-from pyweixin.WeChatTools import Navigator, Tools  # noqa: E402
-from pyweixin.utils import traverse_chat_history  # noqa: E402
+from wechat_ai_assistant.Config import GlobalConfig  # noqa: E402
+from wechat_ai_assistant.Uielements import Lists  # noqa: E402
+from wechat_ai_assistant.WeChatTools import Navigator, Tools  # noqa: E402
+from wechat_ai_assistant.utils import traverse_chat_history  # noqa: E402
 
 import pyautogui  # noqa: E402
 
@@ -61,7 +61,7 @@ def list_conversations() -> None:
 
     列会话本身就得驱动微信界面，那会把「只看不碰」的承诺打破。所以不列。
     """
-    from pyweixin.WeChatTools import Contacts
+    from wechat_ai_assistant.WeChatTools import Contacts
 
     available = [name for name in dir(Contacts) if "friend" in name.lower()]
     print("\nContacts 上确实存在的「friend」相关方法：")

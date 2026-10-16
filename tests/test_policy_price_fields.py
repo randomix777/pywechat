@@ -20,14 +20,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.model_catalog import (  # noqa: E402
+from wechat_ai_assistant.model_catalog import (  # noqa: E402
     CatalogStore,
     OperatorModelPolicy,
     PricingClass,
     _read_price,
     build_catalog,
 )
-from pyweixin.gateway import _optional_price  # noqa: E402
+from wechat_ai_assistant.gateway import _optional_price  # noqa: E402
 
 
 def _policy(**kwargs):

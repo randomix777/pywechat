@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.wizard import QuotaView  # noqa: E402
+from wechat_ai_assistant.wizard import QuotaView  # noqa: E402
 
 
 class PercentageTests(unittest.TestCase):
@@ -92,14 +92,14 @@ class HonestyTests(unittest.TestCase):
 
 class WiringTests(unittest.TestCase):
     def test_the_client_reads_the_three_numbers_the_bar_needs(self):
-        source = (ROOT / "src" / "pyweixin" / "wizard.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "wizard.py").read_text(encoding="utf-8")
         start = source.index("subscription = (payload or {}).get")
         block = source[start:start + 900]
         for field in ("quota_micro_usd", "used_micro_usd", "reserved_micro_usd"):
             self.assertIn(field, block)
 
     def test_the_gateway_sends_them(self):
-        source = (ROOT / "src" / "pyweixin" / "product.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "product.py").read_text(encoding="utf-8")
         start = source.index("def _subscription_view")
         block = source[start:start + 900]
         for field in ("quota_micro_usd", "used_micro_usd", "reserved_micro_usd"):
@@ -107,7 +107,7 @@ class WiringTests(unittest.TestCase):
 
     def test_the_bar_only_appears_when_there_is_a_denominator(self):
         """没分母就不画 —— 硬画一条空条等于说「用了很多」。"""
-        source = (ROOT / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
         self.assertIn("def _render_quota_bar", source)
         start = source.index("def _render_quota_bar")
         block = source[start:start + 1600]

@@ -2,7 +2,7 @@
 
 ## 这一轮接的是什么
 
-之前 :mod:`pyweixin.pricing` 算得出美元金额，但**没有任何调用点** ——
+之前 :mod:`wechat_ai_assistant.pricing` 算得出美元金额，但**没有任何调用点** ——
 实际扣费走的还是固定的整数 ``cost_micro_usd_per_job``。这一轮把两者接上。
 
 ## 核心约定：预留按上限，实扣按真实用量
@@ -31,8 +31,8 @@ ROOT = Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.gateway import ProductGateway, _optional_price  # noqa: E402
-from pyweixin.pricing import (  # noqa: E402
+from wechat_ai_assistant.gateway import ProductGateway, _optional_price  # noqa: E402
+from wechat_ai_assistant.pricing import (  # noqa: E402
     MERCHANT_USD_PER_VENDOR_USD,
     US_PER_USD,
     ModelPrice,

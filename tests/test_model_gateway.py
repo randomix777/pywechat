@@ -19,17 +19,17 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.gateway import ProductGateway  # noqa: E402
-from pyweixin.gateway_server import GatewayHTTPRequestHandler  # noqa: E402
-from pyweixin.model_catalog import (  # noqa: E402
+from wechat_ai_assistant.gateway import ProductGateway  # noqa: E402
+from wechat_ai_assistant.gateway_server import GatewayHTTPRequestHandler  # noqa: E402
+from wechat_ai_assistant.model_catalog import (  # noqa: E402
     CatalogStatus,
     CatalogStore,
     OperatorModelPolicy,
     PricingClass,
     build_catalog,
 )
-from pyweixin.opencode import LocalRuleAdapter  # noqa: E402
-from pyweixin.product import ProductStore  # noqa: E402
+from wechat_ai_assistant.opencode import LocalRuleAdapter  # noqa: E402
+from wechat_ai_assistant.product import ProductStore  # noqa: E402
 
 VALID = {
     "intent": "new_order", "customer_alias": "张老板", "target_order": None,

@@ -58,7 +58,7 @@ class BackendFactsTests(unittest.TestCase):
 
     def test_the_key_is_documented_as_file_only(self):
         text = (DOCS / "model-catalog.md").read_text(encoding="utf-8")
-        self.assertIn("PYWEIXIN_DEEPSEEK_API_KEY_FILE", text)
+        self.assertIn("WECHAT_AI_DEEPSEEK_API_KEY_FILE", text)
         self.assertIn("只从文件读", text,
                       "必须写明：环境变量明文会进部署日志")
 

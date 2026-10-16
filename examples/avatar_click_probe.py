@@ -36,9 +36,9 @@ for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
 
 from pywinauto import mouse  # noqa: E402
 
-from pyweixin.Config import GlobalConfig  # noqa: E402
-from pyweixin.Uielements import Lists, Windows  # noqa: E402
-from pyweixin.WeChatTools import Navigator, Tools, desktop  # noqa: E402
+from wechat_ai_assistant.Config import GlobalConfig  # noqa: E402
+from wechat_ai_assistant.Uielements import Lists, Windows  # noqa: E402
+from wechat_ai_assistant.WeChatTools import Navigator, Tools, desktop  # noqa: E402
 
 
 SYSTEM_CLASSES = {"mmui::ChatItemView", "mmui::ChatSystemInfoItemView"}
@@ -114,7 +114,7 @@ def probe(group: str, source: str = "dialog") -> int:
 
     avatar = (rect.left + AVATAR_OFFSET_X, rect.top + AVATAR_OFFSET_Y)
     try:
-        from pyweixin.utils import avatar_click_point
+        from wechat_ai_assistant.utils import avatar_click_point
         measured = avatar_click_point(target)
         print(f"      固定偏移坐标={avatar}，截图实测坐标={measured}")
         avatar = measured
@@ -155,7 +155,7 @@ def probe(group: str, source: str = "dialog") -> int:
         print(f"        {line!r}")
     if not texts:
         print("      文本树是空的（自绘卡片）—— 改走右键复制：", flush=True)
-        from pyweixin.utils import _copy_avatar_card_text, parse_avatar_profile_texts
+        from wechat_ai_assistant.utils import _copy_avatar_card_text, parse_avatar_profile_texts
         try:
             copied = _copy_avatar_card_text(profile)
             print(f"      复制到 {len(copied)} 个字符，内容：")

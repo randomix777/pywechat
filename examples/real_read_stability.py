@@ -21,14 +21,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import RealConversationSource  # noqa: E402
-from pyweixin.history_read import HistoryRange, ReadMode  # noqa: E402
-from pyweixin.merchant_app import _force_utf8_stdout  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.WeChatAuto import Messages  # noqa: E402
-from pyweixin.wechat_state import RealWeChatProbe  # noqa: E402
-from pyweixin import diagnostics  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import RealConversationSource  # noqa: E402
+from wechat_ai_assistant.history_read import HistoryRange, ReadMode  # noqa: E402
+from wechat_ai_assistant.merchant_app import _force_utf8_stdout  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.WeChatAuto import Messages  # noqa: E402
+from wechat_ai_assistant.wechat_state import RealWeChatProbe  # noqa: E402
+from wechat_ai_assistant import diagnostics  # noqa: E402
 
 TARGET = "电子订货系统"
 ROUNDS = 5

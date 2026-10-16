@@ -1,7 +1,7 @@
 """云摘要任务的回归测试：校验、执行、幂等、结算，订单老路不受影响。
 
 网关和客户端从此多了一种任务（`summarize`）：提示词与校验的唯一来源是
-:mod:`pyweixin.summary`，计费沿用订单同一套冻结结算（按 token 实结）。
+:mod:`wechat_ai_assistant.summary`，计费沿用订单同一套冻结结算（按 token 实结）。
 脚手架复用 :mod:`tests.test_product_gateway` 的真实 HTTP 服务，
 只把适配器换成同时会摘要的假执行器。
 """
@@ -16,7 +16,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
 from tests.test_product_gateway import CURRENT_PRICING_VERSION, GatewayHarness  # noqa: E402
-from pyweixin.opencode import ParseOutcome  # noqa: E402
+from wechat_ai_assistant.opencode import ParseOutcome  # noqa: E402
 
 
 class FakeSummaryAdapter:
@@ -48,7 +48,7 @@ class FakeSummaryAdapter:
 
     def run_parse(self, session_id, payload, job_id, deadline,
                   cancel_check=None, provider_id="", model_id=""):
-        from pyweixin.opencode import validate_parse_result
+        from wechat_ai_assistant.opencode import validate_parse_result
         return ParseOutcome(
             result=validate_parse_result({
                 "intent": "unclear", "customer_alias": None, "target_order": None,
@@ -59,7 +59,7 @@ class FakeSummaryAdapter:
 
     def run_summary(self, session_id, payload, job_id, deadline,
                     cancel_check=None, provider_id="", model_id=""):
-        from pyweixin import summary as summary_mod
+        from wechat_ai_assistant import summary as summary_mod
 
         self.summary_calls.append(dict(payload))
         if self._fail:
@@ -167,7 +167,7 @@ class SummarizeTaskTests(GatewayHarness):
         self.assertEqual(job["state"], "succeeded", job)
 
     def test_adapter_without_summary_fails_clearly(self):
-        from pyweixin.opencode import LocalRuleAdapter
+        from wechat_ai_assistant.opencode import LocalRuleAdapter
 
         self.gateway.adapter = LocalRuleAdapter()
         status, body, _ = self._submit(self._summary_payload(), "sum-nocap")

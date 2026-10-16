@@ -32,7 +32,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 GROUP = "鲜果群"
 PLUGIN = ROOT / "packages/order_agent/src/order_agent/plugin.py"
@@ -71,7 +71,7 @@ class CatalogForModelTests(unittest.TestCase):
 
     def test_it_stays_within_the_limit(self):
         self.assertGreater(OrderStore.CATALOG_LIMIT, 0)
-        source = (ROOT / "src/pyweixin/orders.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/orders.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                   and n.name == "_catalog_for_model")

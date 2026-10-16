@@ -20,16 +20,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
-from pyweixin.live_listen import (  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind  # noqa: E402
+from wechat_ai_assistant.live_listen import (  # noqa: E402
     LISTEN_DEGRADED,
     LISTEN_FAILED,
     LISTEN_RUNNING,
     LISTEN_STOPPED,
     LiveListener,
 )
-from pyweixin.merging import MergeSettings, MessageMerger  # noqa: E402
-from pyweixin.reliability import MessageDirection, MessageEvent, MessageKind  # noqa: E402
+from wechat_ai_assistant.merging import MergeSettings, MessageMerger  # noqa: E402
+from wechat_ai_assistant.reliability import MessageDirection, MessageEvent, MessageKind  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 GROUP = "监听测试群"
@@ -243,7 +243,7 @@ class ListenViewTests(unittest.TestCase):
     """界面上那个开关要显示的东西。"""
 
     def _app(self, **kwargs):
-        from pyweixin.application import LISTEN_FAIR_NOTE, MerchantApplication
+        from wechat_ai_assistant.application import LISTEN_FAIR_NOTE, MerchantApplication
 
         return MerchantApplication, LISTEN_FAIR_NOTE
 
@@ -251,19 +251,19 @@ class ListenViewTests(unittest.TestCase):
         import inspect
 
         source = inspect.getsource(
-            __import__("pyweixin.application", fromlist=["MerchantApplication"]).MerchantApplication.listen_view
+            __import__("wechat_ai_assistant.application", fromlist=["MerchantApplication"]).MerchantApplication.listen_view
         )
         for key in ("running", "conversation", "state", "summary", "gaps", "gap_count", "note"):
             self.assertIn(f'"{key}"', source, f"监听视图少了 {key}")
 
     def test_the_fair_note_says_it_takes_the_foreground(self):
-        from pyweixin.application import LISTEN_FAIR_NOTE
+        from wechat_ai_assistant.application import LISTEN_FAIR_NOTE
 
         self.assertIn("前台", LISTEN_FAIR_NOTE)
         self.assertNotIn("不抢焦点", LISTEN_FAIR_NOTE.replace("从未在真实机器上验证过抢不抢焦点", ""))
 
     def test_listening_is_off_until_the_merchant_asks(self):
-        from pyweixin.application import MerchantApplication
+        from wechat_ai_assistant.application import MerchantApplication
 
         self.assertIsNone(MerchantApplication.__init__.__code__.co_consts is None or None)
 

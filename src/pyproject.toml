@@ -1,11 +1,11 @@
 [project]
-name="pywechat127"
-version="1.9.8"
-description="A Powerful Windows-PC-Wechat automation Tool (pywechat for WeChat 3.9, pyweixin for WeChat 4.x)"
+name="wechat-ai-assistant"
+version="1.9.9"
+description="Windows WeChat automation and AI merchant assistant"
 readme="README.md"
 license={text="LGPL"}
 authors=[{name="Hello-Mr-Crab", email="3083256475@qq.com"}]
-urls={Homepage="https://github.com/Hello-Mr-Crab/pywechat"}
+urls={Homepage="https://github.com/randomix777/wechat-ai-assistant"}
 
 keywords=["rpa", "windows", "wechat", "automation"]
 
@@ -31,6 +31,10 @@ dependencies=[
     "pywinauto>=0.6.8",
     "psutil>=5.9.5",
     "pillow>=10.4.0",
+    # Convert the first frame of WeChat's WXGF/HEVC image container to a
+    # standard JPEG before sending it to vision models.
+    "imageio-ffmpeg>=0.6.0",
+    "pycryptodome>=3.20",
     "sounddevice>=0.5.1",
     "soundfile>=0.13.1",
     "packaging>=23.2",

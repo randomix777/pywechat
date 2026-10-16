@@ -10,21 +10,21 @@ cd /d "%APPDIR%"
 
 rem 1) 优先使用随软件附带的 Python
 if exist "%APPDIR%runtime\python.exe" (
-    "%APPDIR%runtime\python.exe" "%APPDIR%src\pyweixin\launcher.py" %*
+    "%APPDIR%runtime\python.exe" "%APPDIR%src\wechat_ai_assistant\launcher.py" %*
     goto :done
 )
 
 rem 2) 其次使用 Windows 的 Python 启动器
 where py >nul 2>nul
 if %ERRORLEVEL%==0 (
-    py -3 "%APPDIR%src\pyweixin\launcher.py" %*
+    py -3 "%APPDIR%src\wechat_ai_assistant\launcher.py" %*
     goto :done
 )
 
 rem 3) 再次使用 PATH 里的 python
 where python >nul 2>nul
 if %ERRORLEVEL%==0 (
-    python "%APPDIR%src\pyweixin\launcher.py" %*
+    python "%APPDIR%src\wechat_ai_assistant\launcher.py" %*
     goto :done
 )
 

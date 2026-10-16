@@ -25,12 +25,12 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from pyweixin import wcdb  # noqa: E402
-from pyweixin.conversations import (  # noqa: E402
+from wechat_ai_assistant import wcdb  # noqa: E402
+from wechat_ai_assistant.conversations import (  # noqa: E402
     ConversationKind,
     RealConversationSource,
 )
-from pyweixin.wcdb import (  # noqa: E402
+from wechat_ai_assistant.wcdb import (  # noqa: E402
     PAGE_SIZE,
     RESERVE_SIZE,
     SQLITE_MAGIC,
@@ -235,7 +235,7 @@ class ReaderTests(unittest.TestCase):
                          ["message/message_0.db", "message/message_1.db"])
         import shutil as _shutil
 
-        with unittest.mock.patch("pyweixin.wcdb.decrypt_database",
+        with unittest.mock.patch("wechat_ai_assistant.wcdb.decrypt_database",
                                  side_effect=lambda s, d, k: _shutil.copyfile(s, d)):
             with self.assertRaises(WcdbUnavailable) as ctx:
                 reader.prepare(["message/message_1.db"])
@@ -244,7 +244,7 @@ class ReaderTests(unittest.TestCase):
 
 class SourcePriorityTests(unittest.TestCase):
     def test_wcdb_first(self):
-        from pyweixin.wcdb import WcdbConversation
+        from wechat_ai_assistant.wcdb import WcdbConversation
 
         rows = [WcdbConversation(username="g@chatroom", display="真群",
                                  kind="group", member_count=128)]
@@ -259,7 +259,7 @@ class SourcePriorityTests(unittest.TestCase):
             raise WcdbUnavailable("没钥匙")
 
         source = RealConversationSource(ui_lock=None, wcdb_fn=boom)
-        with unittest.mock.patch("pyweixin.localdb.list_group_conversations",
+        with unittest.mock.patch("wechat_ai_assistant.localdb.list_group_conversations",
                                  return_value=[("内存群", "m@chatroom")]):
             got = source.list_conversations(ConversationKind.GROUP)
         self.assertEqual([(c.name, c.wxid) for c in got], [("内存群", "m@chatroom")])
@@ -362,7 +362,7 @@ class ReadMessagesTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_text_sender_content_time(self):
-        from pyweixin.wcdb import read_messages
+        from wechat_ai_assistant.wcdb import read_messages
 
         got = read_messages(self.message, self.contact, "g@chatroom", 10)
         self.assertEqual(len(got), 3)
@@ -376,14 +376,14 @@ class ReadMessagesTests(unittest.TestCase):
         self.assertEqual((image.kind, image.content), ("图片", ""))
 
     def test_missing_table_is_empty_not_error(self):
-        from pyweixin.wcdb import message_table_exists, read_messages
+        from wechat_ai_assistant.wcdb import message_table_exists, read_messages
 
         self.assertEqual(read_messages(self.message, self.contact, "nobody", 10), [])
         self.assertFalse(message_table_exists(self.message, "nobody"))
         self.assertTrue(message_table_exists(self.message, "g@chatroom"))
 
     def test_split_sender(self):
-        from pyweixin.wcdb import _split_sender
+        from wechat_ai_assistant.wcdb import _split_sender
 
         self.assertEqual(_split_sender("wxid_a:\n你好"), ("wxid_a", "你好"))
         self.assertEqual(_split_sender("没前缀"), ("", "没前缀"))
@@ -401,7 +401,7 @@ class ZstdMessagesTests(unittest.TestCase):
     def test_frame_is_detected_and_decoded(self):
         import zstandard
 
-        from pyweixin.wcdb import _maybe_decompress
+        from wechat_ai_assistant.wcdb import _maybe_decompress
 
         frame = zstandard.ZstdCompressor().compress("wxid_a:\n压缩长文本".encode())
         self.assertTrue(frame.startswith(b"\x28\xb5\x2f\xfd"))
@@ -416,7 +416,7 @@ class ZstdMessagesTests(unittest.TestCase):
 
         import zstandard
 
-        from pyweixin.wcdb import read_messages
+        from wechat_ai_assistant.wcdb import read_messages
 
         tmp = tempfile.TemporaryDirectory(prefix="pyw-zstd-")
         try:
@@ -474,7 +474,7 @@ class HistoryWcdbRoutingTests(unittest.TestCase):
             self.cleaned += 1
 
     def _history(self, fake):
-        from pyweixin.history_read import HistoryReader
+        from wechat_ai_assistant.history_read import HistoryReader
 
         return HistoryReader(lambda **kw: [], sender_source="members",
                              wcdb_reader_fn=lambda: fake)
@@ -495,8 +495,8 @@ class HistoryWcdbRoutingTests(unittest.TestCase):
         return tmp, contact, message
 
     def test_members_auto_upgrades_to_wcdb(self):
-        from pyweixin.conversations import Conversation, ConversationKind
-        from pyweixin.history_read import HistoryRange, ReadMode
+        from wechat_ai_assistant.conversations import Conversation, ConversationKind
+        from wechat_ai_assistant.history_read import HistoryRange, ReadMode
 
         tmp, contact, message = self._dbs()
         try:
@@ -512,8 +512,8 @@ class HistoryWcdbRoutingTests(unittest.TestCase):
             tmp.cleanup()
 
     def test_no_reader_stays_on_members(self):
-        from pyweixin.conversations import Conversation, ConversationKind
-        from pyweixin.history_read import HistoryReader, HistoryRange, ReadMode
+        from wechat_ai_assistant.conversations import Conversation, ConversationKind
+        from wechat_ai_assistant.history_read import HistoryReader, HistoryRange, ReadMode
 
         seen = {}
 
@@ -537,11 +537,11 @@ class EnsureKeysEncodingTests(unittest.TestCase):
     """
 
     def _app(self, tmp: str):
-        from pyweixin.application import MerchantApplication
-        from pyweixin.conversations import SimulatedConversations
-        from pyweixin.history_read import SimulatedHistory
-        from pyweixin.orders import OrderStore
-        from pyweixin.wechat_state import SimulatedWeChat, WeChatState
+        from wechat_ai_assistant.application import MerchantApplication
+        from wechat_ai_assistant.conversations import SimulatedConversations
+        from wechat_ai_assistant.history_read import SimulatedHistory
+        from wechat_ai_assistant.orders import OrderStore
+        from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState
 
         store = OrderStore(str(Path(tmp) / "orders.db"))
         merchant = store.create_merchant("t")
@@ -594,11 +594,11 @@ class RefreshAutoEnsureTests(unittest.TestCase):
     """点"读取"没钥匙就自动提一次，提完直接读；每个进程只试一次。"""
 
     def _app(self, tmp: str):
-        from pyweixin.application import MerchantApplication
-        from pyweixin.conversations import RealConversationSource
-        from pyweixin.history_read import SimulatedHistory
-        from pyweixin.orders import OrderStore
-        from pyweixin.wechat_state import SimulatedWeChat, WeChatState
+        from wechat_ai_assistant.application import MerchantApplication
+        from wechat_ai_assistant.conversations import RealConversationSource
+        from wechat_ai_assistant.history_read import SimulatedHistory
+        from wechat_ai_assistant.orders import OrderStore
+        from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState
 
         store = OrderStore(str(Path(tmp) / "orders.db"))
         merchant = store.create_merchant("t")
@@ -669,11 +669,11 @@ class RefreshAutoEnsureTests(unittest.TestCase):
         回归：之前没加这个门禁时，模拟测试在本机（微信登录中）会被
         真实提钥匙劫持，读出 0 条。
         """
-        from pyweixin.application import MerchantApplication
-        from pyweixin.conversations import SimulatedConversations
-        from pyweixin.history_read import SimulatedHistory
-        from pyweixin.orders import OrderStore
-        from pyweixin.wechat_state import SimulatedWeChat, WeChatState
+        from wechat_ai_assistant.application import MerchantApplication
+        from wechat_ai_assistant.conversations import SimulatedConversations
+        from wechat_ai_assistant.history_read import SimulatedHistory
+        from wechat_ai_assistant.orders import OrderStore
+        from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState
 
         tmp = tempfile.TemporaryDirectory(prefix="pyw-auto-")
         try:
@@ -818,20 +818,20 @@ class MultiShardTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_merge_dedupes_and_orders(self):
-        from pyweixin.wcdb import read_messages
+        from wechat_ai_assistant.wcdb import read_messages
 
         got = read_messages([self.m0, self.m1], self.contact, "g@chatroom", 10)
         self.assertEqual([m.content for m in got], ["第一条", "第二条", "第三条"])
         self.assertEqual([m.sender_display for m in got], ["张姐"] * 3)
 
     def test_limit_takes_newest(self):
-        from pyweixin.wcdb import read_messages
+        from wechat_ai_assistant.wcdb import read_messages
 
         got = read_messages([self.m0, self.m1], self.contact, "g@chatroom", 2)
         self.assertEqual([m.content for m in got], ["第二条", "第三条"])
 
     def test_message_shards_lists_keyed_shards(self):
-        from pyweixin.wcdb import WcdbReader
+        from wechat_ai_assistant.wcdb import WcdbReader
 
         root = Path(self.tmp.name)
         (root / "message").mkdir(exist_ok=True)
@@ -859,7 +859,7 @@ class WcdbReimportUpgradeTests(unittest.TestCase):
     """
 
     def _store(self):
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.orders import OrderStore
 
         store = OrderStore(":memory:")
         tenant = store.create_merchant("测试店")["merchant_id"]

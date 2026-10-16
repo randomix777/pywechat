@@ -56,13 +56,13 @@ CASES = [
 
 
 def main() -> int:
-    from pyweixin.openrouter_adapter import DEFAULT_BASE_URL, OpenRouterAdapter
+    from wechat_ai_assistant.openrouter_adapter import DEFAULT_BASE_URL, OpenRouterAdapter
 
     key = load_key()
     if not key:
         print("找不到 OpenRouter 凭据，无法做真实验证。")
         return 1
-    model = os.environ.get("PYWEIXIN_OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    model = os.environ.get("WECHAT_AI_OPENROUTER_MODEL", "openai/gpt-4o-mini")
     print(f"OpenRouter 凭据已加载（长度 {len(key)}，不打印内容）")
     print(f"上游 {DEFAULT_BASE_URL} | 模型 {model}")
     print(f"商品目录：{[p['name'] for p in CATALOG]}")

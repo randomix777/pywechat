@@ -39,8 +39,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin import summary_task  # noqa: E402
-from pyweixin.history_read import ConversationCoverage  # noqa: E402
+from wechat_ai_assistant import summary_task  # noqa: E402
+from wechat_ai_assistant.history_read import ConversationCoverage  # noqa: E402
 
 
 class CoverageCarriesBothCountsTests(unittest.TestCase):
@@ -48,7 +48,7 @@ class CoverageCarriesBothCountsTests(unittest.TestCase):
         self.assertEqual(ConversationCoverage(conversation=None).fetched_count, 0)
 
     def test_the_reader_fills_it_in(self):
-        source = (ROOT / "src/pyweixin/history_read.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/history_read.py").read_text(encoding="utf-8")
         self.assertIn("fetched_count=len(messages)", source,
                       "\u5fc5\u987b\u8bb0\u300c\u8bfb\u53d6\u5668\u62ff\u56de\u6765\u7684\u300d\uff0c\u4e0d\u662f\u8fdb\u5e93\u540e\u7684")
         self.assertIn("fetched_count: int = 0", source)
@@ -69,20 +69,20 @@ class BothInterfacesExplainZeroTests(unittest.TestCase):
     """"\u5b8c\u6210\uff0c0 \u6761"\u8fd9\u53e5\u8bdd\u4f1a\u6b32\u3002\u4e24\u4e2a\u754c\u9762\u90fd\u5f97\u8bf4\u6e05\u695a\u3002"""
 
     def test_the_tk_ui_explains_zero(self):
-        ui = (ROOT / "src/pyweixin/merchant_ui.py").read_text(encoding="utf-8")
+        ui = (ROOT / "src/wechat_ai_assistant/merchant_ui.py").read_text(encoding="utf-8")
         self.assertIn("fetched_count", ui)
         self.assertIn("\u8fd9\u4e0d\u7b49\u4e8e\u7fa4\u91cc\u6ca1\u6d88\u606f", ui,
                       "\u9875\u9762\u4e0a\u4ecd\u7136\u53ea\u8bf4\u300c\u672c\u6b21 0 \u6761\u300d")
 
     def test_the_web_ui_explains_zero(self):
-        dev = (ROOT / "src/pyweixin/web_dev.py").read_text(encoding="utf-8")
-        page = (ROOT / "src/pyweixin/web_page.py").read_text(encoding="utf-8")
+        dev = (ROOT / "src/wechat_ai_assistant/web_dev.py").read_text(encoding="utf-8")
+        page = (ROOT / "src/wechat_ai_assistant/web_page.py").read_text(encoding="utf-8")
         self.assertIn('"fetched"', dev)
         self.assertIn("row.fetched", page)
 
     def test_a_failed_read_is_not_claimed_as_success(self):
         """"\u4e00\u6761\u90fd\u6ca1\u8bfb\u5230\u300d\u65f6\u4e0d\u5f97\u53ea\u8bf4\u300c\u5b8c\u6210\u300d\u3002"""
-        ui = (ROOT / "src/pyweixin/merchant_ui.py").read_text(encoding="utf-8")
+        ui = (ROOT / "src/wechat_ai_assistant/merchant_ui.py").read_text(encoding="utf-8")
         i = ui.index("\u8fd9\u4e0d\u7b49\u4e8e\u7fa4\u91cc\u6ca1\u6d88\u606f")
         around = ui[max(0, i - 700):i]
         self.assertIn("not item.error", around, "\u8bfb\u5931\u8d25\u65f6\u5e94\u8be5\u53ea\u8bf4\u300c\u8bfb\u5931\u8d25\u300d")
@@ -94,7 +94,7 @@ class ZeroDoesNotBlockTheSummaryTests(unittest.TestCase):
 
     def test_the_gate_is_the_shared_one(self):
         """"\u80fd\u4e0d\u80fd\u6574\u7406"\u5fc5\u987b\u53ea\u6709\u4e00\u4efd\u5224\u636e\uff0c\u4e24\u4e2a\u754c\u9762\u5171\u7528\u3002"""
-        source = (ROOT / "src/pyweixin/summary_task.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/summary_task.py").read_text(encoding="utf-8")
         self.assertIn("def has_messages_for", source)
         self.assertIn("accumulated_coverage", source)
 

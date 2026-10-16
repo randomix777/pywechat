@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.payment import TestPaymentAdapter, credit_reference  # noqa: E402
-from pyweixin.product import ProductStore, QuotaExhausted, SubscriptionInactive  # noqa: E402
+from wechat_ai_assistant.payment import TestPaymentAdapter, credit_reference  # noqa: E402
+from wechat_ai_assistant.product import ProductStore, QuotaExhausted, SubscriptionInactive  # noqa: E402
 
 
 def expire(store, account_id) -> None:

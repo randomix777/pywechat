@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin import localdb  # noqa: E402
-from pyweixin.localdb import (  # noqa: E402
+from wechat_ai_assistant import localdb  # noqa: E402
+from wechat_ai_assistant.localdb import (  # noqa: E402
     find_record_before,
     parse_record,
     read_varint,
@@ -229,8 +229,8 @@ class VoteNameTests(unittest.TestCase):
     def test_history_reader_localdb_routing(self):
         from unittest.mock import patch
 
-        from pyweixin.conversations import Conversation, ConversationKind
-        from pyweixin.history_read import HistoryReader
+        from wechat_ai_assistant.conversations import Conversation, ConversationKind
+        from wechat_ai_assistant.history_read import HistoryReader
 
         dump_calls = []
 
@@ -248,8 +248,8 @@ class VoteNameTests(unittest.TestCase):
     def test_history_reader_localdb_adapts_records(self):
         from unittest.mock import patch
 
-        from pyweixin.conversations import Conversation, ConversationKind
-        from pyweixin.history_read import HistoryReader
+        from wechat_ai_assistant.conversations import Conversation, ConversationKind
+        from wechat_ai_assistant.history_read import HistoryReader
 
         group = Conversation(name="水果群", kind=ConversationKind.GROUP)
         reader = HistoryReader(lambda **kw: [], sender_source="localdb")
@@ -269,8 +269,8 @@ class VoteNameTests(unittest.TestCase):
     def test_read_passes_sender_source_per_call(self):
         from unittest.mock import patch
 
-        from pyweixin.conversations import Conversation, ConversationKind
-        from pyweixin.history_read import HistoryReader, TimeWindow
+        from wechat_ai_assistant.conversations import Conversation, ConversationKind
+        from wechat_ai_assistant.history_read import HistoryReader, TimeWindow
 
         group = Conversation(name="水果群", kind=ConversationKind.GROUP)
         reader = HistoryReader(lambda **kw: [], sender_source="members")
@@ -290,7 +290,7 @@ class VoteNameTests(unittest.TestCase):
 
     def test_stable_source_id_ignores_sender(self):
         """同一条重读，发送人变了 id 也不变 —— 否则名字一升级就多一条。"""
-        from pyweixin.history_read import HistoryReader
+        from wechat_ai_assistant.history_read import HistoryReader
 
         ids = []
 
@@ -309,7 +309,7 @@ class VoteNameTests(unittest.TestCase):
                     localdb, "resolve_contact_name", return_value=sender), \
                  unittest.mock.patch.object(
                     HistoryReader, "_page_in_history", return_value=None):
-                from pyweixin.conversations import Conversation, ConversationKind
+                from wechat_ai_assistant.conversations import Conversation, ConversationKind
                 got = reader._read_one(
                     Conversation(name="群", kind=ConversationKind.GROUP), 10)
             ids.append(got[0]["source_id"])
@@ -322,7 +322,7 @@ class SenderUpgradeTests(unittest.TestCase):
     """localdb 重读：后认出来的名字合到同一条上，只升不降。"""
 
     def _store(self):
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.orders import OrderStore
 
         store = OrderStore(":memory:")
         tenant = store.create_merchant("测试店")["merchant_id"]
@@ -360,7 +360,7 @@ class SenderUpgradeTests(unittest.TestCase):
             store.close()
 
     def test_new_time_fills_missing_time(self):
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.orders import OrderStore
 
         store = OrderStore(":memory:")
         try:
@@ -385,7 +385,7 @@ class SenderUpgradeTests(unittest.TestCase):
             store.close()
 
     def test_existing_time_is_not_overwritten(self):
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.orders import OrderStore
 
         store = OrderStore(":memory:")
         try:
@@ -409,7 +409,7 @@ class SenderUpgradeTests(unittest.TestCase):
             store.close()
 
     def test_upgrade_never_downgrades(self):
-        from pyweixin.orders import _sender_needs_upgrade
+        from wechat_ai_assistant.orders import _sender_needs_upgrade
 
         self.assertFalse(_sender_needs_upgrade("张老板", "wxid_abc"))
         self.assertFalse(_sender_needs_upgrade("张老板", "张老板"))
@@ -437,12 +437,12 @@ class GroupListTests(unittest.TestCase):
     def test_memory_first_ui_fallback(self):
         from unittest.mock import patch
 
-        from pyweixin.conversations import ConversationKind, RealConversationSource
+        from wechat_ai_assistant.conversations import ConversationKind, RealConversationSource
 
         source = RealConversationSource(ui_lock=None)
         with patch.object(localdb, "list_group_conversations",
                           return_value=[("水果群", "g@chatroom")]):
-            with patch("pyweixin.WeChatAuto.Contacts.get_recent_groups",
+            with patch("wechat_ai_assistant.WeChatAuto.Contacts.get_recent_groups",
                        side_effect=AssertionError("内存命中时不该碰界面")):
                 groups = source.list_conversations(ConversationKind.GROUP)
         self.assertEqual([(c.name, c.wxid) for c in groups], [("水果群", "g@chatroom")])
@@ -450,11 +450,11 @@ class GroupListTests(unittest.TestCase):
     def test_memory_miss_falls_back_to_ui(self):
         from unittest.mock import patch
 
-        from pyweixin.conversations import ConversationKind, RealConversationSource
+        from wechat_ai_assistant.conversations import ConversationKind, RealConversationSource
 
         source = RealConversationSource(ui_lock=None)
         with patch.object(localdb, "list_group_conversations", return_value=[]):
-            with patch("pyweixin.WeChatAuto.Contacts.get_recent_groups",
+            with patch("wechat_ai_assistant.WeChatAuto.Contacts.get_recent_groups",
                        return_value=[("老群", 10)]):
                 groups = source.list_conversations(ConversationKind.GROUP)
         self.assertEqual([(c.name, c.member_count) for c in groups], [("老群", 10)])
@@ -480,7 +480,7 @@ class GroupTitleTests(unittest.TestCase):
                 self.assertEqual(localdb.extract_group_name_from_title(text), "")
 
     def test_empty_alias_key_is_rejected(self):
-        from pyweixin.history_read import HistoryReader
+        from wechat_ai_assistant.history_read import HistoryReader
 
         recorded: list[tuple[str, str]] = []
         reader = HistoryReader(lambda **kw: [], alias_recorder=lambda w, n: recorded.append((w, n)))
@@ -489,7 +489,7 @@ class GroupTitleTests(unittest.TestCase):
              unittest.mock.patch.object(HistoryReader, "_page_in_members", return_value=None), \
              unittest.mock.patch.object(localdb, "resolve_group_wxid",
                                         return_value="123@chatroom"):
-            from pyweixin.conversations import Conversation, ConversationKind
+            from wechat_ai_assistant.conversations import Conversation, ConversationKind
             reader._read_one(
                 Conversation(name="水果群", kind=ConversationKind.GROUP), 10)
         self.assertEqual(recorded, [])

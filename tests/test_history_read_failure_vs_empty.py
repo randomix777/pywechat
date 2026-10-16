@@ -37,12 +37,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.WeChatAuto import (  # noqa: E402
+from wechat_ai_assistant.WeChatAuto import (  # noqa: E402
     CHAT_HISTORY_LIST_WAIT_SECONDS,
     _CHAT_HISTORY_LIST_RETRIES,
     _wait_for_chat_history_list,
 )
-from pyweixin.Warnings import ChatHistoryUnavailable, NoChatHistoryWarning  # noqa: E402
+from wechat_ai_assistant.Warnings import ChatHistoryUnavailable, NoChatHistoryWarning  # noqa: E402
 
 
 class _List:
@@ -105,7 +105,7 @@ class SourceChecks(unittest.TestCase):
     """静态检查：那条「返回空列表」的路不能被改回来。"""
 
     def setUp(self):
-        self.source = (ROOT / "src/pyweixin/WeChatAuto.py").read_text(encoding="utf-8")
+        self.source = (ROOT / "src/wechat_ai_assistant/WeChatAuto.py").read_text(encoding="utf-8")
         self.tree = ast.parse(self.source)
 
     def test_the_one_second_wait_is_gone(self):

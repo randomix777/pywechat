@@ -64,7 +64,7 @@ EXCLUDES = [
 ]
 
 a = Analysis(
-    [str(ROOT / "src" / "pyweixin" / "launcher.py")],
+    [str(ROOT / "src" / "wechat_ai_assistant" / "launcher.py")],
     pathex=[str(ROOT / "src")]
     + [str(p) for p in sorted((ROOT / "packages").glob("*/src"))],
     binaries=[],

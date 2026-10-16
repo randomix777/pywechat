@@ -24,11 +24,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.history_read import HistoryReader, TimeWindow  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.utils import (  # noqa: E402
+from wechat_ai_assistant.history_read import HistoryReader, TimeWindow  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.utils import (  # noqa: E402
     UNRESOLVED_SENDER, UNRESOLVED_TIMESTAMP, parse_group_chat_history)
-from pyweixin.wechat_time import local_timezone, parse_timestamp, sent_epoch  # noqa: E402
+from wechat_ai_assistant.wechat_time import local_timezone, parse_timestamp, sent_epoch  # noqa: E402
 
 #: 真机上 ``dump_chat_history`` 原样返回的时间戳。日的位数不固定。
 REAL_STAMP = "2026-10-2 12:21"

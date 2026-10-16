@@ -59,7 +59,7 @@ class SecondDomainTests(unittest.TestCase):
         # And neither reaches into the product.
         for path in list(triage_source):
             source = path.read_text(encoding="utf-8")
-            self.assertNotIn("pyweixin", source, f"{path} depends on the product")
+            self.assertNotIn("wechat_ai_assistant", source, f"{path} depends on the product")
 
     def test_the_example_runs_with_no_product_on_the_path(self):
         """A clean interpreter with only the two packages importable."""

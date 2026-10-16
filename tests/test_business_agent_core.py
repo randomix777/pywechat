@@ -1,7 +1,7 @@
 """Tests for the generic agent core.
 
 These import ``business_agent`` and ``order_agent`` directly, with **no**
-``pyweixin`` on the path. That is the executable form of the boundary the whole
+``wechat_ai_assistant`` on the path. That is the executable form of the boundary the whole
 refactor exists to establish: the core and its plugins must work in an
 environment with no WeChat, no Windows automation and no product database.
 """
@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Resolve the packages by path so this file can be run from the repo root with
-# nothing installed, and without importing ``pyweixin`` to do it.
+# nothing installed, and without importing ``wechat_ai_assistant`` to do it.
 _ROOT = Path(__file__).resolve().parents[1]
 for _name in ("business_agent", "order_agent", "support_triage"):
     _src = _ROOT / "packages" / _name / "src"
@@ -422,7 +422,7 @@ class BoundaryTests(unittest.TestCase):
         import business_agent
         import order_agent
 
-        forbidden = ("pyweixin", "pywechat", "win32", "pywinauto", "pyautogui", "tkinter")
+        forbidden = ("wechat_ai_assistant", "pywechat", "win32", "pywinauto", "pyautogui", "tkinter")
         for package in (business_agent, order_agent):
             root = Path(package.__file__).resolve().parents[1]
             for path in root.rglob("*.py"):

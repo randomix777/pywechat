@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin import webui  # noqa: E402
+from wechat_ai_assistant import webui  # noqa: E402
 
 
 class JsLiteralTests(unittest.TestCase):

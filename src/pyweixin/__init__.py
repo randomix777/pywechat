@@ -1,64 +1,87 @@
+"""Backward-compatible import namespace for older ``pyweixin`` callers.
 
-'''
-pyweixin
-========
+New code should import :mod:`wechat_ai_assistant`. This shim forwards old
+package and submodule imports to the canonical package, preserving module
+identity so existing monkeypatches and integrations keep working.
+"""
+from __future__ import annotations
 
+from importlib import import_module, util
+from importlib.abc import Loader, MetaPathFinder
+from importlib.machinery import ModuleSpec
+import sys
+from types import ModuleType
+from typing import Any
 
-pywechat下的微信4.1+版本的自动化工具
-    可前往 'https://github.com/Hello-Mr-Crab/pywechat' 查看详情
+import wechat_ai_assistant as _canonical
 
-
-Modules
--------
-    - `WeChatTools`:  该模块中封装了Tools与Navigator两个静态类,主要用来辅助WeChatAuto实现其他自动化功能
-    - `WeChatAuto`:  pyweixin的主要模块,其内部包含消息,通讯录,文件,好友设置,朋友圈,自动回复,消息监控,微信设置这几个功能对应的静态类
-    - `WinSettings`:  一些修改windows系统设置的方法
-    - `Uielements`:  微信主界面内各种UI元素的POM封装(kwargs格式,适用于pywinauto的window,child_window,descendants,children四种定位元素方法)
-    - `utils.py`:  内置一些配合WeChatAuto实现自动化的函数,比如@好友,遍历会话列表扫描新消息等
-    - `Warnings`:  一些可能触发的警告
- 
-Examples:
---------
-
-使用pyweixin时,你可以:
-
-    >>> from pyweixin.WeChatAuto import Monitor
-    >>> from pyweixin.WeChatTools import Navigator 
-    >>> dialog_window=Navigator.open_seperate_dialog_window(friend='好友')
-    >>> newMessages=Monitor.listen_on_chat(dialog_window,'1min')
-    >>> print(newMessages)
-
-或者:
-
-    >>> from pyweixin import Monitor,Navigator
-    >>> dialog_window=Navigator.open_seperate_dialog_window(friend='好友')
-    >>> newMessages=Monitor.listen_on_chat(dialog_window,'1min')
-    >>> print(newMessages)
+__all__ = _canonical.__all__
+__path__ = list(_canonical.__path__)
 
 
-支持版本:
---------
-    - `操作系统`:  window10,windows11
-    - `Python版本`: 3.10+(需支持TypeHint)
-    - `微信版本`:  4.1.6+
+class _AliasLoader(Loader):
+    def __init__(self, target_name: str):
+        self.target_name = target_name
+        self.original_spec: ModuleSpec | None = None
 
-    
-注意:
------
-    使用pyweixin时要保证微信已经登录!
+    def create_module(self, spec: ModuleSpec) -> ModuleType:
+        module = import_module(self.target_name)
+        self.original_spec = module.__spec__
+        return module
 
-    
-Have fun in WechatAutomation (＾＿－)
-====
-'''
-from pyweixin.WeChatAuto import AutoReply,Collections,Call,Contacts,Files,FriendSettings,Messages,Moments,Monitor,Settings
-from pyweixin.WeChatTools import Tools,Navigator
-from pyweixin.WinSettings import SystemSettings
-from pyweixin.Config import GlobalConfig
-from pyweixin.reliability import MessageDirection,MessageEvent,MessageKind,MessageLedger,OperationQueueClosed,OperationQueueFull,UiOperationQueue,retry_call
-from pyweixin.agent import AgentCommand,AgentConfig,AgentStore,LocalAgent
-from pyweixin.cloud import CloudClient,CloudError,CloudResponse
-from pyweixin.cloud_server import CloudRequestHandler,CloudStore,create_server
+    def exec_module(self, module: ModuleType) -> None:
+        # The import machinery initializes the returned module with the legacy
+        # spec. Restore its canonical metadata after installing the old alias.
+        spec = self.original_spec
+        if spec is not None:
+            module.__name__ = spec.name
+            module.__spec__ = spec
+            module.__loader__ = spec.loader
+            module.__package__ = spec.parent
+            if spec.has_location:
+                module.__file__ = spec.origin
+                module.__cached__ = spec.cached
+            if spec.submodule_search_locations is not None:
+                module.__path__ = list(spec.submodule_search_locations)
 
-#Author:Hello-Mr-Crab
-#Contributor:Viper,Chanpoe,mrhan1993,nmhjklnm,clen1,guanjt3,Yjppj,SamCheng0717
+
+class _AliasFinder(MetaPathFinder):
+    def find_spec(self, fullname: str, path: Any = None,
+                  target: ModuleType | None = None) -> ModuleSpec | None:
+        prefix = __name__ + "."
+        if not fullname.startswith(prefix):
+            return None
+        canonical_name = "wechat_ai_assistant." + fullname[len(prefix):]
+        try:
+            canonical_spec = util.find_spec(canonical_name)
+        except (ImportError, ModuleNotFoundError, ValueError):
+            return None
+        if canonical_spec is None:
+            return None
+        is_package = canonical_spec.submodule_search_locations is not None
+        loader = _AliasLoader(canonical_name)
+        return util.spec_from_loader(fullname, loader, is_package=is_package)
+
+
+if not any(isinstance(finder, _AliasFinder) for finder in sys.meta_path):
+    sys.meta_path.insert(0, _AliasFinder())
+
+
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        value = getattr(_canonical, name)
+        globals()[name] = value
+        return value
+    try:
+        module = import_module(f"wechat_ai_assistant.{name}")
+    except ModuleNotFoundError as exc:
+        if exc.name != f"wechat_ai_assistant.{name}":
+            raise
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    sys.modules[f"{__name__}.{name}"] = module
+    globals()[name] = module
+    return module
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

@@ -26,7 +26,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.summary import (  # noqa: E402
+from wechat_ai_assistant.summary import (  # noqa: E402
     DEFAULT_SUMMARY_MODEL,
     SUMMARY_SYSTEM_PROMPT,
     Summarizer,

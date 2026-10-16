@@ -25,14 +25,14 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.application import AppEvents, MerchantApplication  # noqa: E402
-from pyweixin.conversations import ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.history_read import HistoryRange, SimulatedHistory  # noqa: E402
-from pyweixin.merchant_ui import MerchantWindow, audit_text  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.runmode import RunMode  # noqa: E402
-from pyweixin.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
-from pyweixin.wizard import WizardStep  # noqa: E402
+from wechat_ai_assistant.application import AppEvents, MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.history_read import HistoryRange, SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.merchant_ui import MerchantWindow, audit_text  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.runmode import RunMode  # noqa: E402
+from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
+from wechat_ai_assistant.wizard import WizardStep  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 #: 订单统计只看最近几天，业务时间必须落在窗口内，否则造出来的单子不算数。
@@ -66,7 +66,7 @@ class Parse:
         self.results: dict[str, str] = {}
 
     def submit(self, message_id, on_progress=None):
-        from pyweixin.local_parse import ParseProgress
+        from wechat_ai_assistant.local_parse import ParseProgress
 
         self.submitted.append(message_id)
         row = self.store.db.execute(
@@ -84,7 +84,7 @@ class Parse:
         return ParseProgress("done", "已处理", message_id=message_id, job_id="job_ui")
 
     def settle(self, on_progress=None):
-        from pyweixin.local_parse import ParseProgress
+        from wechat_ai_assistant.local_parse import ParseProgress
 
         if not self.submitted:
             return ParseProgress("pending", "没有待处理的解析")
@@ -309,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
     # 商户反馈过的现象：关掉微信再点「重新检测」，状态其实变了、界面却纹丝不动。
     # 检测跑在后台线程里，所以结果要通过 on_wechat 事件回到界面线程重画；
     # 页面可能已经被重建过，所以还必须容忍"控件已经不在了"。
-    from pyweixin.wechat_state import WeChatStatus
+    from wechat_ai_assistant.wechat_state import WeChatStatus
 
     # 先把队列里攒着的事件排干净，后面量到的才是新状态。
     window._on_goto(WizardStep.WECHAT)
@@ -451,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     summary_rows = summary_tree.get_children() if summary_tree is not None else []
     record("逐会话列出读到多少条与时间范围", bool(summary_rows),
            f"{len(summary_rows)} 行")
-    from pyweixin.history_read import HistoryResult as _EmptyResult
+    from wechat_ai_assistant.history_read import HistoryResult as _EmptyResult
 
     window._render_read_state(_EmptyResult(window=None, coverage=[]))
     pump(window)
@@ -810,7 +810,7 @@ def main(argv: list[str] | None = None) -> int:
     # patch 的是 merchant_ui 模块里的 messagebox —— 界面上弹框走的就是它。
     # 早先 patch 了 window.messagebox（那个属性根本不存在），结果弹出**真的**
     # 对话框等人点击，整个检查挂住。
-    import pyweixin.merchant_ui as _mui
+    import wechat_ai_assistant.merchant_ui as _mui
 
     _mui.messagebox = type("MB", (), {"askyesno": staticmethod(_fake_ask),
                                       "showinfo": staticmethod(lambda *a, **k: None),
@@ -886,7 +886,7 @@ def main(argv: list[str] | None = None) -> int:
     # 商户的原话：「额度给一个额度条，按百分比显示，不显示具体能做多少次」。
     window._show_step(WizardStep.ANALYZE)   # 额度块在这一屏，先切过去
     pump(window, 0.4)
-    from pyweixin.wizard import QuotaView as _QV
+    from wechat_ai_assistant.wizard import QuotaView as _QV
 
     def _read(widget_key):
         widget = window._widgets.get(widget_key)

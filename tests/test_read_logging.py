@@ -32,11 +32,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin import diagnostics  # noqa: E402
-from pyweixin.history_read import (  # noqa: E402
+from wechat_ai_assistant import diagnostics  # noqa: E402
+from wechat_ai_assistant.history_read import (  # noqa: E402
     ConversationCoverage, HistoryReader, ReadMode, TimeWindow,
 )
-from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind  # noqa: E402
 
 
 class RecordingHandler(logging.Handler):
@@ -135,7 +135,7 @@ class NoChatContentTests(unittest.TestCase):
         rows = [{"sender": "张姐", "content": secret_content,
                  "sent_at": "2026-10-02 09:01", "source_id": "s1",
                  "stable_source_id": True}]
-        from pyweixin.history_read import HistoryReader
+        from wechat_ai_assistant.history_read import HistoryReader
 
         reader = HistoryReader(lambda **_k: list(rows), cursor=None, ui_lock=None,
                                sender_source="members")
@@ -156,7 +156,7 @@ class SourceTests(unittest.TestCase):
 
     def test_the_three_layers_all_log(self):
         for name in ("history_read.py", "utils.py", "WeChatAuto.py"):
-            source = (ROOT / "src" / "pyweixin" / name).read_text(encoding="utf-8")
+            source = (ROOT / "src" / "wechat_ai_assistant" / name).read_text(encoding="utf-8")
             with self.subTest(module=name):
                 self.assertIn("LOGGER = logging.getLogger(__name__)"
                               if name == "history_read.py"
@@ -165,7 +165,7 @@ class SourceTests(unittest.TestCase):
 
     def test_the_traverse_layer_records_why_it_came_back_empty(self):
         """这正是查「读到 0 条」最需要的那条信息。"""
-        source = (ROOT / "src" / "pyweixin" / "utils.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "utils.py").read_text(encoding="utf-8")
         self.assertIn("列表本身是空的，不是焦点问题", source)
         self.assertIn("拿不到焦点", source)
 

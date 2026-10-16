@@ -56,13 +56,13 @@ class UnresolvedReadIssueTests(unittest.TestCase):
 
     def test_the_ui_still_distinguishes_the_two_empty_cases(self):
         """读到 0 条 ≠ 读到 N 条却入库 0 条。商户看到的必须不一样。"""
-        source = (ROOT / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
         self.assertIn("刚才读到了", source)
         self.assertIn("本地订单里还是空的", source)
 
     def test_no_comment_claims_the_lock_fixed_the_empty_reads(self):
         """把未验证的因果写进注释，是最容易骗过后人的一种谎。"""
-        source = (ROOT / "src" / "pyweixin" / "wechat_state.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "wechat_state.py").read_text(encoding="utf-8")
         start = source.index("def check_once")
         block = source[start:start + 900]
         self.assertNotIn("有时读到 7 条", block,
@@ -74,7 +74,7 @@ class HonestReportingTests(unittest.TestCase):
     """文档和注释里不能有把猜测写成结论的句子。"""
 
     def test_the_monitor_lock_is_not_sold_as_the_bug_fix(self):
-        source = (ROOT / "src" / "pyweixin" / "application.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "application.py").read_text(encoding="utf-8")
         start = source.index("self.monitor = WeChatMonitor(")
         block = source[start:start + 500]
         self.assertIn("原因仍未查明", block)

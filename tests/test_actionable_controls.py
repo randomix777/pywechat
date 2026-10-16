@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 class ErrorMustBeVisibleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = (ROOT / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+        cls.source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
 
     def test_the_analyze_page_has_a_place_to_show_failures(self):
         self.assertIn("analyze_notice", self.source,
@@ -60,7 +60,7 @@ class ErrorMustBeVisibleTests(unittest.TestCase):
 class ButtonHonestyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = (ROOT / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+        cls.source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
 
     def test_the_analyze_button_reflects_whether_it_can_be_used(self):
         self.assertIn("def _refresh_analyze_button", self.source)

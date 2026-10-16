@@ -5,7 +5,7 @@
 
 运行前需要：
   * opencode serve 已在 127.0.0.1:4096 监听，并已配置 order-parse agent
-  * pyweixin.gateway_server 已在 127.0.0.1:8790 监听
+  * wechat_ai_assistant.gateway_server 已在 127.0.0.1:8790 监听
 
     python examples\real_backend_check.py
 """
@@ -26,10 +26,10 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.client_login import MerchantClient, PendingQueue, Session  # noqa: E402
-from pyweixin.local_parse import LocalParseService  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.service import OrderPipeline  # noqa: E402
+from wechat_ai_assistant.client_login import MerchantClient, PendingQueue, Session  # noqa: E402
+from wechat_ai_assistant.local_parse import LocalParseService  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.service import OrderPipeline  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 
@@ -62,7 +62,7 @@ def seed(orders: OrderStore, tenant: str) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="real-backend-check")
-    parser.add_argument("--gateway", default=os.environ.get("PYWEIXIN_GATEWAY_URL", "http://127.0.0.1:8790"))
+    parser.add_argument("--gateway", default=os.environ.get("WECHAT_AI_GATEWAY_URL", "http://127.0.0.1:8790"))
     args = parser.parse_args(argv)
 
     workdir = Path(os.environ.get("TEMP", ".")) / "pyw_real_backend"
@@ -175,7 +175,7 @@ def _await_result(parse_service, message_id: str, outcome, timeout: float = 240.
 def _operator_report(gateway: str) -> dict:
     import urllib.request
 
-    token = os.environ.get("PYWEIXIN_OPERATOR_TOKEN", "")
+    token = os.environ.get("WECHAT_AI_OPERATOR_TOKEN", "")
     if not token:
         return {}
     request = urllib.request.Request(
@@ -187,7 +187,7 @@ def _operator_report(gateway: str) -> dict:
 
 def print_summary(orders: OrderStore, tenant: str, group: str) -> None:
     """只统计**真正成功的订单**，空审核卡片不算。"""
-    from pyweixin.dashboard import EFFECTIVE_STATUSES
+    from wechat_ai_assistant.dashboard import EFFECTIVE_STATUSES
 
     print("⑦ 结果核对（空审核卡片不计入成功订单）")
     orders_list = orders.list_orders(tenant)

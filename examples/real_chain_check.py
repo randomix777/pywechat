@@ -87,7 +87,7 @@ def http(method: str, url: str, body=None, headers=None, timeout=600):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="real-chain-check")
-    parser.add_argument("--gateway", default=os.environ.get("PYWEIXIN_GATEWAY_URL", "http://127.0.0.1:8790"))
+    parser.add_argument("--gateway", default=os.environ.get("WECHAT_AI_GATEWAY_URL", "http://127.0.0.1:8790"))
     parser.add_argument("--model", default=os.environ.get("PROBE_MODEL", "qwen3.6-plus"))
     parser.add_argument("--provider", default=os.environ.get("PROBE_PROVIDER", "opencode-go"))
     parser.add_argument("--alias", default=os.environ.get("PROBE_ALIAS", "free-standard"))
@@ -101,11 +101,11 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    from pyweixin.local_parse import LocalParseService
-    from pyweixin.orders import OrderStore
-    from pyweixin.client_login import CredentialStore, MerchantClient, PendingQueue, Session
-    from pyweixin.dashboard import DashboardBuilder
-    from pyweixin.runmode import SettingsStore
+    from wechat_ai_assistant.local_parse import LocalParseService
+    from wechat_ai_assistant.orders import OrderStore
+    from wechat_ai_assistant.client_login import CredentialStore, MerchantClient, PendingQueue, Session
+    from wechat_ai_assistant.dashboard import DashboardBuilder
+    from wechat_ai_assistant.runmode import SettingsStore
 
     workdir = Path(args.workdir) if args.workdir else Path(os.environ.get("TEMP", ".")) / "realgw3" / "pyw_real_chain"
     workdir.mkdir(parents=True, exist_ok=True)

@@ -31,7 +31,7 @@ class TraverseRetryTests(unittest.TestCase):
     """用假窗口驱动真实代码路径。"""
 
     def setUp(self):
-        from pyweixin import utils
+        from wechat_ai_assistant import utils
 
         self.utils = utils
 
@@ -159,7 +159,7 @@ class TraverseRetryTests(unittest.TestCase):
 class RetryBudgetTests(unittest.TestCase):
     def test_the_retry_count_is_bounded(self):
         """重试必须有上限，否则商户会对着一个卡住的界面干等。"""
-        from pyweixin.utils import TRAVERSE_FOCUS_RETRIES
+        from wechat_ai_assistant.utils import TRAVERSE_FOCUS_RETRIES
 
         self.assertGreaterEqual(TRAVERSE_FOCUS_RETRIES, 1)
         self.assertLessEqual(TRAVERSE_FOCUS_RETRIES, 3,
@@ -170,7 +170,7 @@ class HonestDocTests(unittest.TestCase):
     """这个修复针对的是症状，不能把它写成"根因已找到"。"""
 
     def test_the_comment_says_it_does_not_claim_a_root_cause(self):
-        source = (ROOT / "src" / "pyweixin" / "utils.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "utils.py").read_text(encoding="utf-8")
         start = source.index("def traverse_chat_history")
         block = source[start:source.index("def _traverse_once")]
         self.assertIn("症状", block, "应当明写这是针对症状，不是赌根因")
@@ -194,7 +194,7 @@ class DeterministicStartTests(unittest.TestCase):
     """
 
     def test_the_reset_happens_before_the_loop_not_after_it(self):
-        source = (ROOT / "src" / "pyweixin" / "utils.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "utils.py").read_text(encoding="utf-8")
         start = source.index("def _traverse_once")
         body = source[start:source.index("class ", start)] if "class " in source[start:] else source[start:]
         reset_at = body.index("type_keys('{HOME}')")
@@ -204,7 +204,7 @@ class DeterministicStartTests(unittest.TestCase):
 
     def test_a_failed_reset_does_not_abort_the_traversal(self):
         """复位失败只是"起点不保证"，不该让整次读取失败。"""
-        source = (ROOT / "src" / "pyweixin" / "utils.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "utils.py").read_text(encoding="utf-8")
         start = source.index("def _traverse_once")
         body = source[start:start + 1200]
         self.assertIn("except Exception", body[:body.index("while recorded_num")],
@@ -212,7 +212,7 @@ class DeterministicStartTests(unittest.TestCase):
 
     def test_two_passes_over_one_list_agree(self):
         """真的跑两遍，结果必须一样。"""
-        from pyweixin import utils
+        from wechat_ai_assistant import utils
 
         rows = [
             ("消息0", "mmui::ChatBubbleItemView"), ("消息1", "mmui::ChatBubbleItemView"),

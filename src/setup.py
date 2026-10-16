@@ -1,19 +1,19 @@
 import sys
-from setuptools import setup
-setup(name='pywechat127',
-version='1.9.8',
+from setuptools import find_packages, setup
+setup(name='wechat-ai-assistant',
+version='1.9.9',
 author='Hello-Mr-Crab',
 author_email='3083256475@qq.com',
 classifiers=[
 "Operating System :: Microsoft :: Windows",
 ],
 platforms=["Windows"],
-description=f'A Powerful Windows-PC-Wechat automation Tool',
+description='Windows WeChat automation and AI merchant assistant',
 long_description=open('README.md','r',encoding='utf-8').read(),
 long_description_content_type='text/markdown',  
-url='https://github.com/Hello-Mr-Crab/pywechat',
-#64位操作系统都安装,32位操作系统只安装pywechat
-packages=['pywechat','pyweixin'] if sys.maxsize==2**63-1 else ['pywechat'],
+url='https://github.com/randomix777/wechat-ai-assistant',
+# 32-bit releases retain the legacy 3.9 package only.
+packages=find_packages() if sys.maxsize==2**63-1 else ['pywechat'],
 license='LGPL',
 keywords=['rpa','windows','wechat','automation'],
 install_requires=[

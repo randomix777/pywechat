@@ -27,7 +27,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 CSV = """name,group,address,preference,aliases
 张姐,鲜果群,山东市场A12,喜欢大箱,张大姐、老张家的

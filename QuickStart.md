@@ -1,6 +1,6 @@
-# Quick Start
+# WeChat AI Assistant 快速开始
 
-欢迎使用**pywechat！Windows微信桌面版自动化开源RPA工具库。
+欢迎使用 **WeChat AI Assistant**，面向 Windows 微信桌面版的 AI 商务助手。
 
 !['微信安装包'](/pics/wechat.png "微信")
 
@@ -8,9 +8,7 @@
 
 [微信4.1+自动化说明](/Weixin4.0.md)
 
-源代码共包含两个核心Package：
-***`pywechat`**：适配 **微信3.9.x**版本。
-***`pyweixin`**：适配 **微信4.x版本**（具有Skill及MCP扩展,具体可见Skill,Mcp）
+当前应用使用 `wechat_ai_assistant` Python 命名空间；原 `pyweixin` 导入名保留为兼容入口。`pywechat` 仍用于微信 3.9.x 自动化。
 
 ## 环境要求
 
@@ -27,7 +25,8 @@ src/
 │   ├── pywechat/
 │   │   ├── WeChatAuto.py
 │   │   └── ...
-│   └── pyweixin/
+│   ├── wechat_ai_assistant/
+│   └── pyweixin/  # 旧导入名兼容层
 │       ├── WeChatAuto.py
 │       └── ...
 ├── setup.py
@@ -38,12 +37,12 @@ src/
 
 ## 安装与使用(Python Package)
 
-最新版pywechat已同步发布于PYPI,版本为1.9.8
+旧版 `pywechat127` 发行包已发布于 PyPI，版本为 1.9.8。新产品包名已改为 `wechat-ai-assistant`；该名称的 PyPI 首次发布尚未进行。
 
 ### 全局使用
 
 ```bash
-pip install pywechat127
+# 首次发布后可用：pip install wechat-ai-assistant
 ```
 
 ### 本地开发模式安装
@@ -60,9 +59,8 @@ workspace/
 │   ├── pywechat/
 │   │   ├── WeChatAuto.py
 │   │   └── ...
-│   └── pyweixin/
-│   │   ├── WeChatAuto.py
-│   │   └── ...
+│   ├── wechat_ai_assistant/
+│   └── pyweixin/  # 只保留兼容入口，转发到 wechat_ai_assistant
 │   │
 │   └── test.py
 ```

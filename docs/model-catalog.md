@@ -127,7 +127,7 @@ Windows 没有系统时区库，所以 `tzdata` 是必需依赖，不是可选�
 
 ## 5. 订单能力验证
 
-`src/pyweixin/capability_check.py` 用**合成数据**发真实请求，7 项准入标准：
+`src/wechat_ai_assistant/capability_check.py` 用**合成数据**发真实请求，7 项准入标准：
 
 1. 中文数量转 JSON 数字（`两箱` → `2`）
 2. 商品与单位正确匹配目录
@@ -225,8 +225,8 @@ PASS insufficient
 ### 平台预算与全局并发
 
 平台自己的上限通过环境变量配置（见 `deploy/gateway.env.example`）：
-`PYWEIXIN_PLATFORM_DAILY_JOBS`、`PYWEIXIN_PLATFORM_MAX_CONCURRENCY`，可选的
-`PYWEIXIN_PLATFORM_COST_CENTS_PER_JOB` / `PYWEIXIN_PLATFORM_DAILY_COST_CENTS`。
+`WECHAT_AI_PLATFORM_DAILY_JOBS`、`WECHAT_AI_PLATFORM_MAX_CONCURRENCY`，可选的
+`WECHAT_AI_PLATFORM_COST_CENTS_PER_JOB` / `WECHAT_AI_PLATFORM_DAILY_COST_CENTS`。
 
 - **不伪造人民币成本。** 订阅费用无法可靠按请求折算，默认只记请求数与并发；
   没有单价时运营视图里 `cost_known=false`、`settled_cost_cents_today=null`。
@@ -299,7 +299,7 @@ PASS insufficient
 `max_concurrent_per_tenant` / `requests_per_minute` / `policy_version`；
 `charge_note` 只是展示文案。
 
-启动时通过 `PYWEIXIN_MODEL_POLICY` 指定；网关会把目录持久化到
+启动时通过 `WECHAT_AI_MODEL_POLICY` 指定；网关会把目录持久化到
 `product.db`，重启后读回。完整字段说明见文件内的 `_billing_basis` /
 `_free_quota_timezone` / `_failover_to` 注释。
 
@@ -328,11 +328,11 @@ PASS insufficient
 
 | 环境变量 | 作用 | 是否必需 |
 | --- | --- | --- |
-| `PYWEIXIN_DEEPSEEK_API_KEY_FILE` | 密钥所在的**文件路径** | 走 DeepSeek 时必需 |
-| `PYWEIXIN_DEEPSEEK_MODEL` | 模型，默认 `deepseek-flash` | 否 |
-| `PYWEIXIN_DEEPSEEK_BASE_URL` | 接口地址，默认官方地址 | 否 |
-| `PYWEIXIN_DEEPSEEK_TIMEOUT` | 单次超时秒数，默认 60 | 否 |
-| `PYWEIXIN_OPENCODE_URL` | 配了就走 OpenCode 遗留路径 | 否 |
+| `WECHAT_AI_DEEPSEEK_API_KEY_FILE` | 密钥所在的**文件路径** | 走 DeepSeek 时必需 |
+| `WECHAT_AI_DEEPSEEK_MODEL` | 模型，默认 `deepseek-flash` | 否 |
+| `WECHAT_AI_DEEPSEEK_BASE_URL` | 接口地址，默认官方地址 | 否 |
+| `WECHAT_AI_DEEPSEEK_TIMEOUT` | 单次超时秒数，默认 60 | 否 |
+| `WECHAT_AI_OPENCODE_URL` | 配了就走 OpenCode 遗留路径 | 否 |
 
 **密钥只从文件读**，不认环境变量明文、不走命令行：环境变量会进部署日志，
 命令行会进 `ps` 输出。路径不是秘密，可以进配置；密钥本身只存在于那个文件里。
@@ -393,7 +393,7 @@ examples/closing_checks.py             →  全部通过（含 ⑥ 别名一路�
 
 ### 真实进程
 
-`examples/smoke_gateway.py` 16 步全过（真实 `python -m pyweixin.gateway_server` 进程）。
+`examples/smoke_gateway.py` 16 步全过（真实 `python -m wechat_ai_assistant.gateway_server` 进程）。
 平台预算在真实进程里的读数：
 
 ```
@@ -473,9 +473,9 @@ python examples/prepare_isolated_opencode.py --auth-login opencode-go
 登录只写进这个私有目录，对共享实例 4096 没有任何影响。登录完成后：
 
 ```powershell
-$env:PYWEIXIN_OPENCODE_URL        = (Get-Content .opencode-private\instance.json | ConvertFrom-Json).base
-$env:PYWEIXIN_OPENCODE_USER       = "pyweixin"
-$env:PYWEIXIN_OPENCODE_PASSWORD_FILE = "$PWD\.opencode-private\secret.pw"
+$env:WECHAT_AI_OPENCODE_URL        = (Get-Content .opencode-private\instance.json | ConvertFrom-Json).base
+$env:WECHAT_AI_OPENCODE_USER       = "pyweixin"
+$env:WECHAT_AI_OPENCODE_PASSWORD_FILE = "$PWD\.opencode-private\secret.pw"
 python examples\real_model_check.py --max-calls 5
 ```
 

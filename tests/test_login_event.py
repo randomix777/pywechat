@@ -15,9 +15,9 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.application import AppEvents, MerchantApplication  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
+from wechat_ai_assistant.application import AppEvents, MerchantApplication  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
 
 
 class LoggedInEventTests(unittest.TestCase):

@@ -20,10 +20,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "order_agent" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "business_agent" / "src"))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.history_read import SimulatedHistory  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.history_read import SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 
 class Session:
@@ -97,7 +97,7 @@ class DetachTests(unittest.TestCase):
     def test_detach_deletes_the_local_credentials(self):
         """退出必须删本机凭证：不清文件，下次启动 restore 又登回去 ——
         商户明明点了退出，重开发现还登着（真实报障）。"""
-        from pyweixin.client_login import CredentialStore, restore_session
+        from wechat_ai_assistant.client_login import CredentialStore, restore_session
 
         credentials = CredentialStore(str(Path(self._tmp.name) / "cred.bin"))
         credentials.save({"session": {"access_token": "a", "refresh_token": "r"}})
@@ -107,7 +107,7 @@ class DetachTests(unittest.TestCase):
 
     def test_detach_deletes_credentials_even_when_offline(self):
         """断网退出也要彻底：服务端没通知到，本地必须照删。"""
-        from pyweixin.client_login import CredentialStore, restore_session
+        from wechat_ai_assistant.client_login import CredentialStore, restore_session
 
         credentials = CredentialStore(str(Path(self._tmp.name) / "cred2.bin"))
         credentials.save({"session": {"access_token": "a", "refresh_token": "r"}})
@@ -152,7 +152,7 @@ class LogoutWordingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (Path(__file__).resolve().parent.parent
-                      / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+                      / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
 
     def test_logout_says_the_local_data_is_kept(self):
         self.assertIn("都留在这台电脑上，没有删除", self.source)
@@ -182,7 +182,7 @@ class WindowSessionTests(unittest.TestCase):
     """
 
     def test_the_window_never_assigns_its_own_session(self):
-        source = (Path(__file__).resolve().parent.parent / "src" / "pyweixin" / "merchant_ui.py")
+        source = (Path(__file__).resolve().parent.parent / "src" / "wechat_ai_assistant" / "merchant_ui.py")
         text = source.read_text(encoding="utf-8")
         self.assertNotIn("self.session =", text,
                          "窗口不该自己存一份会话，容易和应用层不同步")
@@ -199,7 +199,7 @@ class AccountCenterDataTests(unittest.TestCase):
     def _window(self, session, quota=None):
         import types
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         window = MerchantWindow.__new__(MerchantWindow)
         window._widgets = {}
@@ -211,7 +211,7 @@ class AccountCenterDataTests(unittest.TestCase):
     def test_percent_from_cached_quota(self):
         import types
 
-        from pyweixin.wizard import QuotaView
+        from wechat_ai_assistant.wizard import QuotaView
 
         session = types.SimpleNamespace(
             merchant_name="一号店",
@@ -229,7 +229,7 @@ class AccountCenterDataTests(unittest.TestCase):
     def test_unlimited_has_no_bar(self):
         import types
 
-        from pyweixin.wizard import QuotaView
+        from wechat_ai_assistant.wizard import QuotaView
 
         quota = QuotaView(logged_in=True, active=True, remaining=1,
                           total_micro_usd=0)
@@ -268,7 +268,7 @@ class AccountCenterDataTests(unittest.TestCase):
         """下拉点开即看：在 UI 线程里等网络就是卡死（真实报障）。"""
         import inspect
 
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         source = inspect.getsource(merchant_ui.MerchantWindow._account_center_data)
         self.assertNotIn("check_quota", source)
@@ -285,7 +285,7 @@ class AccountDropdownTests(unittest.TestCase):
         import types
         from tkinter import ttk
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         root = tk.Tk()
         root.withdraw()
@@ -334,7 +334,7 @@ class AccountDropdownTests(unittest.TestCase):
     def test_recharge_fallback_when_browser_fails(self):
         import unittest.mock
 
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         window, root = self._window()
         window._show_account_center()
@@ -359,7 +359,7 @@ class AccountDropdownTests(unittest.TestCase):
                 window.app, "detach", create=True,
                 side_effect=AssertionError("没确认就退出了")):
             with unittest.mock.patch(
-                    "pyweixin.merchant_ui.messagebox.askyesno",
+                    "wechat_ai_assistant.merchant_ui.messagebox.askyesno",
                     return_value=False):
                 buttons["退出登录"].invoke()
                 root.update()
@@ -381,10 +381,10 @@ class AccountDropdownTests(unittest.TestCase):
         window._refresh_analyze_button = lambda: calls.append("refresh_analyze_button")
         window._show_step = lambda step: calls.append(("show_step", step))
         with unittest.mock.patch(
-                "pyweixin.merchant_ui.messagebox.askyesno",
+                "wechat_ai_assistant.merchant_ui.messagebox.askyesno",
                 return_value=True), \
             unittest.mock.patch(
-                "pyweixin.merchant_ui.messagebox.showinfo"):
+                "wechat_ai_assistant.merchant_ui.messagebox.showinfo"):
             buttons["退出登录"].invoke()
             root.update()
         self.assertIn("detach", calls)

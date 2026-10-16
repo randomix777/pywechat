@@ -42,7 +42,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.summary import Summarizer  # noqa: E402
+from wechat_ai_assistant.summary import Summarizer  # noqa: E402
 
 
 def _http_error(code: int, message: str, previous: list | None = None) -> urllib.error.HTTPError:

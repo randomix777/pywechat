@@ -7,8 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin import wechat_state  # noqa: E402
-from pyweixin.wechat_state import (  # noqa: E402
+from wechat_ai_assistant import wechat_state  # noqa: E402
+from wechat_ai_assistant.wechat_state import (  # noqa: E402
     default_sender_source,
     reset_uia_cache,
     uia_automation_available,
@@ -79,7 +79,7 @@ class UiaProbeTests(unittest.TestCase):
         self.assertFalse(uia_automation_available("v2"), "换版本重探")
 
     def test_default_sender_follows_probe(self):
-        import pyweixin.wechat_state as module
+        import wechat_ai_assistant.wechat_state as module
 
         original = module.uia_automation_available
         try:
@@ -98,7 +98,7 @@ class UiGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         root = Path(__file__).resolve().parent.parent
-        cls.source = (root / "src" / "pyweixin" / "merchant_ui.py").read_text(
+        cls.source = (root / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(
             encoding="utf-8")
 
     def test_listen_and_auto_go_through_the_gate(self):

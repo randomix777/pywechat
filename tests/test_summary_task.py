@@ -37,8 +37,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin import summary_task  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant import summary_task  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 GROUP = "鲜果群"
 
@@ -118,7 +118,7 @@ class MessagesForSummaryTests(unittest.TestCase):
 
     def test_the_limit_is_applied(self):
         self.assertGreater(summary_task.SUMMARY_MESSAGE_LIMIT, 0)
-        source = (ROOT / "src/pyweixin/summary_task.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/summary_task.py").read_text(encoding="utf-8")
         self.assertIn("LIMIT", source)
 
 
@@ -172,7 +172,7 @@ class SummaryBatchPlannerTests(unittest.TestCase):
              "attachments": ["orders.docx"]},
         ]
         document = "段落\n" + ("DOCX正文 " * 5000)
-        with unittest.mock.patch("pyweixin.media_attachments.document_text",
+        with unittest.mock.patch("wechat_ai_assistant.media_attachments.document_text",
                                  return_value=document) as extract:
             batches = summary_task._summary_work_batches(
                 messages, token_budget=20_000, max_document_chars=4_000)
@@ -197,12 +197,12 @@ class SummaryBatchPlannerTests(unittest.TestCase):
                             if category == "DOCX/PDF 文档" for item in batch)
         self.assertEqual(recovered, document)
 
-        from pyweixin.jyi_parse import add_document_text
+        from wechat_ai_assistant.jyi_parse import add_document_text
         document_batch = next(batch for category, batch in batches
                               if category == "DOCX/PDF 文档")
         prompt = [{"role": "system", "content": "role"},
                   {"role": "user", "content": "分析文件"}]
-        with unittest.mock.patch("pyweixin.media_attachments.document_text",
+        with unittest.mock.patch("wechat_ai_assistant.media_attachments.document_text",
                                  side_effect=AssertionError("prepared text should be reused")):
             enriched = add_document_text(prompt, document_batch)
         parts = enriched[-1]["content"]
@@ -329,7 +329,7 @@ class CloudSummaryTests(unittest.TestCase):
 
     def _messages(self, app):
         with unittest.mock.patch(
-                "pyweixin.summary_task.messages_for_summary",
+                "wechat_ai_assistant.summary_task.messages_for_summary",
                 return_value=[{"sender": "张姐", "content": "苹果两箱",
                                "sent_at": "2026-10-13 10:00", "kind": "text"}]):
             return app
@@ -337,7 +337,7 @@ class CloudSummaryTests(unittest.TestCase):
     def test_logged_out_says_so(self):
         app = self._app(None)
         with unittest.mock.patch(
-                "pyweixin.summary_task.messages_for_summary",
+                "wechat_ai_assistant.summary_task.messages_for_summary",
                 return_value=[{"sender": "张姐", "content": "苹果两箱",
                                "sent_at": "2026-10-13 10:00", "kind": "text"}]):
             outcome = summary_task.run_summary(app, object())
@@ -349,7 +349,7 @@ class CloudSummaryTests(unittest.TestCase):
         """JYI 直调：提示词同样复用，不计本地账。"""
         import types as _types
 
-        from pyweixin.jyi_client import JYIClient
+        from wechat_ai_assistant.jyi_client import JYIClient
 
         client = JYIClient()
         client.session = _types.SimpleNamespace(access_token="tok")
@@ -363,7 +363,7 @@ class CloudSummaryTests(unittest.TestCase):
 
         client.chat_completions = _chat
         with unittest.mock.patch(
-                "pyweixin.summary_task.messages_for_summary",
+                "wechat_ai_assistant.summary_task.messages_for_summary",
                 return_value=[{"sender": "张姐", "content": "苹果两箱",
                                "sent_at": "2026-10-13 10:00", "kind": "text"}]):
             outcome = summary_task.run_summary(self._app(client), object())
@@ -396,10 +396,10 @@ class CloudSummaryTests(unittest.TestCase):
                 return states.pop(0)
 
         with unittest.mock.patch(
-                "pyweixin.summary_task.messages_for_summary",
+                "wechat_ai_assistant.summary_task.messages_for_summary",
                 return_value=[{"sender": "张姐", "content": "苹果两箱",
                                "sent_at": "2026-10-13 10:00", "kind": "text"}]), \
-            unittest.mock.patch("pyweixin.summary_task.SUMMARY_POLL_INTERVAL", 0):
+            unittest.mock.patch("wechat_ai_assistant.summary_task.SUMMARY_POLL_INTERVAL", 0):
             outcome = summary_task.run_summary(self._app(FakeClient()), object())
         self.assertEqual(outcome["summary"], "张姐要两箱苹果")
         self.assertEqual(outcome["error"], "")
@@ -421,10 +421,10 @@ class CloudSummaryTests(unittest.TestCase):
                         "billing": {}}
 
         with unittest.mock.patch(
-                "pyweixin.summary_task.messages_for_summary",
+                "wechat_ai_assistant.summary_task.messages_for_summary",
                 return_value=[{"sender": "张姐", "content": "苹果两箱",
                                "sent_at": "2026-10-13 10:00", "kind": "text"}]), \
-            unittest.mock.patch("pyweixin.summary_task.SUMMARY_POLL_INTERVAL", 0):
+            unittest.mock.patch("wechat_ai_assistant.summary_task.SUMMARY_POLL_INTERVAL", 0):
             outcome = summary_task.run_summary(self._app(FakeClient()), object())
         self.assertEqual(outcome["summary"], "")
         self.assertIn("服务暂时不可用", outcome["error"])
@@ -480,7 +480,7 @@ class CancelAnalysisTests(unittest.TestCase):
         return types.SimpleNamespace(client=client, orders=None, tenant="t")
 
     def test_jyi_cancel_keeps_the_completed_group(self):
-        from pyweixin.jyi_client import JYIClient
+        from wechat_ai_assistant.jyi_client import JYIClient
 
         client = JYIClient()
         client.session = types.SimpleNamespace(access_token="tok")
@@ -492,7 +492,7 @@ class CancelAnalysisTests(unittest.TestCase):
 
         client.chat_completions = _chat
         with unittest.mock.patch(
-                "pyweixin.summary_task.messages_for_summary",
+                "wechat_ai_assistant.summary_task.messages_for_summary",
                 return_value=self._messages()):
             outcome = summary_task.run_summary(
                 self._jyi_app(client), object(),
@@ -504,7 +504,7 @@ class CancelAnalysisTests(unittest.TestCase):
         self.assertEqual(outcome["completed_groups"], ["g1"])
 
     def test_cancel_before_start_makes_no_model_calls(self):
-        from pyweixin.jyi_client import JYIClient
+        from wechat_ai_assistant.jyi_client import JYIClient
 
         client = JYIClient()
         client.session = types.SimpleNamespace(access_token="tok")
@@ -516,7 +516,7 @@ class CancelAnalysisTests(unittest.TestCase):
 
         client.chat_completions = _chat
         with unittest.mock.patch(
-                "pyweixin.summary_task.messages_for_summary",
+                "wechat_ai_assistant.summary_task.messages_for_summary",
                 return_value=self._messages()):
             outcome = summary_task.run_summary(
                 self._jyi_app(client), object(),
@@ -546,10 +546,10 @@ class CancelAnalysisTests(unittest.TestCase):
                 return {}
 
         with unittest.mock.patch(
-                "pyweixin.summary_task.messages_for_summary",
+                "wechat_ai_assistant.summary_task.messages_for_summary",
                 return_value=[{"sender": "张姐", "content": "苹果两箱",
                                "sent_at": "2026-10-13 10:00", "kind": "text"}]), \
-            unittest.mock.patch("pyweixin.summary_task.SUMMARY_POLL_INTERVAL", 0):
+            unittest.mock.patch("wechat_ai_assistant.summary_task.SUMMARY_POLL_INTERVAL", 0):
             outcome = summary_task.run_summary(
                 self._jyi_app(FakeClient()), object(),
                 is_cancelled=lambda: flag["stop"])
@@ -648,7 +648,7 @@ class GatewayErrorTextTests(unittest.TestCase):
     """网关原话不能掉地上：读错字段就是一句"提交失败"打发人。"""
 
     def test_merchant_message_is_used(self):
-        from pyweixin.client_login import GatewayError
+        from wechat_ai_assistant.client_login import GatewayError
 
         exc = GatewayError("upstream_quota_used",
                            "This connection has used its quota. Raise its slice.")
@@ -661,7 +661,7 @@ class GatewayErrorTextTests(unittest.TestCase):
         self.assertEqual(text, "提交失败，请稍后重试")
 
     def test_unsettled_upstream_requests_use_neutral_wait_message(self):
-        from pyweixin.client_login import GatewayError
+        from wechat_ai_assistant.client_login import GatewayError
 
         text = summary_task._analysis_error(GatewayError(
             "too_many_concurrent", "Too many unsettled requests. Wait for them to finish.", 429))

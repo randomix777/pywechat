@@ -21,16 +21,16 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.gateway import ProductGateway  # noqa: E402
-from pyweixin.model_catalog import CatalogStatus, OperatorModelPolicy, PricingClass  # noqa: E402
-from pyweixin.opencode import LocalRuleAdapter, OpenCodeAdapter  # noqa: E402
-from pyweixin.product import ProductStore  # noqa: E402
+from wechat_ai_assistant.gateway import ProductGateway  # noqa: E402
+from wechat_ai_assistant.model_catalog import CatalogStatus, OperatorModelPolicy, PricingClass  # noqa: E402
+from wechat_ai_assistant.opencode import LocalRuleAdapter, OpenCodeAdapter  # noqa: E402
+from wechat_ai_assistant.product import ProductStore  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="catalog-live-check")
-    parser.add_argument("--opencode", default=os.environ.get("PYWEIXIN_OPENCODE_URL", "http://127.0.0.1:4096"))
-    parser.add_argument("--password", default=os.environ.get("PYWEIXIN_OPENCODE_PASSWORD", ""))
+    parser.add_argument("--opencode", default=os.environ.get("WECHAT_AI_OPENCODE_URL", "http://127.0.0.1:4096"))
+    parser.add_argument("--password", default=os.environ.get("WECHAT_AI_OPENCODE_PASSWORD", ""))
     parser.add_argument("--provider", default=os.environ.get("CATALOG_PROVIDER", "opencode-go"))
     parser.add_argument("--model", default=os.environ.get("CATALOG_MODEL", "qwen3.6-plus"))
     parser.add_argument("--alias", default=os.environ.get("CATALOG_ALIAS", "free-standard"))

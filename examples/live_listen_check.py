@@ -23,11 +23,11 @@ for _name in ("business_agent", "order_agent"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.agent import AgentStore  # noqa: E402
-from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
-from pyweixin.merging import MergeSettings, MessageMerger  # noqa: E402
-from pyweixin.live_listen import LISTEN_RUNNING, LiveListener  # noqa: E402
-from pyweixin.reliability import MessageDirection, MessageEvent, MessageKind  # noqa: E402
+from wechat_ai_assistant.agent import AgentStore  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind  # noqa: E402
+from wechat_ai_assistant.merging import MergeSettings, MessageMerger  # noqa: E402
+from wechat_ai_assistant.live_listen import LISTEN_RUNNING, LiveListener  # noqa: E402
+from wechat_ai_assistant.reliability import MessageDirection, MessageEvent, MessageKind  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 GROUP = "监听验证群"

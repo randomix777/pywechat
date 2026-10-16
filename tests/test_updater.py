@@ -14,7 +14,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from pyweixin import updater  # noqa: E402
+from wechat_ai_assistant import updater  # noqa: E402
 
 
 def _release(version="1.9.9", assets=True):
@@ -225,7 +225,7 @@ class UpdateNoteTests(unittest.TestCase):
         import types
         from tkinter import ttk
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         root = tk.Tk()
         root.withdraw()

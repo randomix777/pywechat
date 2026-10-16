@@ -17,8 +17,8 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from pyweixin import roles  # noqa: E402
-from pyweixin.roles import (  # noqa: E402
+from wechat_ai_assistant import roles  # noqa: E402
+from wechat_ai_assistant.roles import (  # noqa: E402
     ROLE_ACTIVITY,
     ROLE_GENERIC,
     ROLE_ORDER,
@@ -119,12 +119,12 @@ class WizardRoleDispatchTests(unittest.TestCase):
     def _wizard(self):
         import tempfile
 
-        from pyweixin.orders import OrderStore
-        from pyweixin.runmode import SettingsStore
-        from pyweixin.conversations import ConversationRegistry
-        from pyweixin.history_read import HistoryReader
-        from pyweixin.wechat_state import WeChatMonitor, SimulatedWeChat
-        from pyweixin.wizard import Wizard
+        from wechat_ai_assistant.orders import OrderStore
+        from wechat_ai_assistant.runmode import SettingsStore
+        from wechat_ai_assistant.conversations import ConversationRegistry
+        from wechat_ai_assistant.history_read import HistoryReader
+        from wechat_ai_assistant.wechat_state import WeChatMonitor, SimulatedWeChat
+        from wechat_ai_assistant.wizard import Wizard
 
         tmp = tempfile.TemporaryDirectory(prefix="pyw-role-")
         store = OrderStore(str(Path(tmp.name) / "orders.db"))
@@ -174,7 +174,7 @@ class WizardRoleDispatchTests(unittest.TestCase):
             tmp.cleanup()
 
     def test_order_still_requires_quota(self):
-        from pyweixin.wizard import QuotaBlocked
+        from wechat_ai_assistant.wizard import QuotaBlocked
 
         wizard, store, tmp = self._wizard()
         try:

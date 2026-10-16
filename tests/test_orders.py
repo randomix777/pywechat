@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pyweixin.orders import OpenAICompatibleParser, OrderStore
-from pyweixin.cloud_server import create_server
+from wechat_ai_assistant.orders import OpenAICompatibleParser, OrderStore
+from wechat_ai_assistant.cloud_server import create_server
 
 
 class OrderWorkflowTests(unittest.TestCase):
@@ -304,12 +304,12 @@ class OrderWorkflowTests(unittest.TestCase):
 
     def test_partial_model_environment_configuration_fails_closed(self):
         import unittest.mock
-        with unittest.mock.patch.dict("os.environ",{"PYWEIXIN_MODEL_BASE_URL":"https://model.invalid/v1","PYWEIXIN_MODEL_API_KEY":"","PYWEIXIN_MODEL_NAME":""}):
-            with self.assertRaisesRegex(ValueError,"configure PYWEIXIN_MODEL_BASE_URL"):
+        with unittest.mock.patch.dict("os.environ",{"WECHAT_AI_MODEL_BASE_URL":"https://model.invalid/v1","WECHAT_AI_MODEL_API_KEY":"","WECHAT_AI_MODEL_NAME":""}):
+            with self.assertRaisesRegex(ValueError,"configure WECHAT_AI_MODEL_BASE_URL"):
                 create_server("127.0.0.1",0,"device-secret",str(Path(self.tmp.name)/"partial-cloud.db"),business_db_path=str(Path(self.tmp.name)/"partial-business.db"))
 
     def test_business_schema_migration_advances_version_and_is_repeatable(self):
-        from pyweixin.orders import SCHEMA_VERSION
+        from wechat_ai_assistant.orders import SCHEMA_VERSION
 
         path=Path(self.tmp.name)/"migration.db"
         first=OrderStore(path);self.assertEqual(first.db.execute("SELECT version FROM schema_version").fetchone()[0],SCHEMA_VERSION)

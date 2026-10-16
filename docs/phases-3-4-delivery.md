@@ -35,7 +35,7 @@
 双击 → 检测微信（未启动点「打开微信」）→ 选会话 → 读历史 → 查额度 →
 智能整理 → 首页 → 开启自动接单。
 
-向导走完后配置存 `%LOCALAPPDATA%\pyweixin\settings.json`，**下次启动不重走**。
+便携版向导走完后配置存 EXE 同级 `data\settings.json`，**下次启动不重走**；复制整个软件文件夹即可备份和迁移。便携版首次启动会复制已有 `%LOCALAPPDATA%\wechat-ai-assistant` 或 `%LOCALAPPDATA%\pyweixin` 数据，原目录保留。源码运行仍使用 `%LOCALAPPDATA%`。
 只有两种情况回到向导：首次启动、微信账号切换（此时旧会话绑定和客户记忆作废）。
 
 界面不再要求 `--group`、环境变量或 API Key。
@@ -167,7 +167,7 @@ python -m unittest discover -s tests   →  全部通过
 
 ### 真实进程
 
-`examples/smoke_gateway.py` — 16 步真实 `python -m pyweixin.gateway_server` 进程演练，全部通过，
+`examples/smoke_gateway.py` — 16 步真实 `python -m wechat_ai_assistant.gateway_server` 进程演练，全部通过，
 含幂等、额度预留/结算、跨商家隔离、备份恢复、建议落库、故障安全。
 
 ### 真实界面（本轮实际打开并截图）

@@ -20,14 +20,14 @@ for _name in ("business_agent", "order_agent", "support_triage"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.application import AppEvents, MerchantApplication  # noqa: E402
-from pyweixin.conversations import Conversation, ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.history_read import HistoryRange, SimulatedHistory, TimeWindow  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.receipts import ReceiptStatus, build_receipt_text  # noqa: E402
-from pyweixin.runmode import RunMode  # noqa: E402
-from pyweixin.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
-from pyweixin.wizard import QuotaBlocked  # noqa: E402
+from wechat_ai_assistant.application import AppEvents, MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.history_read import HistoryRange, SimulatedHistory, TimeWindow  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.receipts import ReceiptStatus, build_receipt_text  # noqa: E402
+from wechat_ai_assistant.runmode import RunMode  # noqa: E402
+from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
+from wechat_ai_assistant.wizard import QuotaBlocked  # noqa: E402
 
 NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -428,7 +428,7 @@ class QuotaTests(Harness):
         app.attach(session=object(), client=FakeClient(active=False), parse_service=object())
         self.assertEqual(app.check_quota().headline(), "套餐已到期")
         app2 = self.make_app()
-        from pyweixin.client_login import GatewayError
+        from wechat_ai_assistant.client_login import GatewayError
 
         app2.attach(session=object(), client=FakeClient(error=GatewayError("unauthenticated", "登录过期")), parse_service=object())
         self.assertIn("重新登录", app2.check_quota().message)
@@ -443,7 +443,7 @@ class QuotaTests(Harness):
 class AnalyzeTests(Harness):
     def _stub_parse(self, outcome_by_message: dict[str, dict], record_orders: bool = True):
         """一个可控的解析服务。模拟网关任务 + 插件 + 规则校验这条路径。"""
-        from pyweixin.local_parse import ParseProgress
+        from wechat_ai_assistant.local_parse import ParseProgress
 
         service = type("StubParse", (), {})()
         service.submitted = []

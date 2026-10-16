@@ -13,12 +13,12 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pyweixin.client_login import GatewayError, MerchantClient, Session, restore_session
-from pyweixin.jyi_client import (
+from wechat_ai_assistant.client_login import GatewayError, MerchantClient, Session, restore_session
+from wechat_ai_assistant.jyi_client import (
     BUSINESS_NOTICE, JYI_AUTH_ORIGIN, JYI_GATEWAY, JYIClient,
     create_merchant_client, production_oauth_config,
 )
-from pyweixin.oauth_browser import BrowserLoginFlow, OAuthError
+from wechat_ai_assistant.oauth_browser import BrowserLoginFlow, OAuthError
 
 
 class JYILoginTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class JYILoginTests(unittest.TestCase):
             query = urllib.parse.parse_qs(parsed.query)
             self.assertEqual(parsed.hostname, "ai.jyisolutions.com")
             self.assertEqual(parsed.path, "/connect/authorize")
-            self.assertEqual(query["client_id"], ["pyweixin-desktop"])
+            self.assertEqual(query["client_id"], ["wechat_ai_assistant-desktop"])
             self.assertEqual(query["code_challenge_method"], ["S256"])
             requests.append(query)
             callback = query["redirect_uri"][0] + "?" + urllib.parse.urlencode({
@@ -52,7 +52,7 @@ class JYILoginTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
             return True
 
-        with patch("pyweixin.jyi_client.BrowserLoginFlow",
+        with patch("wechat_ai_assistant.jyi_client.BrowserLoginFlow",
                    side_effect=lambda **kwargs: BrowserLoginFlow(**kwargs, open_browser=authorize, timeout=3)), \
                 patch.object(client.auth_client, "_request", return_value=self.response()) as exchange:
             session = client.login(store, "电脑", progress)
@@ -146,7 +146,7 @@ class JYILoginTests(unittest.TestCase):
         self.assertEqual(subscription["plan_code"], "pro")
 
     def test_unknown_balance_stays_unknown_and_network_recovery_refreshes_it(self):
-        from pyweixin.wizard import QuotaView, Wizard
+        from wechat_ai_assistant.wizard import QuotaView, Wizard
 
         class Client:
             session = Session("token", "device")

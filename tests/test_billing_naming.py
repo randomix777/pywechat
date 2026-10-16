@@ -29,7 +29,7 @@ class UsageUnitsIsTokensTests(unittest.TestCase):
     """``usage_units`` 是 token 数，不是金额 —— 别改，也别当额度用。"""
 
     def setUp(self):
-        self.source = (ROOT / "src/pyweixin/orders.py").read_text(encoding="utf-8")
+        self.source = (ROOT / "src/wechat_ai_assistant/orders.py").read_text(encoding="utf-8")
 
     def test_it_is_filled_with_input_plus_output_tokens(self):
         writes = re.findall(r"usage_units\s*=\s*\?\s*,\s*error=NULL", self.source)
@@ -48,7 +48,7 @@ class DeadQuotaColumnTests(unittest.TestCase):
     """``ai_quota`` 是死列 —— 不能被当成余额读。"""
 
     def setUp(self):
-        self.source = (ROOT / "src/pyweixin/orders.py").read_text(encoding="utf-8")
+        self.source = (ROOT / "src/wechat_ai_assistant/orders.py").read_text(encoding="utf-8")
 
     def test_it_is_never_selected(self):
         """只写不读。哪天有人 SELECT 它，这条就该重新审视。"""
@@ -71,13 +71,13 @@ class DeadQuotaColumnTests(unittest.TestCase):
 
 class RealBalanceIsMicroUsdTests(unittest.TestCase):
     def test_the_balance_columns_are_named_in_micro_usd(self):
-        source = (ROOT / "src/pyweixin/product.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/product.py").read_text(encoding="utf-8")
         for column in ("quota_micro_usd", "used_micro_usd", "reserved_micro_usd"):
             self.assertIn(column, source, f"{column} 应当是真实的余额列")
 
     def test_no_bare_units_column_remains_in_the_subscription_schema(self):
         """订阅表里不该再有 quota_units / used_units 这类旧列名。"""
-        source = (ROOT / "src/pyweixin/product.py").read_text(encoding="utf-8")
+        source = (ROOT / "src/wechat_ai_assistant/product.py").read_text(encoding="utf-8")
         schema = source[source.index("CREATE TABLE IF NOT EXISTS subscriptions"):][:600]
         for stale in ("quota_units", "used_units", "reserved_units"):
             self.assertNotIn(stale, schema, f"{stale} 应当已改名为 *_micro_usd")

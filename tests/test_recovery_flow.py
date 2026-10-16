@@ -19,14 +19,14 @@ for _name in ("business_agent", "order_agent", "support_triage"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.history_read import SimulatedHistory  # noqa: E402
-from pyweixin.local_parse import ParseProgress  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.runmode import RunMode, SettingsStore  # noqa: E402
-from pyweixin.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
-from pyweixin.wizard import WizardStep  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.history_read import SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.local_parse import ParseProgress  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.runmode import RunMode, SettingsStore  # noqa: E402
+from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
+from wechat_ai_assistant.wizard import WizardStep  # noqa: E402
 
 NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -105,7 +105,7 @@ class SettingsPersistenceTests(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def test_settings_survive_a_restart(self):
-        from pyweixin.runmode import AutoOrderSettings, MerchantSettings
+        from wechat_ai_assistant.runmode import AutoOrderSettings, MerchantSettings
 
         store = SettingsStore(self.dir / "settings.json")
         settings = MerchantSettings()
@@ -128,7 +128,7 @@ class SettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(settings.wizard_complete, False, "配置坏了就回到默认，让商户重走向导")
 
     def test_switching_wechat_account_clears_the_old_binding(self):
-        from pyweixin.runmode import MerchantSettings
+        from wechat_ai_assistant.runmode import MerchantSettings
 
         settings = MerchantSettings()
         settings.account_id = "wxid_old"
@@ -142,7 +142,7 @@ class SettingsPersistenceTests(unittest.TestCase):
         self.assertFalse(settings.wizard_complete, "换账号后必须重新绑定会话")
 
     def test_completed_wizard_is_not_shown_again(self):
-        from pyweixin.runmode import MerchantSettings
+        from wechat_ai_assistant.runmode import MerchantSettings
 
         settings = MerchantSettings()
         settings.wizard_complete = True
@@ -204,7 +204,7 @@ class CrashRecoveryTests(RecoveryHarness):
         self.assertEqual(restarted.orders_for_display(), [])
 
     def test_queued_receipts_survive_a_restart(self):
-        from pyweixin.receipts import ReceiptOutbox, ReceiptRequest
+        from wechat_ai_assistant.receipts import ReceiptOutbox, ReceiptRequest
 
         app = self.make_app()
         app.outbox.enqueue(ReceiptRequest(order_id="o1", order_version=1, conversation=self.group, text="好的，已记单"))
@@ -217,7 +217,7 @@ class CrashRecoveryTests(RecoveryHarness):
 
     def test_history_cursor_survives_a_restart(self):
         app = self.make_app(history_reader_fn=SimulatedHistory(default_count=2))
-        from pyweixin.history_read import HistoryRange
+        from wechat_ai_assistant.history_read import HistoryRange
 
         app.choose_history_conversations(app.refresh_conversations())
         app.wizard.orders = lambda: self.store
@@ -239,8 +239,8 @@ class CrashRecoveryTests(RecoveryHarness):
         self.assertEqual(int(saved["exhausted"]), 1)
 
     def test_receipt_lease_is_not_lost_across_a_crash(self):
-        from pyweixin.agent import AgentStore
-        from pyweixin.receipts import ReceiptOutbox, ReceiptRequest
+        from wechat_ai_assistant.agent import AgentStore
+        from wechat_ai_assistant.receipts import ReceiptOutbox, ReceiptRequest
 
         app = self.make_app()
         app.outbox.enqueue(ReceiptRequest(order_id="o1", order_version=1, conversation=self.group, text="好的，已记单"))

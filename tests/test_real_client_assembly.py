@@ -20,12 +20,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.history_read import SimulatedHistory  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.wechat_state import SimulatedWeChat, WeChatMonitor, WeChatState  # noqa: E402
-from pyweixin.wizard import Wizard, WizardStep  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.history_read import SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatMonitor, WeChatState  # noqa: E402
+from wechat_ai_assistant.wizard import Wizard, WizardStep  # noqa: E402
 
 GROUP = "鲜果批发群"
 
@@ -55,9 +55,9 @@ class WizardHasLocalStoreTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _wizard(self, orders):
-        from pyweixin.conversations import ConversationRegistry
-        from pyweixin.history_read import HistoryReader
-        from pyweixin.wechat_state import SimulatedWeChat, WeChatMonitor
+        from wechat_ai_assistant.conversations import ConversationRegistry
+        from wechat_ai_assistant.history_read import HistoryReader
+        from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatMonitor
 
         monitor = WeChatMonitor(SimulatedWeChat([WeChatState.LOGGED_IN]), None)
         return Wizard(
@@ -68,7 +68,7 @@ class WizardHasLocalStoreTests(unittest.TestCase):
         )
 
     def _settings(self):
-        from pyweixin.runmode import SettingsStore
+        from wechat_ai_assistant.runmode import SettingsStore
 
         return SettingsStore(self.dir / "settings.json")
 

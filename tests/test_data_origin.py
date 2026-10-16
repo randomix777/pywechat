@@ -23,8 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.dashboard import HomeView  # noqa: E402
-from pyweixin.merchant_ui import MerchantWindow  # noqa: E402
+from wechat_ai_assistant.dashboard import HomeView  # noqa: E402
+from wechat_ai_assistant.merchant_ui import MerchantWindow  # noqa: E402
 
 
 class OriginNoteTests(unittest.TestCase):
@@ -97,7 +97,7 @@ class AttachmentTests(unittest.TestCase):
 
     def setUp(self):
         self.source = (Path(__file__).resolve().parent.parent
-                       / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+                       / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
         self.code = "\n".join(line.split("#")[0] for line in self.source.splitlines())
 
     def test_the_vague_wording_is_gone(self):

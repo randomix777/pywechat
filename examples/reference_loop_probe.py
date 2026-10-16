@@ -37,7 +37,7 @@ for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
 
 from order_agent.contract import OUTPUT_SCHEMA  # noqa: E402
 from order_agent.plugin import SYSTEM_PROMPT  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 MODEL = "deepseek/deepseek-v4.1-flash"
 GROUP = "鲜果群"

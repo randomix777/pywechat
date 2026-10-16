@@ -36,7 +36,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.summary import KIND_LABELS, SUMMARY_SYSTEM_PROMPT, _as_message  # noqa: E402
+from wechat_ai_assistant.summary import KIND_LABELS, SUMMARY_SYSTEM_PROMPT, _as_message  # noqa: E402
 
 
 def _row(**columns):

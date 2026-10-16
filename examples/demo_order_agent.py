@@ -6,20 +6,20 @@ import os
 import sys
 from pathlib import Path
 
-from pyweixin.orders import OrderStore
+from wechat_ai_assistant.orders import OrderStore
 
 
 def main() -> None:
     if hasattr(sys.stdout,"reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    path = os.environ.get("PYWEIXIN_BUSINESS_DB", "orders.db")
+    path = os.environ.get("WECHAT_AI_BUSINESS_DB", "orders.db")
     store = OrderStore(path)
     try:
         tenant = store.db.execute("SELECT id FROM merchants WHERE name='【演示】丰收果蔬' LIMIT 1").fetchone()
         if tenant:
             print(json.dumps({"merchant_id": tenant["id"], "message": "演示租户已存在"}, ensure_ascii=False))
             return
-        merchant = store.create_merchant("【演示】丰收果蔬", token=os.environ.get("PYWEIXIN_DEMO_TOKEN") or None)
+        merchant = store.create_merchant("【演示】丰收果蔬", token=os.environ.get("WECHAT_AI_DEMO_TOKEN") or None)
         tid, token = merchant["merchant_id"], merchant["token"]
         group = "演示·鲜果群"
         for name, alias in [("张姐", "张姐"), ("王老板", "老王"), ("李女士", "小李"), ("张小姐", "张姐"), ("陈先生", "陈先生"), ("赵女士", "赵女士"), ("孙先生", "孙先生")]:

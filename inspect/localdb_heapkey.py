@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from Crypto.Cipher import AES  # noqa: E402
 
-from pyweixin import localdb  # noqa: E402
+from wechat_ai_assistant import localdb  # noqa: E402
 
 MEM_PRIVATE = 0x20000
 MAGIC = b"SQLite format 3\x00"

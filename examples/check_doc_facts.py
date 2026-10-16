@@ -150,10 +150,10 @@ class StaleBackendTests(unittest.TestCase):
 
     def test_the_gateway_reads_the_deepseek_key_from_a_file(self):
         """密钥只从文件读。文档若还在教人用环境变量明文，是错的。"""
-        source = (ROOT / "src" / "pyweixin" / "gateway_server.py").read_text(encoding="utf-8")
-        self.assertIn("PYWEIXIN_DEEPSEEK_API_KEY_FILE", source)
-        self.assertNotIn("PYWEIXIN_DEEPSEEK_API_KEY", source.replace(
-            "PYWEIXIN_DEEPSEEK_API_KEY_FILE", ""))
+        source = (ROOT / "src" / "wechat_ai_assistant" / "gateway_server.py").read_text(encoding="utf-8")
+        self.assertIn("WECHAT_AI_DEEPSEEK_API_KEY_FILE", source)
+        self.assertNotIn("WECHAT_AI_DEEPSEEK_API_KEY", source.replace(
+            "WECHAT_AI_DEEPSEEK_API_KEY_FILE", ""))
 
 
 class FactsReport(unittest.TestCase):

@@ -17,8 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
-from pyweixin.history_read import (  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind  # noqa: E402
+from wechat_ai_assistant.history_read import (  # noqa: E402
     READ_ALL_CEILING,
     DEFAULT_MAX_MESSAGES,
     HistoryCursor,
@@ -316,7 +316,7 @@ class ResultWordingTests(unittest.TestCase):
 
 
 def _coverage(count, earliest=None, latest=None, truncated=False, error="", skipped=False):
-    from pyweixin.history_read import ConversationCoverage
+    from wechat_ai_assistant.history_read import ConversationCoverage
 
     return ConversationCoverage(
         conversation=GROUP, requested_count=10, message_count=count,
@@ -325,13 +325,13 @@ def _coverage(count, earliest=None, latest=None, truncated=False, error="", skip
 
 
 def _parse(value):
-    from pyweixin.wechat_time import parse_timestamp
+    from wechat_ai_assistant.wechat_time import parse_timestamp
 
     return parse_timestamp(value)
 
 
 def _parse_message(raw):
-    from pyweixin.wechat_time import parse_timestamp
+    from wechat_ai_assistant.wechat_time import parse_timestamp
 
     return parse_timestamp(raw["消息发送时间"])
 
@@ -358,7 +358,7 @@ class UnresolvedSenderCountTests(unittest.TestCase):
         self.assertEqual(result.coverage[0].unresolved_senders, 0)
 
     def test_placeholders_are_counted(self):
-        from pyweixin.utils import UNRESOLVED_SENDER
+        from wechat_ai_assistant.utils import UNRESOLVED_SENDER
 
         bad = message(1, "红包")
         bad["消息发送人"] = UNRESOLVED_SENDER

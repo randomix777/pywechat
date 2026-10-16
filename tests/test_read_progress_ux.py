@@ -30,8 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "order_agent" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "business_agent" / "src"))
 
-from pyweixin.application import AppEvents, MerchantApplication  # noqa: E402
-from pyweixin.wizard import WizardStep  # noqa: E402
+from wechat_ai_assistant.application import AppEvents, MerchantApplication  # noqa: E402
+from wechat_ai_assistant.wizard import WizardStep  # noqa: E402
 
 GROUP = "鲜果批发群"
 
@@ -39,8 +39,8 @@ GROUP = "鲜果批发群"
 def build_app(tmp_path, history_reader_fn):
     import tempfile
 
-    from pyweixin.conversations import ConversationKind, SimulatedConversations
-    from pyweixin.orders import OrderStore
+    from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations
+    from wechat_ai_assistant.orders import OrderStore
 
     data_dir = Path(tempfile.mkdtemp(prefix="pyw-read-", dir=str(tmp_path)))
     store = OrderStore(str(data_dir / "orders.db"))
@@ -76,9 +76,9 @@ class BackgroundFailureTests(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        from pyweixin.conversations import ConversationKind, SimulatedConversations
-        from pyweixin.history_read import SimulatedHistory
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations
+        from wechat_ai_assistant.history_read import SimulatedHistory
+        from wechat_ai_assistant.orders import OrderStore
 
         self._tmp = tempfile.TemporaryDirectory(prefix="pyw-fail-")
         data_dir = Path(self._tmp.name)
@@ -142,7 +142,7 @@ class MonitorMustNotInterruptTests(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        from pyweixin.wechat_state import SimulatedWeChat, WeChatState
+        from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState
 
         self._tmp = tempfile.TemporaryDirectory(prefix="pyw-mon-")
         app, store, _ = build_app(self._tmp.name, None)
@@ -180,7 +180,7 @@ class MonitorMustNotInterruptTests(unittest.TestCase):
                          "首次进入时必须照常推进")
 
     def test_losing_wechat_still_goes_back_to_step_one(self):
-        from pyweixin.wechat_state import SimulatedWeChat, WeChatState
+        from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState
 
         self.app.monitor.probe = SimulatedWeChat([WeChatState.NOT_STARTED])
         self.app.wizard.check_wechat()
@@ -193,7 +193,7 @@ class ReadCompletionTests(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        from pyweixin.history_read import SimulatedHistory
+        from wechat_ai_assistant.history_read import SimulatedHistory
 
         self._tmp = tempfile.TemporaryDirectory(prefix="pyw-done-")
         self.app, self.store, _ = build_app(self._tmp.name, SimulatedHistory(rows(), delay=0.01))
@@ -263,7 +263,7 @@ class EmptyReadHonestyTests(unittest.TestCase):
         import tkinter as tk
         from types import SimpleNamespace
 
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         root = tk.Tk()
         root.withdraw()
@@ -320,7 +320,7 @@ class NoDeadEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (Path(__file__).resolve().parent.parent
-                      / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+                      / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
 
     def test_the_old_exit_button_is_gone(self):
         self.assertNotIn('"read_empty_exit"', self.source)

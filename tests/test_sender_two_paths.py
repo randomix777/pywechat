@@ -55,9 +55,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
-from pyweixin.utils import UNRESOLVED_SENDER, parse_group_chat_history  # noqa: E402
+from wechat_ai_assistant.utils import UNRESOLVED_SENDER, parse_group_chat_history  # noqa: E402
 
-DUMMY = pathlib.Path(__file__).resolve().parent.parent / "src/pyweixin/WeChatAuto.py"
+DUMMY = pathlib.Path(__file__).resolve().parent.parent / "src/wechat_ai_assistant/WeChatAuto.py"
 
 
 class _FakeItem:
@@ -106,7 +106,7 @@ class SelectDoesNotChangeTheTextTests(unittest.TestCase):
     """`select` 不改变抓到的文本 —— 这是根因的机械部分。"""
 
     def setUp(self):
-        from pyweixin import utils
+        from wechat_ai_assistant import utils
 
         self.utils = utils
         self.texts = ["张姐 12:30\n要两箱苹果", "李叔 12:31\n酱油 2 瓶"]
@@ -115,7 +115,7 @@ class SelectDoesNotChangeTheTextTests(unittest.TestCase):
         """跑一次真函数，只把「按回车存媒体」和「进入多选」这两个外部依赖换掉。"""
         from unittest import mock
 
-        from pyweixin import utils
+        from wechat_ai_assistant import utils
 
         pressed: list[str] = []
 
@@ -178,7 +178,7 @@ class CallerUsesSaveDetailAsSelectTests(unittest.TestCase):
 
     def test_our_caller_does_not_ask_for_media(self):
         """我们要的是发送人，不是图片视频 —— 所以不能靠 save_detail=True 去开多选。"""
-        reader = (ROOT / "src/pyweixin/history_read.py").read_text(encoding="utf-8")
+        reader = (ROOT / "src/wechat_ai_assistant/history_read.py").read_text(encoding="utf-8")
         self.assertIn("save_detail=False", reader)
 
 

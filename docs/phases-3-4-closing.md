@@ -27,7 +27,7 @@
 | `启动接单助手.vbs` | 双击运行；**不弹黑窗口** |
 | `dist/微信AI智能助理/微信AI智能助理.exe` | 打包好的独立程序。**exe 本体 7.4 MB，但整个目录 85.4 MB**（1045 个文件，Python 运行时 + 依赖都在里面）。拷贝、备份、占用磁盘都按 **85 MB** 算 |
 | `deploy/merchant.spec` | 打包规格 |
-| `src/pyweixin/launcher.py` | 自举入口：自己准备路径，不依赖 PYTHONPATH |
+| `src/wechat_ai_assistant/launcher.py` | 自举入口：自己准备路径，不依赖 PYTHONPATH |
 
 **已验证**：把 exe 复制到别处、从 `C:\Users\...\Temp` 目录、清掉 PYTHONPATH
 后直接运行，输出正常：
@@ -45,7 +45,7 @@
 依赖缺失时给中文说明而不是 traceback：Python 版本过低、组件缺失、
 文件不完整，各有各的一句话说明。
 
-**开发命令**保留在文档里（`PYTHONPATH=src` + `python -m pyweixin.merchant_app`），
+**开发命令**保留在文档里（`PYTHONPATH=src` + `python -m wechat_ai_assistant.merchant_app`），
 商户不需要看到。
 
 **未验证**：在一台**没有开发环境**的干净 Windows 上安装运行。本机有 Python
@@ -71,7 +71,7 @@
 
 **真实发送入口默认关闭**，模拟验证保留。
 
-`src/pyweixin/wechat_send.py` 做**只读**检查：输入框当前有没有文字、前台会话是不是
+`src/wechat_ai_assistant/wechat_send.py` 做**只读**检查：输入框当前有没有文字、前台会话是不是
 目标会话、剪贴板/窗口状态能不能确认、账号是否一致。任何一项不能确认就
 `hold` —— 留在队列里，不冒险发。
 
@@ -91,7 +91,7 @@
 
 ## 3. 短消息合并（已接入真实路径）
 
-`src/pyweixin/merging.py`，不是只加配置：
+`src/wechat_ai_assistant/merging.py`，不是只加配置：
 
 - **分组键** `(账号, 会话, 发送者, 话题)`。不同人不合并；有引用时按引用分话题。
 - **两条时间线**：静默窗口 + 最大等待，都可调，默认 45/90 秒。

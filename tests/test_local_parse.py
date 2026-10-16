@@ -15,12 +15,12 @@ import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from pyweixin.client_login import MerchantClient, PendingQueue, Session
-from pyweixin.gateway import ProductGateway
-from pyweixin.local_parse import LOCAL_BLOCKED, LOCAL_DONE, LOCAL_NEEDS_RETRY, LocalParseService, describe_subscription
-from pyweixin.opencode import LocalRuleAdapter
-from pyweixin.orders import OrderParseResultInvalid, OrderStore, validate_order_parse_result
-from pyweixin.product import ProductStore
+from wechat_ai_assistant.client_login import MerchantClient, PendingQueue, Session
+from wechat_ai_assistant.gateway import ProductGateway
+from wechat_ai_assistant.local_parse import LOCAL_BLOCKED, LOCAL_DONE, LOCAL_NEEDS_RETRY, LocalParseService, describe_subscription
+from wechat_ai_assistant.opencode import LocalRuleAdapter
+from wechat_ai_assistant.orders import OrderParseResultInvalid, OrderStore, validate_order_parse_result
+from wechat_ai_assistant.product import ProductStore
 
 from tests.test_product_gateway import VALID_PARSE_RESULT
 
@@ -70,7 +70,7 @@ class SuggestionValidationTests(unittest.TestCase):
 
     def test_gateway_and_local_store_share_one_validator(self):
         """A shape rejected locally must also be rejected by the gateway."""
-        from pyweixin.opencode import InvalidParseOutput, validate_parse_result
+        from wechat_ai_assistant.opencode import InvalidParseOutput, validate_parse_result
 
         broken = {**VALID_PARSE_RESULT, "intent": "not_an_intent"}
         with self.assertRaises(OrderParseResultInvalid):
@@ -82,7 +82,7 @@ class SuggestionValidationTests(unittest.TestCase):
 class ApplyCloudSuggestionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.orders, self.tenant, self.customer, self.sku = new_store()
-        from pyweixin.dashboard import DashboardBuilder
+        from wechat_ai_assistant.dashboard import DashboardBuilder
 
         self.dashboard = DashboardBuilder(self.orders, self.tenant)
 
@@ -241,7 +241,7 @@ def _loop_catalog():
 
     没有目录网关会如实拒绝任务（这是正确行为，不是缺陷），所以必须配置。
     """
-    from pyweixin.model_catalog import (
+    from wechat_ai_assistant.model_catalog import (
         CatalogStatus,
         CatalogStore,
         OperatorModelPolicy,
@@ -270,7 +270,7 @@ class LocalParseLoopTests(unittest.TestCase):
     """The loop that sends work out and applies what comes back."""
 
     def setUp(self) -> None:
-        self.directory = Path(tempfile.mkdtemp(prefix="pyweixin-loop-"))
+        self.directory = Path(tempfile.mkdtemp(prefix="wechat_ai_assistant-loop-"))
         self.orders, self.tenant, self.customer, self.sku = new_store()
         self.store = ProductStore(":memory:")
         self.gateway = ProductGateway(
@@ -280,7 +280,7 @@ class LocalParseLoopTests(unittest.TestCase):
             secure_cookies=False,
             catalog=_loop_catalog(),
         )
-        from pyweixin.gateway_server import GatewayHTTPRequestHandler
+        from wechat_ai_assistant.gateway_server import GatewayHTTPRequestHandler
 
         class Handler(GatewayHTTPRequestHandler):
             pass
@@ -459,7 +459,7 @@ class MerchantWordingTests(unittest.TestCase):
         self.assertEqual(describe_subscription({})["headline"], "未登录")
 
     def test_interface_text_contains_no_technical_terms(self):
-        from pyweixin.merchant_ui import FORBIDDEN_TERMS, STATUS_LABELS, audit_text
+        from wechat_ai_assistant.merchant_ui import FORBIDDEN_TERMS, STATUS_LABELS, audit_text
 
         self.assertEqual(audit_text("剩余额度：42"), [])
         for label in STATUS_LABELS.values():
@@ -469,7 +469,7 @@ class MerchantWordingTests(unittest.TestCase):
 
     def test_every_required_merchant_state_has_a_label(self):
         """The interface must be able to show each state the product requires."""
-        from pyweixin.client_login import (
+        from wechat_ai_assistant.client_login import (
             STATUS_CANCELLED,
             STATUS_LOGGED_IN,
             STATUS_LOGGED_OUT,
@@ -480,7 +480,7 @@ class MerchantWordingTests(unittest.TestCase):
             STATUS_SUBSCRIPTION_EXPIRED,
             STATUS_WAITING_BROWSER,
         )
-        from pyweixin.merchant_ui import merchant_labels
+        from wechat_ai_assistant.merchant_ui import merchant_labels
 
         expected = {
             STATUS_LOGGED_OUT,
@@ -503,13 +503,13 @@ class MerchantAppWiringTests(unittest.TestCase):
     """The desktop entry point must not need a network or a gateway to start."""
 
     def setUp(self) -> None:
-        self.directory = Path(tempfile.mkdtemp(prefix="pyweixin-app-"))
+        self.directory = Path(tempfile.mkdtemp(prefix="wechat_ai_assistant-app-"))
 
     def tearDown(self) -> None:
         shutil.rmtree(self.directory, ignore_errors=True)
 
     def test_local_store_is_created_once_and_reused(self):
-        from pyweixin.merchant_app import ensure_local_store
+        from wechat_ai_assistant.merchant_app import ensure_local_store
 
         path = self.directory / "orders.db"
         first_store, first_tenant = ensure_local_store(path)
@@ -520,7 +520,7 @@ class MerchantAppWiringTests(unittest.TestCase):
         self.assertEqual(first_tenant, second_tenant, "the merchant's local store must be reused, not recreated")
 
     def test_self_check_runs_with_no_gateway_configured(self):
-        from pyweixin.merchant_app import main
+        from wechat_ai_assistant.merchant_app import main
 
         code = main(["--data-dir", str(self.directory), "--gateway", "http://127.0.0.1:9", "--check"])
         self.assertEqual(code, 0)
@@ -530,7 +530,7 @@ class MerchantAppWiringTests(unittest.TestCase):
         self.assertFalse((self.directory / "credentials.bin").exists())
 
     def test_credentials_are_not_written_by_a_failed_startup(self):
-        from pyweixin.merchant_app import main
+        from wechat_ai_assistant.merchant_app import main
 
         main(["--data-dir", str(self.directory), "--check"])
         self.assertFalse((self.directory / "credentials.bin").exists())

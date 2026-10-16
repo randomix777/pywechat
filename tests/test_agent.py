@@ -10,20 +10,20 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-from pyweixin.utils import UNRESOLVED_SENDER
+from wechat_ai_assistant.utils import UNRESOLVED_SENDER
 
-from pyweixin.agent import AgentCommand, AgentConfig, AgentStore, LocalAgent
-from pyweixin.Errors import NoSuchFriendError
-from pyweixin.cloud import CloudClient, CloudError
-from pyweixin.cloud_server import _load_agent_tokens, create_server
-from pyweixin.reliability import MessageEvent
-from pyweixin.utils import parse_group_chat_history, parse_group_messages
+from wechat_ai_assistant.agent import AgentCommand, AgentConfig, AgentStore, LocalAgent
+from wechat_ai_assistant.Errors import NoSuchFriendError
+from wechat_ai_assistant.cloud import CloudClient, CloudError
+from wechat_ai_assistant.cloud_server import _load_agent_tokens, create_server
+from wechat_ai_assistant.reliability import MessageEvent
+from wechat_ai_assistant.utils import parse_group_chat_history, parse_group_messages
 
 
 class AgentTests(unittest.TestCase):
     def test_group_history_alignment_does_not_shift_rows(self):
         with_name = [
-            ("【pyweixin 端到端测试】这是一条自动化测试消息，请忽略。 2026-9-25 11:47", "mmui::ChatTextItemView", []),
+            ("【wechat_ai_assistant 端到端测试】这是一条自动化测试消息，请忽略。 2026-9-25 11:47", "mmui::ChatTextItemView", []),
             ("他们回来没有阿？ 2026-9-24 15:32", "mmui::ChatTextItemView", []),
         ]
         without_name = [
@@ -31,7 +31,7 @@ class AgentTests(unittest.TestCase):
             ("Channels菊姐懂婴语 2026-9-24 15:31", "mmui::ChatBubbleItemView", []),
         ]
         contents, senders, timestamps, message_types = parse_group_chat_history(with_name, without_name, [])
-        self.assertEqual(contents[0], "【pyweixin 端到端测试】这是一条自动化测试消息，请忽略。")
+        self.assertEqual(contents[0], "【wechat_ai_assistant 端到端测试】这是一条自动化测试消息，请忽略。")
         self.assertEqual(contents[1], "他们回来没有阿？")
         # 微信在聊天记录列表里不暴露昵称，切不出发送人。这里曾经断言 is None ——
         # 那是把缺陷当成了期望值：真机读到的 20 条消息发送人全是 None，无从归属
@@ -484,7 +484,7 @@ class AgentTests(unittest.TestCase):
                 response = connection.getresponse()
                 body = response.read()
                 self.assertEqual(response.status, 200)
-                self.assertIn(b"pyweixin", body)
+                self.assertIn(b"wechat_ai_assistant", body)
                 connection.request("GET", "/api/v1/console/state")
                 self.assertEqual(connection.getresponse().status, 401)
                 connection.request("GET", "/api/v1/console/state", headers={"Authorization": "Bearer secret"})
@@ -583,7 +583,7 @@ class AgentTests(unittest.TestCase):
                 thread.join(timeout=2)
 
     def test_agent_token_env_rejects_non_string_values(self):
-        with patch.dict(os.environ, {"PYWEIXIN_AGENT_TOKENS": '{"agent-1": null}'}):
+        with patch.dict(os.environ, {"WECHAT_AI_AGENT_TOKENS": '{"agent-1": null}'}):
             with self.assertRaises(ValueError):
                 _load_agent_tokens()
 

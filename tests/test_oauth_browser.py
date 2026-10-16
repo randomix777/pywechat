@@ -37,7 +37,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.oauth_browser import (  # noqa: E402
+from wechat_ai_assistant.oauth_browser import (  # noqa: E402
     CALLBACK_PATH, BrowserLoginFlow, CallbackResult, LoopbackReceiver,
     OAuthConfig, OAuthError, build_authorize_url, find_free_port,
 )
@@ -47,7 +47,7 @@ def make_config(**kwargs) -> OAuthConfig:
     base = {
         "authorize_base": "https://jyi.example.com",
         "token_base": "https://api.jyi.example.com",
-        "client_id": "pyweixin-desktop",
+        "client_id": "wechat_ai_assistant-desktop",
     }
     base.update(kwargs)
     return OAuthConfig(**base)
@@ -75,7 +75,7 @@ class AuthorizeUrlTests(unittest.TestCase):
         url = build_authorize_url(make_config(), "http://127.0.0.1:5000/cb", "STATE123")
         query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         self.assertEqual(query["response_type"], ["code"])
-        self.assertEqual(query["client_id"], ["pyweixin-desktop"])
+        self.assertEqual(query["client_id"], ["wechat_ai_assistant-desktop"])
         self.assertEqual(query["redirect_uri"], ["http://127.0.0.1:5000/cb"])
         self.assertEqual(query["state"], ["STATE123"])
 

@@ -22,14 +22,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.wechat_state import WeChatState  # noqa: E402
+from wechat_ai_assistant.wechat_state import WeChatState  # noqa: E402
 
 
 class TrayMessageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (Path(__file__).resolve().parent.parent
-                      / "src" / "pyweixin" / "wechat_state.py").read_text(encoding="utf-8")
+                      / "src" / "wechat_ai_assistant" / "wechat_state.py").read_text(encoding="utf-8")
 
     def test_it_says_wechat_is_open_rather_than_broken(self):
         """「进程在但找不到窗口」不等于「微信坏了」。"""
@@ -68,7 +68,7 @@ class TrayDetectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (Path(__file__).resolve().parent.parent
-                      / "src" / "pyweixin" / "wechat_state.py").read_text(encoding="utf-8")
+                      / "src" / "wechat_ai_assistant" / "wechat_state.py").read_text(encoding="utf-8")
 
     def test_invisible_windows_still_count_as_found(self):
         self.assertIn("visible_only=False", self.source,
@@ -89,7 +89,7 @@ class TrayDetectionTests(unittest.TestCase):
 class NoTechnicalLeakTests(unittest.TestCase):
     def test_the_message_names_no_technical_stuff(self):
         source = (Path(__file__).resolve().parent.parent
-                  / "src" / "pyweixin" / "wechat_state.py").read_text(encoding="utf-8")
+                  / "src" / "wechat_ai_assistant" / "wechat_state.py").read_text(encoding="utf-8")
         start = source.index("微信开着，但窗口收起来了")
         message = source[start:start + 160]
         for term in ("mmui", "Qt", "UIA", "pywinauto", "class_name", "进程"):
@@ -107,8 +107,8 @@ class RestartAfterUpdateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         root = Path(__file__).resolve().parent.parent
-        cls.ui = (root / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
-        cls.tools = (root / "src" / "pyweixin" / "WeChatTools.py").read_text(encoding="utf-8")
+        cls.ui = (root / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
+        cls.tools = (root / "src" / "wechat_ai_assistant" / "WeChatTools.py").read_text(encoding="utf-8")
 
     def test_restart_kills_before_relaunch(self):
         start = self.tools.index("def restart_weixin")
@@ -126,7 +126,7 @@ class RestartAfterUpdateTests(unittest.TestCase):
         self.assertIn("askyesno", block, "杀微信不先问，正在输入的内容就没了")
 
     def test_version_change_is_recorded(self):
-        from pyweixin.runmode import MerchantSettings
+        from wechat_ai_assistant.runmode import MerchantSettings
 
         restored = MerchantSettings.from_dict(
             MerchantSettings(wechat_version="4.1.15.55").to_dict())

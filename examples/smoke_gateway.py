@@ -1,4 +1,4 @@
-"""End-to-end smoke run against a real `python -m pyweixin.gateway_server` process.
+"""End-to-end smoke run against a real `python -m wechat_ai_assistant.gateway_server` process.
 
 This is a local deployment rehearsal, not a substitute for the real OpenCode
 verification recorded in docs/opencode-verification.md.
@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# 本脚本自己也 import pyweixin.*，所以本地也要能找到 src/。
+# 本脚本自己也 import wechat_ai_assistant.*，所以本地也要能找到 src/。
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 for _name in ("business_agent", "order_agent"):
@@ -91,20 +91,20 @@ def main() -> int:
         **os.environ,
         "PYTHONPATH": str(ROOT / "src"),
         "PYTHONIOENCODING": "utf-8",
-        "PYWEIXIN_PRODUCT_DB": str(DB),
-        "PYWEIXIN_GATEWAY_PORT": "8099",
-        "PYWEIXIN_GATEWAY_HOST": "127.0.0.1",
-        "PYWEIXIN_SECURE_COOKIES": "0",
-        "PYWEIXIN_PUBLIC_BASE_URL": "http://127.0.0.1:8099",
-        "PYWEIXIN_OPERATOR_TOKEN": "smoke-operator-token",
-        "PYWEIXIN_OPENCODE_URL": "",
-        "PYWEIXIN_LOG_LEVEL": "WARNING",
+        "WECHAT_AI_PRODUCT_DB": str(DB),
+        "WECHAT_AI_GATEWAY_PORT": "8099",
+        "WECHAT_AI_GATEWAY_HOST": "127.0.0.1",
+        "WECHAT_AI_SECURE_COOKIES": "0",
+        "WECHAT_AI_PUBLIC_BASE_URL": "http://127.0.0.1:8099",
+        "WECHAT_AI_OPERATOR_TOKEN": "smoke-operator-token",
+        "WECHAT_AI_OPENCODE_URL": "",
+        "WECHAT_AI_LOG_LEVEL": "WARNING",
         # 没有模型目录就没有可选模型，网关会如实拒绝任务。这里给冒烟演练
         # 配一个已"验证"过的免费模型，走的仍然是真实的模型解析路径。
-        "PYWEIXIN_MODEL_POLICY": str(policy_path),
+        "WECHAT_AI_MODEL_POLICY": str(policy_path),
     }
     process = subprocess.Popen(
-        [sys.executable, "-m", "pyweixin.gateway_server", *sys.argv[1:]],
+        [sys.executable, "-m", "wechat_ai_assistant.gateway_server", *sys.argv[1:]],
         cwd=str(ROOT),
         env=env,
         stdout=subprocess.PIPE,
@@ -136,7 +136,7 @@ def main() -> int:
 
         # Operator seeds a merchant through the admin CLI against the same file.
         subprocess.run(
-            [sys.executable, "-m", "pyweixin.admin", "--db", str(DB), "create-merchant",
+            [sys.executable, "-m", "wechat_ai_assistant.admin", "--db", str(DB), "create-merchant",
              "--username", "smoke-shop", "--display-name", "冒烟店", "--quota", "5", "--password-stdin"],
             cwd=str(ROOT),
             env=env,
@@ -252,13 +252,13 @@ def main() -> int:
         try:
             from http.server import ThreadingHTTPServer
 
-            from pyweixin.client_login import MerchantClient, PendingQueue, Session
-            from pyweixin.gateway import ProductGateway
-            from pyweixin.gateway_server import GatewayHTTPRequestHandler
-            from pyweixin.local_parse import LocalParseService
-            from pyweixin.opencode import LocalRuleAdapter
-            from pyweixin.orders import OrderStore
-            from pyweixin.product import ProductStore
+            from wechat_ai_assistant.client_login import MerchantClient, PendingQueue, Session
+            from wechat_ai_assistant.gateway import ProductGateway
+            from wechat_ai_assistant.gateway_server import GatewayHTTPRequestHandler
+            from wechat_ai_assistant.local_parse import LocalParseService
+            from wechat_ai_assistant.opencode import LocalRuleAdapter
+            from wechat_ai_assistant.orders import OrderStore
+            from wechat_ai_assistant.product import ProductStore
             from tests.test_product_gateway import VALID_PARSE_RESULT, test_catalog
 
             stub_store = ProductStore(":memory:")

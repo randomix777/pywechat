@@ -4,18 +4,16 @@ FROM python:3.12-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYWEIXIN_PRODUCT_DB=/data/product.db
+    WECHAT_AI_PRODUCT_DB=/data/product.db
 
 # The gateway only needs the standard library. No third-party runtime deps.
 WORKDIR /app
 
-# Install just the package sources; requirements are not needed by the gateway
-# but the package layout keeps `pyweixin` importable.
+# Install the source packages; requirements are not needed by the standard
+# library gateway runtime.
 COPY src/pyproject.toml src/setup.py src/setup.cfg src/README.md /app/src/
-COPY src/pyweixin/__init__.py src/pyweixin/product.py src/pyweixin/gateway.py \
-     src/pyweixin/gateway_server.py src/pyweixin/opencode.py src/pyweixin/webui.py \
-     src/pyweixin/orders.py src/pyweixin/agent.py src/pyweixin/reliability.py \
-     src/pyweixin/cloud.py /app/src/pyweixin/
+COPY src/wechat_ai_assistant /app/src/wechat_ai_assistant
+COPY packages/business_agent/src/business_agent /app/src/business_agent
 
 ENV PYTHONPATH=/app/src
 
@@ -30,4 +28,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=5 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status==200 else 1)"
 
-ENTRYPOINT ["python", "-m", "pyweixin.gateway_server"]
+ENTRYPOINT ["python", "-m", "wechat_ai_assistant.gateway_server"]

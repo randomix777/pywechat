@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.conversations import (  # noqa: E402
+from wechat_ai_assistant.conversations import (  # noqa: E402
     Conversation,
     ConversationKind,
     ConversationRegistry,

@@ -40,8 +40,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
-from pyweixin.history_read import (  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind  # noqa: E402
+from wechat_ai_assistant.history_read import (  # noqa: E402
     DEFAULT_MAX_MESSAGES,
     HistoryCursor,
     HistoryReader,

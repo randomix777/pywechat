@@ -25,12 +25,12 @@ for _name in ("business_agent", "order_agent", "support_triage"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.history_read import SimulatedHistory  # noqa: E402
-from pyweixin.local_parse import ParseProgress  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.receipts import (  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.history_read import SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.local_parse import ParseProgress  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.receipts import (  # noqa: E402
     NO_RECEIPT_SOURCES,
     RECEIPT_CONFIRMATION,
     ReceiptOutbox,
@@ -38,8 +38,8 @@ from pyweixin.receipts import (  # noqa: E402
     ReceiptStatus,
     build_receipt_text,
 )
-from pyweixin.runmode import AutoOrderSettings, RunMode  # noqa: E402
-from pyweixin.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
+from wechat_ai_assistant.runmode import AutoOrderSettings, RunMode  # noqa: E402
+from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
 
 NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
 SAMPLE_RECEIPT = "好的，已记单：苹果 2箱，合计 52.00（直接回复即可修改）"
@@ -52,7 +52,7 @@ def uid() -> str:
 class ReceiptBase(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="pyw-rcpt-"))
-        from pyweixin.agent import AgentStore
+        from wechat_ai_assistant.agent import AgentStore
 
         self.agent_store = AgentStore(str(self.dir / "agent.db"))
         self.sent: list[tuple[str, str]] = []
@@ -159,7 +159,7 @@ class OutboxTests(ReceiptBase):
         raise RuntimeError("断了")
 
     def test_receipt_lease_recovers_after_crash(self):
-        from pyweixin.agent import AgentStore
+        from wechat_ai_assistant.agent import AgentStore
 
         self.outbox.enqueue(self.request())
         leases = self.agent_store.claim_outbox_leases(limit=5, lease_seconds=0.01)
@@ -309,7 +309,7 @@ class PipelineReceiptTests(unittest.TestCase):
         if allow_sending:
             # 真实发送在真机验证前是关着的。要测发送路径的测试必须显式
             # 打开它，并提供一份"目标干净"的检查结果。
-            from pyweixin.wechat_send import StaticInspector, TargetState, mark_real_sending_verified
+            from wechat_ai_assistant.wechat_send import StaticInspector, TargetState, mark_real_sending_verified
 
             mark_real_sending_verified(True)
             self.addCleanup(mark_real_sending_verified, False)

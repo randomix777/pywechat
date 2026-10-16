@@ -29,7 +29,7 @@ class WindowSizeSourceTests(unittest.TestCase):
     """静态检查：窗口尺寸相关的约定写在源码里。"""
 
     def setUp(self):
-        self.source = (ROOT / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+        self.source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
 
     def test_the_minimum_height_is_not_below_the_default(self):
         """最小高度低于默认高度 = 允许缩到装不下。
@@ -64,11 +64,11 @@ class MinimumSizeReachableTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from pyweixin.application import MerchantApplication
-        from pyweixin.conversations import ConversationKind, SimulatedConversations
-        from pyweixin.history_read import SimulatedHistory
-        from pyweixin.merchant_ui import MerchantWindow
-        from pyweixin.orders import OrderStore
+        from wechat_ai_assistant.application import MerchantApplication
+        from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations
+        from wechat_ai_assistant.history_read import SimulatedHistory
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.orders import OrderStore
 
         cls._tmp = tempfile.TemporaryDirectory(prefix="pyw-minwin-")
         data_dir = Path(cls._tmp.name)

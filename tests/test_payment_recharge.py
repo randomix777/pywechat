@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.payment import (  # noqa: E402
+from wechat_ai_assistant.payment import (  # noqa: E402
     PAY_PAID,
     PAY_PENDING,
     PaymentError,
@@ -24,7 +24,7 @@ from pyweixin.payment import (  # noqa: E402
     refund_offset,
     validate_notice,
 )
-from pyweixin.product import ProductStore, ValidationFailed  # noqa: E402
+from wechat_ai_assistant.product import ProductStore, ValidationFailed  # noqa: E402
 
 
 class RechargeTestBase(unittest.TestCase):

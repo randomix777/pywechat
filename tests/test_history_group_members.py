@@ -36,11 +36,11 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin.conversations import Conversation, ConversationKind  # noqa: E402
-from pyweixin.history_read import HistoryReader  # noqa: E402
+from wechat_ai_assistant.conversations import Conversation, ConversationKind  # noqa: E402
+from wechat_ai_assistant.history_read import HistoryReader  # noqa: E402
 
-HISTORY_READ = ROOT / "src/pyweixin/history_read.py"
-APPLICATION = ROOT / "src/pyweixin/application.py"
+HISTORY_READ = ROOT / "src/wechat_ai_assistant/history_read.py"
+APPLICATION = ROOT / "src/wechat_ai_assistant/application.py"
 
 
 class MembersArePassedTests(unittest.TestCase):
@@ -152,7 +152,7 @@ class WiringTests(unittest.TestCase):
         也当成传参误报 —— 那和这是两回事。
         """
         offenders = []
-        for path in (ROOT / "src/pyweixin").rglob("*.py"):
+        for path in (ROOT / "src/wechat_ai_assistant").rglob("*.py"):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except SyntaxError:

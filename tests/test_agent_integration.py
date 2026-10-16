@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from pyweixin._packages import ensure_packages_on_path
+from wechat_ai_assistant._packages import ensure_packages_on_path
 
 ensure_packages_on_path()
 
@@ -23,14 +23,14 @@ from business_agent import AgentCore, FakeBackend, RunStatus  # noqa: E402
 from business_agent.contracts.errors import InputError  # noqa: E402
 from order_agent import OrderPlugin  # noqa: E402
 from order_agent.plugin import SOURCE_CATALOG, SOURCE_CUSTOMER, SOURCE_HISTORY  # noqa: E402
-from pyweixin.integration import (  # noqa: E402
+from wechat_ai_assistant.integration import (  # noqa: E402
     OrderContextProvider,
     OrderStoreApplier,
     build_order_core,
     build_order_request,
     run_order_parse,
 )
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -229,7 +229,7 @@ class NoParallelSystemTests(unittest.TestCase):
     """Guard against the refactor growing a second of anything."""
 
     def test_the_integration_creates_no_new_order_tables(self):
-        source = (Path(__file__).resolve().parents[1] / "src" / "pyweixin" / "integration" / "order.py").read_text(
+        source = (Path(__file__).resolve().parents[1] / "src" / "wechat_ai_assistant" / "integration" / "order.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("CREATE TABLE", source.upper())

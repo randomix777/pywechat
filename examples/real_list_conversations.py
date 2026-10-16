@@ -9,9 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pyweixin.conversations import RealConversationSource  # noqa: E402
-from pyweixin.merchant_app import _force_utf8_stdout  # noqa: E402
-from pyweixin.wechat_state import RealWeChatProbe  # noqa: E402
+from wechat_ai_assistant.conversations import RealConversationSource  # noqa: E402
+from wechat_ai_assistant.merchant_app import _force_utf8_stdout  # noqa: E402
+from wechat_ai_assistant.wechat_state import RealWeChatProbe  # noqa: E402
 
 
 def main() -> int:

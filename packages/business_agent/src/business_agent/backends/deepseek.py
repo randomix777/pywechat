@@ -8,8 +8,8 @@
   （DeepSeek-V4-Pro-0813）。旧名 ``deepseek-v4-flash`` /
   ``deepseek-v4-flash-vision-exp`` 仍被接受，但对应模型**已下线**，
   请求由 V4.1-Flash 承接并按 Flash 价计费。
-* 结构化输出：``response_format`` **只支持** ``{"type": "json_object"}``，
-  **不支持** ``json_schema``。
+* 订单解析的结构化输出：``response_format`` **只支持**
+  ``{"type": "json_object"}``，**不支持** ``json_schema``；摘要任务使用纯文本。
 * 使用 JSON Output 时必须在 system 或 user 提示里出现 "json" 字样，
   并给出期望格式的示例。
 * 官方明确提示：JSON Output 模式下**可能返回空 content**。
@@ -101,7 +101,7 @@ def sanitize_user_id(raw: str) -> str:
 class DeepSeekBackend:
     """一次 DeepSeek 调用。不自带内部循环 —— 外层的步数预算由 core 管。
 
-    与 :class:`ModelApiBackend` 的区别只在上游真实行为上（json_object、
+    与 :class:`ModelApiBackend` 的区别只在上游真实行为上（订单解析 json_object、
     402、user_id、空 content），不引入新的依赖，也不引入任何供应商 SDK。
     """
 
@@ -219,16 +219,22 @@ class DeepSeekBackend:
     # -------------------------------------------------------------- execution
 
     def run(self, prompt: PromptPackage, request: AgentRequest) -> BackendResult:
-        messages = self._messages(prompt, request)
+        # Order parsing requires a JSON object for its strict schema. Role-based
+        # summaries return a human-readable report (Markdown table for orders),
+        # so forcing JSON here conflicts with the summary prompt and corrupts the
+        # result the client expects to render.
+        json_output = request.task_type != "summary"
+        messages = self._messages(prompt, request, json_output=json_output)
         self.sent_prompts.append(messages)
         body: dict[str, Any] = {
             "model": self.model,
             "temperature": self.temperature,
             "messages": messages,
             "max_tokens": min(prompt.max_output_tokens, request.budget.max_output_tokens),
-            # DeepSeek 只有 json_object。**不发 json_schema** —— 会 422。
-            "response_format": {"type": "json_object"},
         }
+        if json_output:
+            # DeepSeek only supports json_object, not json_schema.
+            body["response_format"] = {"type": "json_object"}
         if self.user_id:
             # 同一 DeepSeek 账号下的租户隔离 + KV 缓存隔离。
             body["user_id"] = self.user_id
@@ -246,7 +252,7 @@ class DeepSeekBackend:
             # 是这一单没拿到结果：不计成功，按无效输出处理，让调用方决定重试。
             raise AgentError(
                 ErrorCategory.OUTPUT_INVALID,
-                "deepseek returned empty content in JSON mode (documented upstream behaviour)",
+                "deepseek returned empty content",
             )
         usage = payload.get("usage") if isinstance(payload.get("usage"), Mapping) else {}
         return BackendResult(
@@ -257,15 +263,11 @@ class DeepSeekBackend:
             raw={},
         )
 
-    def _messages(self, prompt: PromptPackage, request: AgentRequest) -> list[Mapping[str, Any]]:
-        """构造 messages。
-
-        DeepSeek 的 JSON Output 要求提示里出现 "json" 并给出格式示例。通用后端
-        原本靠 ``response_format.json_schema`` 保证结构，这里没有那个能力，所以
-        schema **必须**落进 system 提示，否则模型只能"猜"结构。
-        """
+    def _messages(self, prompt: PromptPackage, request: AgentRequest,
+                  *, json_output: bool = True) -> list[Mapping[str, Any]]:
+        """Construct messages; only structured order parsing adds the schema."""
         return [
-            {"role": "system", "content": self._system_prompt(prompt)},
+            {"role": "system", "content": self._system_prompt(prompt, include_schema=json_output)},
             {
                 "role": "user",
                 "content": json.dumps(
@@ -281,9 +283,9 @@ class DeepSeekBackend:
             },
         ]
 
-    def _system_prompt(self, prompt: PromptPackage) -> str:
+    def _system_prompt(self, prompt: PromptPackage, *, include_schema: bool = True) -> str:
         base = self.system or prompt.system
-        if not self.response_schema:
+        if not include_schema or not self.response_schema:
             return base
         example = json.dumps(self.response_schema, ensure_ascii=False, indent=2)
         return (

@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pyweixin import localdb  # noqa: E402
+from wechat_ai_assistant import localdb  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

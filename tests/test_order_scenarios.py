@@ -27,8 +27,8 @@ from business_agent.contracts.request import (  # noqa: E402
 )
 from order_agent import OrderPlugin, RecordingLimits  # noqa: E402
 from order_agent.plugin import SOURCE_CATALOG, SOURCE_CUSTOMER, SOURCE_HISTORY  # noqa: E402
-from pyweixin.integration import OrderStoreApplier, build_order_request  # noqa: E402
-from pyweixin.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.integration import OrderStoreApplier, build_order_request  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
 
 NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
 

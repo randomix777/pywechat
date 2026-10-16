@@ -13,7 +13,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from pyweixin import win_dialog  # noqa: E402
+from wechat_ai_assistant import win_dialog  # noqa: E402
 
 
 class CancelTests(unittest.TestCase):
@@ -54,7 +54,7 @@ class StructTests(unittest.TestCase):
 
 class MerchantFallbackTests(unittest.TestCase):
     def _window(self):
-        from pyweixin.merchant_ui import MerchantWindow
+        from wechat_ai_assistant.merchant_ui import MerchantWindow
 
         window = MerchantWindow.__new__(MerchantWindow)
         window._widgets = {}
@@ -63,10 +63,10 @@ class MerchantFallbackTests(unittest.TestCase):
         return window
 
     def test_none_falls_back_to_tkinter(self):
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         window = self._window()
-        with unittest.mock.patch("pyweixin.win_dialog.ask_saveas_path",
+        with unittest.mock.patch("wechat_ai_assistant.win_dialog.ask_saveas_path",
                                  return_value=None) as native, \
             unittest.mock.patch.object(merchant_ui.filedialog,
                                        "asksaveasfilename",
@@ -77,10 +77,10 @@ class MerchantFallbackTests(unittest.TestCase):
         tk.assert_called_once()
 
     def test_cancel_does_not_fall_back(self):
-        from pyweixin import merchant_ui
+        from wechat_ai_assistant import merchant_ui
 
         window = self._window()
-        with unittest.mock.patch("pyweixin.win_dialog.ask_saveas_path",
+        with unittest.mock.patch("wechat_ai_assistant.win_dialog.ask_saveas_path",
                                  return_value="") as native, \
             unittest.mock.patch.object(merchant_ui.filedialog,
                                        "asksaveasfilename") as tk:

@@ -6,12 +6,12 @@
 
 ## 1. 为什么需要提取
 
-改造前的 AI 能力全部锁在 `src/pyweixin` 里，且依赖方向已经反了：`opencode.py` 反向 `import .orders`，`gateway._validate_job_request` 把 `message/customer/products/history/order_state` 硬编码成订单字段。结果是「换个业务就得重写网关」。
+改造前的 AI 能力全部锁在 `src/wechat_ai_assistant` 里，且依赖方向已经反了：`opencode.py` 反向 `import .orders`，`gateway._validate_job_request` 把 `message/customer/products/history/order_state` 硬编码成订单字段。结果是「换个业务就得重写网关」。
 
 改造后的依赖方向是单向的：
 
 ```
-产品集成层  src/pyweixin/integration/     微信输入、本地查询、订单应用、发消息、计费
+产品集成层  src/wechat_ai_assistant/integration/     微信输入、本地查询、订单应用、发消息、计费
       ↓
 订单领域插件  packages/order_agent/        意图、输出结构、自动记单、回执、记忆建议
       ↓
@@ -20,7 +20,7 @@
 执行后端接口  ExecutionBackend
 ```
 
-**通用核心不 import pyweixin**。这条规则由 `tests/test_business_agent_core.py::BoundaryTests` 和
+**通用核心不 import wechat_ai_assistant**。这条规则由 `tests/test_business_agent_core.py::BoundaryTests` 和
 `tests/test_second_business_reuse.py::SecondDomainTests::test_the_two_domains_share_only_the_core` 强制执行，
 不是靠文档约定。
 
@@ -226,7 +226,7 @@ packages/
 python -m support_triage --text "我要退款" --json
 ```
 
-它不导入 pyweixin、订单数据库、Windows UI、产品登录或计费模块。
+它不导入 wechat_ai_assistant、订单数据库、Windows UI、产品登录或计费模块。
 `test_the_example_runs_with_no_product_on_the_path` 在**只有两个包的干净解释器子进程**里运行它，
 以证明这一点不是口头承诺。
 
@@ -254,7 +254,7 @@ pip install -e packages/support_triage
 `business_agent` **零运行时依赖**，可以在没有微信、没有 Windows、没有 provider SDK 的环境里
 安装、导入和测试。
 
-源码树内直接运行（无需安装）：`src/pyweixin/_packages.py` 会把
+源码树内直接运行（无需安装）：`src/wechat_ai_assistant/_packages.py` 会把
 `packages/*/src` 加入 `sys.path`。这只在集成层调用，通用核心永远不会反向 import 本仓库。
 
 ---
@@ -263,13 +263,13 @@ pip install -e packages/support_triage
 
 | 改动 | 之前 | 之后 |
 | --- | --- | --- |
-| OpenCode 后端 | `pyweixin/opencode.py` 自带一份 HTTP 实现 | 该文件缩为适配器，HTTP/会话/探测/错误分类全部委托 `business_agent.backends.opencode` |
+| OpenCode 后端 | `wechat_ai_assistant/opencode.py` 自带一份 HTTP 实现 | 该文件缩为适配器，HTTP/会话/探测/错误分类全部委托 `business_agent.backends.opencode` |
 | 依赖方向 | `opencode.py` **反向 import** `orders`（通用后端依赖订单域） | 订单校验改走 `order_agent.contract`，反向依赖消除 |
 | 订单输出校验 | `orders.OpenAICompatibleParser.schema` 为唯一定义 | `order_agent.contract.OUTPUT_SCHEMA` 为唯一定义，`orders` 侧继续使用同一校验函数 |
-| 订单上下文 | 散在 `local_parse` 与 `orders` | `pyweixin/integration/order.py` 的 `OrderContextProvider` 统一从**现有** `OrderStore` 读取 |
+| 订单上下文 | 散在 `local_parse` 与 `orders` | `wechat_ai_assistant/integration/order.py` 的 `OrderContextProvider` 统一从**现有** `OrderStore` 读取 |
 | 落地订单 | `apply_cloud_suggestion` | 不变；`OrderStoreApplier` 复用同一入口，不存在第二条落地路径 |
 
-`pyweixin/opencode.py` 保留原有公开接口（`OpenCodeAdapter` / `LocalRuleAdapter` /
+`wechat_ai_assistant/opencode.py` 保留原有公开接口（`OpenCodeAdapter` / `LocalRuleAdapter` /
 `AdapterRegistry` / `validate_parse_result` / `extract_json_object` / 错误类型），
 只把异常类型翻译回产品自己的类型，因此网关 worker、对账路径和 171 项既有测试不受影响。
 

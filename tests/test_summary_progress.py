@@ -33,7 +33,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-MERCHANT_UI = ROOT / "src/pyweixin/merchant_ui.py"
+MERCHANT_UI = ROOT / "src/wechat_ai_assistant/merchant_ui.py"
 
 
 class NoFakeProgressTests(unittest.TestCase):

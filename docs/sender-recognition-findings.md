@@ -7,7 +7,7 @@
 
 ## 2026-10-13 补记七：整理角色（多用途第一刀）
 
-* 工具从"只给微商接单"变多用途，第一刀是角色预设（`src/pyweixin/roles.py`），
+* 工具从"只给微商接单"变多用途，第一刀是角色预设（`src/wechat_ai_assistant/roles.py`），
   不是改名：订单助手（老链路不动）/ 活动助手（报名/时间地点/物资/通知归类）/
   通用整理（提问/事项/通知/闲聊），整理页每次单选，默认订单助手。
 * 订单之外走本机规则引擎：不调模型、不扣费（不过额度门）、不建单、
@@ -48,7 +48,7 @@
 * 实测：20/20 密钥一次提中，20 库全解密且 HMAC 通过。`contact` 表备注/
   昵称明文，`chatroom_member` 给人数，`SessionTable` 给最近会话。
 * 效果：第 2 步 82 群全部真名（之前 21 个），0.1 秒（之前 14 秒），
-  人数真实（424 人对上文档记载群），好友 488 个。`src/pyweixin/wcdb.py`
+  人数真实（424 人对上文档记载群），好友 488 个。`src/wechat_ai_assistant/wcdb.py`
   只读拷贝、用完即删，失败回落内存路；第 2 步加「提取密钥（一次）」按钮。
 * 钥匙跟微信大版本走，大版本升级换盐后要重提（验签失败会明说，不会静默错）。
   微信还会新建分片/库（手机导入建 message_1.db）：磁盘上有没钥匙的库时
@@ -97,7 +97,7 @@
 * 磁盘库（`db_storage/*.db` 与 -wal）**全加密**，非 SQLite 头，
   不解密读不出来。
 * **活下来的两条路**：① 登录态走 wxid 数据目录（进程映射表）；
-  ② 消息走内存 carve（`src/pyweixin/localdb.py`）。
+  ② 消息走内存 carve（`src/wechat_ai_assistant/localdb.py`）。
 * 群名补齐：**读历史时面板标题带群名**，顺手落备注映射
   （`application._record_group_alias` → `wxid_aliases.json`）。
   加上读前滚成员名单、投票制命名，常用的群越读越全。
@@ -111,7 +111,7 @@ pywinauto 的查找、遍历、点击、头像判断，在这个版本**全部�
 
 * **登录态检测**：改从 wxid 数据目录认（进程内存映射表里找 MMKV 路径，
   找得到就是登着），不再依赖窗口类名；
-* **消息读取**：`src/pyweixin/localdb.py` 从内存捡解密好的 SQLite 记录。
+* **消息读取**：`src/wechat_ai_assistant/localdb.py` 从内存捡解密好的 SQLite 记录。
 
 ## 结论先说
 
@@ -170,7 +170,7 @@ UIA 只能读到 WeChat **主动发布**的那部分，而它没发布发送人�
 
 ## 代码里的真实 bug（已修）
 
-`WeChatAuto.dump_chat_history` 原本 `select=save_detail`。pyweixin 传
+`WeChatAuto.dump_chat_history` 原本 `select=save_detail`。wechat_ai_assistant 传
 `save_detail=False`（要发送人不要图片视频），于是「两次遍历」拿到的是同一种东西。
 已改成 `need_select = not groupMembers and is_group_chat` —— **成员是主路，
 多选是兜底**（多选会崩，必须能退回去）。
@@ -230,7 +230,7 @@ UIA 文本里没有发送人，但气泡左侧头像是真实存在的（`Tools.
   私聊不受影响；开关经 `MerchantApplication(sender_source=...)` 透传。
   默认回到了 `"members"`（上游原设计）：头像链为保发送人把读取搞丢条了，
   全量优先 —— 有数但匿名，好过有点名但缺数；
-* 新增 `"localdb"` 来源（`src/pyweixin/localdb.py`）：备注名解群 wxid，
+* 新增 `"localdb"` 来源（`src/wechat_ai_assistant/localdb.py`）：备注名解群 wxid，
   从内存捡记录，发送人解备注名，解不出回落老链路。内存只有最近碰过的页，
   目标群得多翻翻。
 

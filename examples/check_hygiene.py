@@ -45,7 +45,7 @@ def collect_used(tree: ast.AST) -> set[str]:
 
 
 def main() -> int:
-    package = pathlib.Path(__file__).resolve().parents[1] / "src" / "pyweixin"
+    package = pathlib.Path(__file__).resolve().parents[1] / "src" / "wechat_ai_assistant"
     corpus = "\n".join(path.read_text(encoding="utf-8") for path in sorted(package.glob("*.py")))
     corpus += "\n" + "\n".join(
         path.read_text(encoding="utf-8")

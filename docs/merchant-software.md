@@ -7,10 +7,11 @@
 
 ## 1. 启动
 
-双击运行 `python -m pyweixin.merchant_app`（或打包后的可执行文件）。
+便携版解压后双击“启动微信AI智能助理.bat”；源码开发时可运行
+`python -m wechat_ai_assistant.merchant_app`。
 
 ```
-数据目录：C:\Users\<您>\AppData\Local\pyweixin
+数据目录：便携版使用 EXE 同级的 `data` 文件夹；源码运行使用 `%LOCALAPPDATA%\wechat-ai-assistant`。旧版便携版首次启动时会把已有 `%LOCALAPPDATA%\wechat-ai-assistant` 或 `%LOCALAPPDATA%\pyweixin` 数据复制到 `data`，原目录保留。
 本机名称：DESKTOP-XXXX
 本地订单库：已就绪
 微信状态：waiting_scan
@@ -24,7 +25,7 @@
 
 ```powershell
 $env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m pyweixin.merchant_app --check
+.\.venv\Scripts\python.exe -m wechat_ai_assistant.merchant_app --check
 ```
 
 ---

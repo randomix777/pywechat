@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT / "src"))
 class LoginIsStepOneTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = (ROOT / "src" / "pyweixin" / "merchant_ui.py").read_text(
+        cls.source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(
             encoding="utf-8")
 
     def test_step_one_carries_the_login_entry(self):
@@ -96,7 +96,7 @@ class WrongCauseTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.source = (ROOT / "src" / "pyweixin" / "application.py").read_text(
+        cls.source = (ROOT / "src" / "wechat_ai_assistant" / "application.py").read_text(
             encoding="utf-8")
 
     def test_not_logged_in_says_not_logged_in(self):
@@ -116,7 +116,7 @@ class WrongCauseTests(unittest.TestCase):
     def test_the_model_refresh_button_is_disabled_when_logged_out(self):
         """模型选择模块已整个拿掉（模型由云端配置）：整理页没有模型按钮，
         也就没有"亮着但白点"的按钮。"""
-        source = (ROOT / "src" / "pyweixin" / "merchant_ui.py").read_text(encoding="utf-8")
+        source = (ROOT / "src" / "wechat_ai_assistant" / "merchant_ui.py").read_text(encoding="utf-8")
         self.assertNotIn("def _refresh_model_controls", source)
         self.assertNotIn("def _build_model_picker", source)
         self.assertNotIn("刷新模型列表", source)
@@ -147,7 +147,7 @@ class NoFreeModelPromiseTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.src = ROOT / "src" / "pyweixin"
+        cls.src = ROOT / "src" / "wechat_ai_assistant"
 
     def _merchant_text(self, name: str) -> str:
         """只取**会显示给商户的字面量**。

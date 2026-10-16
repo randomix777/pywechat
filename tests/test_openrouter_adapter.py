@@ -24,8 +24,8 @@ for extra in ("src", "packages/business_agent/src", "packages/order_agent/src"):
     sys.path.insert(0, str(ROOT / extra))
 
 from business_agent.backends.deepseek import DeepSeekBackend  # noqa: E402
-from pyweixin.opencode import MERCHANT_MESSAGES, ParseOutcome  # noqa: E402
-from pyweixin.openrouter_adapter import (  # noqa: E402
+from wechat_ai_assistant.opencode import MERCHANT_MESSAGES, ParseOutcome  # noqa: E402
+from wechat_ai_assistant.openrouter_adapter import (  # noqa: E402
     API_KEY_ENV,
     DEFAULT_BASE_URL,
     MODEL_ENV,
@@ -51,8 +51,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_the_two_providers_can_coexist(self):
         """环境变量分开命名，否则配了 OpenRouter 会顶掉 DeepSeek。"""
-        self.assertNotEqual(API_KEY_ENV, "PYWEIXIN_DEEPSEEK_API_KEY")
-        self.assertNotEqual(MODEL_ENV, "PYWEIXIN_DEEPSEEK_MODEL")
+        self.assertNotEqual(API_KEY_ENV, "WECHAT_AI_DEEPSEEK_API_KEY")
+        self.assertNotEqual(MODEL_ENV, "WECHAT_AI_DEEPSEEK_MODEL")
 
 
 class HonestyTests(unittest.TestCase):
@@ -119,7 +119,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_the_base_url_can_be_overridden(self):
         adapter = build_from_env(env={
             API_KEY_ENV: "sk-x",
-            "PYWEIXIN_OPENROUTER_BASE_URL": "https://gateway.internal/v1",
+            "WECHAT_AI_OPENROUTER_BASE_URL": "https://gateway.internal/v1",
         })
         self.assertEqual(adapter.base_url, "https://gateway.internal/v1")
 

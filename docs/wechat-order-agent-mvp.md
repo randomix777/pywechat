@@ -42,27 +42,27 @@ flowchart LR
 PowerShell：
 
 ```powershell
-cd D:\Projects\Other\ReverseEngineering\pyweixin
+# 从仓库根目录运行后续命令。
 $env:PYTHONPATH = "src"
-$env:PYWEIXIN_CLOUD_TOKEN = "change-agent-token"
-$env:PYWEIXIN_CONSOLE_TOKEN = "change-console-token"
-$env:PYWEIXIN_BUSINESS_DB = "orders.db"
+$env:WECHAT_AI_CLOUD_TOKEN = "change-agent-token"
+$env:WECHAT_AI_CONSOLE_TOKEN = "change-console-token"
+$env:WECHAT_AI_BUSINESS_DB = "orders.db"
 # 可选真实模型。留空时使用 demo 规则适配器。
-# $env:PYWEIXIN_MODEL_BASE_URL = "https://api.example.com/v1"
-# $env:PYWEIXIN_MODEL_API_KEY = ""
-# $env:PYWEIXIN_MODEL_NAME = ""
-..\.venv\Scripts\python.exe -m pyweixin.cloud_server --host 127.0.0.1 --port 8787 --token $env:PYWEIXIN_CLOUD_TOKEN --console-token $env:PYWEIXIN_CONSOLE_TOKEN --business-db $env:PYWEIXIN_BUSINESS_DB
+# $env:WECHAT_AI_MODEL_BASE_URL = "https://api.example.com/v1"
+# $env:WECHAT_AI_MODEL_API_KEY = ""
+# $env:WECHAT_AI_MODEL_NAME = ""
+..\.venv\Scripts\python.exe -m wechat_ai_assistant.cloud_server --host 127.0.0.1 --port 8787 --token $env:WECHAT_AI_CLOUD_TOKEN --console-token $env:WECHAT_AI_CONSOLE_TOKEN --business-db $env:WECHAT_AI_BUSINESS_DB
 ```
 
 在 `http://127.0.0.1:8787/console` 创建试用商家并保存一次性显示的工作台 token。向经授权的商家数据库导入客户和商品后，即可使用工作台。业务库表结构在 `OrderStore` 初始化时通过 SQLite `CREATE TABLE IF NOT EXISTS` 迁移，版本号表为 `schema_version`。尚未提供跨版本升级/回滚框架。
 
-若要把本地 Agent 事件桥接至订单库：先用商家 token 在工作台创建设备并授权群，安全保存一次性显示的设备 token；Windows 上设置 `.env.example` 中 `PYWEIXIN_DEVICE_TOKEN`、`PYWEIXIN_CLOUD_URL`、`PYWEIXIN_AGENT_ID`、`PYWEIXIN_ACCOUNT_ID`、`PYWEIXIN_GROUP`，再运行 `pyweixin-agent`（或源码开发时运行 `python -m pyweixin.agent_cli`）。Agent 的新事件会主动上传、授权校验、幂等写入并触发解析。设备 token 仅允许上传已授权账号与群。该软件流程的自动化接口已测试；实际群历史来源依然依赖本机已登录微信和现有 UI 导出，尚未真机验证。
+若要把本地 Agent 事件桥接至订单库：先用商家 token 在工作台创建设备并授权群，安全保存一次性显示的设备 token；Windows 上设置 `.env.example` 中 `WECHAT_AI_DEVICE_TOKEN`、`WECHAT_AI_CLOUD_URL`、`WECHAT_AI_AGENT_ID`、`WECHAT_AI_ACCOUNT_ID`、`WECHAT_AI_GROUP`，再运行 `wechat_ai_assistant-agent`（或源码开发时运行 `python -m wechat_ai_assistant.agent_cli`）。Agent 的新事件会主动上传、授权校验、幂等写入并触发解析。设备 token 仅允许上传已授权账号与群。该软件流程的自动化接口已测试；实际群历史来源依然依赖本机已登录微信和现有 UI 导出，尚未真机验证。
 
 装载明确标记的合成演示数据：
 
 ```powershell
 $env:PYTHONPATH = "src"
-$env:PYWEIXIN_BUSINESS_DB = "orders.db"
+$env:WECHAT_AI_BUSINESS_DB = "orders.db"
 ..\.venv\Scripts\python.exe examples\demo_order_agent.py
 ```
 

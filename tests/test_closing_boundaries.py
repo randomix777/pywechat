@@ -24,26 +24,26 @@ for _name in ("business_agent", "order_agent", "support_triage"):
     if _src.is_dir() and str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
 
-from pyweixin.application import MerchantApplication  # noqa: E402
-from pyweixin.conversations import ConversationKind, SimulatedConversations  # noqa: E402
-from pyweixin.dashboard import (  # noqa: E402
+from wechat_ai_assistant.application import MerchantApplication  # noqa: E402
+from wechat_ai_assistant.conversations import ConversationKind, SimulatedConversations  # noqa: E402
+from wechat_ai_assistant.dashboard import (  # noqa: E402
     ACTIONABLE_STATUSES,
     EFFECTIVE_STATUSES,
     METRIC_DEFINITIONS,
     DashboardBuilder,
 )
-from pyweixin.history_read import SimulatedHistory  # noqa: E402
-from pyweixin.local_parse import ParseProgress  # noqa: E402
-from pyweixin.merging import (  # noqa: E402
+from wechat_ai_assistant.history_read import SimulatedHistory  # noqa: E402
+from wechat_ai_assistant.local_parse import ParseProgress  # noqa: E402
+from wechat_ai_assistant.merging import (  # noqa: E402
     BufferedMessage,
     MergeKey,
     MergeSettings,
     MessageMerger,
 )
-from pyweixin.orders import OrderStore  # noqa: E402
-from pyweixin.receipts import ReceiptOutbox, ReceiptRequest, ReceiptStatus  # noqa: E402
-from pyweixin.runmode import AutoOrderSettings, RunMode  # noqa: E402
-from pyweixin.wechat_send import (  # noqa: E402
+from wechat_ai_assistant.orders import OrderStore  # noqa: E402
+from wechat_ai_assistant.receipts import ReceiptOutbox, ReceiptRequest, ReceiptStatus  # noqa: E402
+from wechat_ai_assistant.runmode import AutoOrderSettings, RunMode  # noqa: E402
+from wechat_ai_assistant.wechat_send import (  # noqa: E402
     SendHeld,
     SendVerdict,
     StaticInspector,
@@ -51,7 +51,7 @@ from pyweixin.wechat_send import (  # noqa: E402
     mark_real_sending_verified,
     real_sending_available,
 )
-from pyweixin.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
+from wechat_ai_assistant.wechat_state import SimulatedWeChat, WeChatState  # noqa: E402
 
 NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
 GROUP = "测试群"
@@ -147,7 +147,7 @@ class DraftProtectionTests(unittest.TestCase):
 
     def test_a_hold_is_not_reported_as_an_unknown_send(self):
         """没有往微信里打字，所以不是"结果未知"，不需要对账。"""
-        from pyweixin.agent import AgentStore
+        from wechat_ai_assistant.agent import AgentStore
 
         directory = Path(tempfile.mkdtemp(prefix="pyw-hold-"))
         try:
@@ -165,7 +165,7 @@ class DraftProtectionTests(unittest.TestCase):
 
 def _guard(sent, state, expected_account: str = "", allow_real: bool = True):
     mark_real_sending_verified(allow_real)
-    from pyweixin.wechat_send import SafeReceiptSender
+    from wechat_ai_assistant.wechat_send import SafeReceiptSender
 
     guard = SafeReceiptSender(
         StaticInspector(state), inner=lambda t, x: sent.append((t, x)),
@@ -176,7 +176,7 @@ def _guard(sent, state, expected_account: str = "", allow_real: bool = True):
 
 def _guard_sequence(sent, states):
     """按顺序返回状态，用来模拟"检查通过之后商户才开始打字"。"""
-    from pyweixin.wechat_send import SafeReceiptSender
+    from wechat_ai_assistant.wechat_send import SafeReceiptSender
 
     mark_real_sending_verified(True)
     remaining = list(states)
@@ -198,7 +198,7 @@ def _raising_guard_hold():
 
 
 def _check(reason: str):
-    from pyweixin.wechat_send import SendCheck
+    from wechat_ai_assistant.wechat_send import SendCheck
 
     return SendCheck(False, reason)
 
@@ -565,14 +565,14 @@ class DrainBoundTests(unittest.TestCase):
     """413 的 drain 必须在时间和大小上都封顶。"""
 
     def test_drain_has_a_time_limit(self):
-        from pyweixin import gateway_server
+        from wechat_ai_assistant import gateway_server
 
         self.assertGreater(gateway_server.DRAIN_TIMEOUT_SECONDS, 0)
         self.assertLessEqual(gateway_server.DRAIN_TIMEOUT_SECONDS, 30.0,
                              "drain 不得无限等待，否则一个慢速请求能占住工作线程")
 
     def test_drain_has_a_size_limit(self):
-        from pyweixin import gateway_server
+        from wechat_ai_assistant import gateway_server
 
         self.assertGreater(gateway_server.DRAIN_LIMIT_BYTES, 0)
 
@@ -584,9 +584,9 @@ class DrainBoundTests(unittest.TestCase):
         import threading as _threading
         from http.server import ThreadingHTTPServer
 
-        from pyweixin.gateway import ProductGateway
-        from pyweixin.gateway_server import GatewayHTTPRequestHandler
-        from pyweixin.product import ProductStore
+        from wechat_ai_assistant.gateway import ProductGateway
+        from wechat_ai_assistant.gateway_server import GatewayHTTPRequestHandler
+        from wechat_ai_assistant.product import ProductStore
 
         directory = Path(_tempfile.mkdtemp(prefix="pyw-drain-"))
         gateway = ProductGateway(ProductStore(str(directory / "p.db")))
@@ -702,7 +702,7 @@ class MessageKindNormalisationTests(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def test_chinese_text_kind_is_parsable(self):
-        from pyweixin.orders import normalize_message_kind
+        from wechat_ai_assistant.orders import normalize_message_kind
 
         self.assertEqual(normalize_message_kind("文本"), "text")
         self.assertEqual(normalize_message_kind("文字"), "text")
